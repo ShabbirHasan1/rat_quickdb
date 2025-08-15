@@ -95,6 +95,11 @@ pub struct DatabaseConfigBuilder {
     connection: Option<ConnectionConfig>,
     pool: Option<PoolConfig>,
     alias: Option<String>,
+    /// 缓存配置（可选）
+    #[cfg(feature = "cache")]
+    cache: Option<CacheConfig>,
+    /// ID 生成策略
+    id_strategy: Option<IdStrategy>,
 }
 
 /// 连接池配置构建器
@@ -160,6 +165,9 @@ impl DatabaseConfigBuilder {
             connection: None,
             pool: None,
             alias: None,
+            #[cfg(feature = "cache")]
+            cache: None,
+            id_strategy: None,
         }
     }
 
@@ -203,6 +211,27 @@ impl DatabaseConfigBuilder {
         self
     }
 
+    /// 设置ID生成策略
+    /// 
+    /// # 参数
+    /// 
+    /// * `id_strategy` - ID生成策略
+    pub fn id_strategy(mut self, id_strategy: IdStrategy) -> Self {
+        self.id_strategy = Some(id_strategy);
+        self
+    }
+
+    /// 设置缓存配置
+    /// 
+    /// # 参数
+    /// 
+    /// * `cache` - 缓存配置
+    #[cfg(feature = "cache")]
+    pub fn cache(mut self, cache: CacheConfig) -> Self {
+        self.cache = Some(cache);
+        self
+    }
+
     /// 构建数据库配置
     /// 
     /// # 错误
@@ -225,6 +254,10 @@ impl DatabaseConfigBuilder {
             crate::quick_error!(config, "数据库别名必须设置")
         })?;
 
+        let id_strategy = self.id_strategy.ok_or_else(|| {
+            crate::quick_error!(config, "ID生成策略必须设置")
+        })?;
+
         // 验证配置的一致性
         Self::validate_config(&db_type, &connection)?;
 
@@ -235,6 +268,9 @@ impl DatabaseConfigBuilder {
             connection,
             pool,
             alias,
+            #[cfg(feature = "cache")]
+            cache: self.cache,
+            id_strategy,
         })
     }
 
@@ -810,6 +846,7 @@ pub fn sqlite_config<S: Into<String>, P: Into<String>>(
         })
         .pool(pool_config)
         .alias(alias)
+        .id_strategy(IdStrategy::AutoIncrement) // 默认使用自增ID
         .build()
 }
 
@@ -842,9 +879,11 @@ pub fn postgres_config<S: Into<String>>(
             username: username.into(),
             password: password.into(),
             ssl_mode: Some("prefer".to_string()),
+            tls_config: None,
         })
         .pool(pool_config)
         .alias(alias)
+        .id_strategy(IdStrategy::AutoIncrement) // 默认使用自增ID
         .build()
 }
 
@@ -877,9 +916,11 @@ pub fn mysql_config<S: Into<String>>(
             username: username.into(),
             password: password.into(),
             ssl_opts: None,
+            tls_config: None,
         })
         .pool(pool_config)
         .alias(alias)
+        .id_strategy(IdStrategy::AutoIncrement) // 默认使用自增ID
         .build()
 }
 
@@ -903,9 +944,12 @@ pub fn mongodb_config<S: Into<String>>(
             uri: uri.into(),
             database: database.into(),
             auth_source: None,
+            tls_config: None,
+            zstd_config: None,
         })
         .pool(pool_config)
         .alias(alias)
+        .id_strategy(IdStrategy::ObjectId) // MongoDB默认使用ObjectId
         .build()
 }
 

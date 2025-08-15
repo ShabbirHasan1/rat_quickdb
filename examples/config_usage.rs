@@ -142,6 +142,7 @@ async fn demonstrate_chain_configuration() -> Result<(), QuickDbError> {
                     username: "postgres".to_string(),
                     password: "password".to_string(),
                     ssl_mode: Some("prefer".to_string()),
+                    tls_config: None,
                 })
                 .pool(
                     PoolConfigBuilder::new()
@@ -314,6 +315,7 @@ async fn demonstrate_multi_database_config() -> Result<(), QuickDbError> {
             username: "postgres".to_string(),
             password: "password".to_string(),
             ssl_mode: Some("require".to_string()),
+            tls_config: None,
         })
         .pool(
             PoolConfigBuilder::new()
@@ -339,6 +341,7 @@ async fn demonstrate_multi_database_config() -> Result<(), QuickDbError> {
             username: "root".to_string(),
             password: "password".to_string(),
             ssl_opts: None,
+            tls_config: None,
         })
         .pool(
             PoolConfigBuilder::new()
@@ -361,6 +364,8 @@ async fn demonstrate_multi_database_config() -> Result<(), QuickDbError> {
             uri: "mongodb://localhost:27017".to_string(),
             database: "logs".to_string(),
             auth_source: None,
+            tls_config: None,
+            zstd_config: None,
         })
         .pool(
             PoolConfigBuilder::new()
@@ -544,6 +549,7 @@ async fn demonstrate_config_validation() -> Result<(), QuickDbError> {
             username: "postgres".to_string(),
             password: "password".to_string(),
             ssl_mode: None,
+            tls_config: None,
         })
         .pool(default_pool_config(1, 5)?)
         .alias("mismatch_test")

@@ -145,21 +145,54 @@ define_model! {
 async fn demonstrate_json_serialization() -> QuickDbResult<()> {
     println!("\n=== JSON序列化演示 ===");
     
-    // 模拟用户数据查询
-    println!("查询用户数据...");
-    println!("找到用户: {{\"id\": 1, \"name\": \"张三\", \"email\": \"zhangsan@example.com\", \"age\": 25}}");
+    // 获取ODM管理器
+    let odm_manager = AsyncOdmManager::new();
     
-    // 模拟序列化过程
-    println!("\n序列化选项:");
-    println!("1. 默认序列化: {{\"id\":1,\"name\":\"张三\",\"email\":\"zhangsan@example.com\",\"age\":25}}");
-    println!("2. 美化序列化:");
-    println!("{{");
-    println!("  \"id\": 1,");
-    println!("  \"name\": \"张三\",");
-    println!("  \"email\": \"zhangsan@example.com\",");
-    println!("  \"age\": 25");
-    println!("}}");
-    println!("3. PyO3兼容序列化: {{\"id\":1,\"name\":\"张三\",\"email\":\"zhangsan@example.com\",\"age\":25}}");
+    // 创建真实的用户数据
+    println!("创建用户数据...");
+    let user_id = uuid::Uuid::new_v4().to_string();
+    let user_data = create_user_data(&user_id, "zhangsan", "zhangsan@example.com", "张三", 25);
+    
+    // 插入用户数据
+    match odm_manager.create("users", user_data.clone(), None).await {
+        Ok(created_id) => {
+            println!("用户创建成功，ID: {}", created_id);
+            
+            // 查询用户数据
+            println!("\n查询用户数据...");
+            match odm_manager.find_by_id("users", &created_id, None).await {
+                Ok(Some(user_json)) => {
+                    println!("找到用户: {}", user_json);
+                    
+                    // 演示不同的序列化选项
+                    println!("\n序列化选项:");
+                    
+                    // 1. 默认序列化（紧凑格式）
+                    let compact_json = serde_json::to_string(&user_data)
+                        .unwrap_or_else(|_| "序列化失败".to_string());
+                    println!("1. 默认序列化: {}", compact_json);
+                    
+                    // 2. 美化序列化
+                    println!("2. 美化序列化:");
+                    let pretty_json = serde_json::to_string_pretty(&user_data)
+                        .unwrap_or_else(|_| "序列化失败".to_string());
+                    println!("{}", pretty_json);
+                    
+                    // 3. 转换为DataValue并序列化（PyO3兼容）
+                    println!("3. PyO3兼容序列化:");
+                    let data_value_json = serde_json::to_string(&user_data)
+                        .unwrap_or_else(|_| "序列化失败".to_string());
+                    println!("{}", data_value_json);
+                    
+                    // 清理测试数据
+                    let _ = odm_manager.delete_by_id("users", &created_id, None).await;
+                },
+                Ok(None) => println!("用户未找到"),
+                Err(e) => println!("查询用户失败: {}", e),
+            }
+        },
+        Err(e) => println!("用户创建失败: {}", e),
+    }
     
     Ok(())
 }

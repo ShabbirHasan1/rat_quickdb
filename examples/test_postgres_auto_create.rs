@@ -40,8 +40,10 @@ async fn main() -> QuickDbResult<()> {
             username: "postgres".to_string(),
             password: "password".to_string(),
             ssl_mode: None,
+            tls_config: None,
         },
         pool: pool_config,
+        id_strategy: rat_quickdb::types::IdStrategy::AutoIncrement,
     };
     
     // 添加数据库配置到管理器

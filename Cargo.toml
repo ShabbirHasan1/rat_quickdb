@@ -50,10 +50,16 @@ uuid = { version = "1.0", features = ["v4", "serde"] }
 
 # 字符串处理
 regex = "1.0"
-base64 = "0.21"
+base64 = "0.22"
+rand = "0.8"
 
 # PyO3 支持（可选）
-pyo3 = { version = "0.21", features = ["extension-module"], optional = true }
+pyo3 = { version = "0.22", features = ["extension-module"], optional = true }
+
+# 缓存支持
+rat_memcache = { path = "../rat_memcache", optional = true }
+# 雪花算法ID生成
+snowflake = { version = "1.3", optional = true }
 
 [features]
 default = ["sqlite"]
@@ -64,9 +70,16 @@ mysql = ["dep:mysql_async"]
 mongodb = ["dep:mongodb"]
 # PyO3 绑定
 python = ["dep:pyo3"]
+# 缓存支持
+cache = ["dep:rat_memcache"]
+# 雪花算法ID支持
+snowflake-id = ["dep:snowflake"]
 # 全部数据库支持
 all-databases = ["sqlite", "postgresql", "mysql", "mongodb"]
+# 全部功能支持
+full = ["all-databases", "cache", "snowflake-id", "python"]
 
 [dev-dependencies]
 tokio-test = "0.4"
 tempfile = "3.8"
+env_logger = "0.10"

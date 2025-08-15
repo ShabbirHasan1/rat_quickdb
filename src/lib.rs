@@ -16,11 +16,25 @@ pub mod config;
 pub mod task_queue;
 pub mod table;
 
+// 条件编译的模块
+#[cfg(feature = "cache")]
+pub mod cache;
+pub mod id_generator;
+
 // 重新导出常用类型和函数
 pub use error::{QuickDbError, QuickDbResult};
 pub use types::*;
 pub use pool::{ConnectionPool, DatabaseConnection};
-pub use manager::{PoolManager, add_database, remove_database};
+pub use manager::{
+    PoolManager, add_database, remove_database, get_connection, release_connection,
+    get_aliases, set_default_alias, health_check, shutdown,
+    get_id_generator, get_mongo_auto_increment_generator
+};
+
+#[cfg(feature = "cache")]
+pub use manager::{
+    get_cache_manager, get_cache_stats, clear_cache, clear_all_caches
+};
 pub use odm::{AsyncOdmManager, OdmOperations, get_odm_manager, get_odm_manager_mut};
 pub use model::{Model, ModelOperations, ModelManager, FieldType, FieldDefinition, ModelMeta, IndexDefinition};
 pub use serializer::{DataSerializer, SerializerConfig, OutputFormat, SerializationResult};
@@ -36,6 +50,13 @@ pub use task_queue::{
     shutdown_global_task_queue
 };
 pub use table::{TableManager, TableSchema, ColumnDefinition, ColumnType, IndexType};
+
+// 条件导出缓存相关类型
+#[cfg(feature = "cache")]
+pub use cache::{CacheManager, CacheStats};
+
+// 导出ID生成器相关类型
+pub use id_generator::{IdGenerator, MongoAutoIncrementGenerator};
 
 // 重新导出便捷函数
 pub use odm::{create, find_by_id, find, update, update_by_id, delete, delete_by_id, count, exists};

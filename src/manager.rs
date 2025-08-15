@@ -5,6 +5,9 @@
 use crate::error::{QuickDbError, QuickDbResult};
 use crate::pool::{ConnectionPool, PooledConnection, ExtendedPoolConfig};
 use crate::types::{DatabaseConfig, DatabaseType};
+use crate::id_generator::{IdGenerator, MongoAutoIncrementGenerator};
+#[cfg(feature = "cache")]
+use crate::cache::{CacheManager, CacheStats};
 use dashmap::DashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -20,6 +23,13 @@ pub struct PoolManager {
     default_alias: Arc<RwLock<Option<String>>>,
     /// 清理任务句柄
     cleanup_handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
+    /// ID生成器映射 (别名 -> ID生成器)
+    id_generators: Arc<DashMap<String, Arc<IdGenerator>>>,
+    /// MongoDB自增ID生成器映射 (别名 -> 自增生成器)
+    mongo_auto_increment_generators: Arc<DashMap<String, Arc<MongoAutoIncrementGenerator>>>,
+    /// 缓存管理器映射 (别名 -> 缓存管理器)
+    #[cfg(feature = "cache")]
+    cache_managers: Arc<DashMap<String, Arc<CacheManager>>>,
 }
 
 impl PoolManager {
@@ -31,6 +41,10 @@ impl PoolManager {
             pools: Arc::new(DashMap::new()),
             default_alias: Arc::new(RwLock::new(None)),
             cleanup_handle: Arc::new(RwLock::new(None)),
+            id_generators: Arc::new(DashMap::new()),
+            mongo_auto_increment_generators: Arc::new(DashMap::new()),
+            #[cfg(feature = "cache")]
+            cache_managers: Arc::new(DashMap::new()),
         }
     }
 
@@ -48,13 +62,45 @@ impl PoolManager {
         
         // 创建连接池
         let pool_config = ExtendedPoolConfig::default();
-        let pool = Arc::new(ConnectionPool::with_config(config, pool_config).await.map_err(|e| {
+        let pool = Arc::new(ConnectionPool::with_config(config.clone(), pool_config).await.map_err(|e| {
             error!("连接池创建失败: 别名={}, 错误={}", alias, e);
             e
         })?);
         
         // 添加到管理器
         self.pools.insert(alias.clone(), pool);
+        
+        // 初始化ID生成器
+        match IdGenerator::new(config.id_strategy.clone()) {
+            Ok(generator) => {
+                self.id_generators.insert(alias.clone(), Arc::new(generator));
+                info!("为数据库 {} 创建ID生成器: {:?}", alias, config.id_strategy);
+            }
+            Err(e) => {
+                warn!("为数据库 {} 创建ID生成器失败: {}", alias, e);
+            }
+        }
+        
+        // 为MongoDB创建自增ID生成器
+        if matches!(config.db_type, DatabaseType::MongoDB) {
+            let mongo_generator = MongoAutoIncrementGenerator::new(alias.clone());
+            self.mongo_auto_increment_generators.insert(alias.clone(), Arc::new(mongo_generator));
+            info!("为MongoDB数据库 {} 创建自增ID生成器", alias);
+        }
+        
+        // 初始化缓存管理器（如果配置了缓存）
+        #[cfg(feature = "cache")]
+        if let Some(cache_config) = &config.cache {
+            match CacheManager::new(cache_config.clone()).await {
+                Ok(cache_manager) => {
+                    self.cache_managers.insert(alias.clone(), Arc::new(cache_manager));
+                    info!("为数据库 {} 创建缓存管理器", alias);
+                }
+                Err(e) => {
+                    warn!("为数据库 {} 创建缓存管理器失败: {}", alias, e);
+                }
+            }
+        }
         
         // 如果这是第一个数据库，设置为默认
         {
@@ -77,7 +123,17 @@ impl PoolManager {
         info!("移除数据库配置: 别名={}", alias);
         
         if let Some((_, _pool)) = self.pools.remove(alias) {
-            // 这里可以添加连接池清理逻辑
+            // 清理ID生成器
+            self.id_generators.remove(alias);
+            self.mongo_auto_increment_generators.remove(alias);
+            
+            // 清理缓存管理器
+            #[cfg(feature = "cache")]
+            if let Some((_, cache_manager)) = self.cache_managers.remove(alias) {
+                // 这里可以添加缓存清理逻辑
+                info!("清理数据库 {} 的缓存管理器", alias);
+            }
+            
             info!("数据库配置已移除: 别名={}", alias);
             
             // 如果移除的是默认数据库，重新设置默认
@@ -174,6 +230,62 @@ impl PoolManager {
         self.pools.clone()
     }
 
+    /// 获取ID生成器
+    pub fn get_id_generator(&self, alias: &str) -> QuickDbResult<Arc<IdGenerator>> {
+        if let Some(generator) = self.id_generators.get(alias) {
+            Ok(generator.clone())
+        } else {
+            Err(crate::quick_error!(config, format!("数据库 {} 没有配置ID生成器", alias)))
+        }
+    }
+
+    /// 获取MongoDB自增ID生成器
+    pub fn get_mongo_auto_increment_generator(&self, alias: &str) -> QuickDbResult<Arc<MongoAutoIncrementGenerator>> {
+        if let Some(generator) = self.mongo_auto_increment_generators.get(alias) {
+            Ok(generator.clone())
+        } else {
+            Err(crate::quick_error!(config, format!("数据库 {} 没有MongoDB自增ID生成器", alias)))
+        }
+    }
+
+    /// 获取缓存管理器
+    #[cfg(feature = "cache")]
+    pub fn get_cache_manager(&self, alias: &str) -> QuickDbResult<Arc<CacheManager>> {
+        if let Some(cache_manager) = self.cache_managers.get(alias) {
+            Ok(cache_manager.clone())
+        } else {
+            Err(crate::quick_error!(config, format!("数据库 {} 没有配置缓存管理器", alias)))
+        }
+    }
+
+    /// 获取缓存统计信息
+    #[cfg(feature = "cache")]
+    pub async fn get_cache_stats(&self, alias: &str) -> QuickDbResult<CacheStats> {
+        let cache_manager = self.get_cache_manager(alias)?;
+        Ok(cache_manager.get_stats().await)
+    }
+
+    /// 清理指定数据库的缓存
+    #[cfg(feature = "cache")]
+    pub async fn clear_cache(&self, alias: &str) -> QuickDbResult<()> {
+        let cache_manager = self.get_cache_manager(alias)?;
+        cache_manager.clear().await;
+        info!("已清理数据库 {} 的缓存", alias);
+        Ok(())
+    }
+
+    /// 清理所有数据库的缓存
+    #[cfg(feature = "cache")]
+    pub async fn clear_all_caches(&self) -> QuickDbResult<()> {
+        for entry in self.cache_managers.iter() {
+            let alias = entry.key();
+            let cache_manager = entry.value();
+            cache_manager.clear().await;
+            info!("已清理数据库 {} 的缓存", alias);
+        }
+        Ok(())
+    }
+
 
 
     /// 启动清理任务
@@ -232,6 +344,14 @@ impl PoolManager {
         
         // 清空所有连接池
         self.pools.clear();
+        
+        // 清空ID生成器
+        self.id_generators.clear();
+        self.mongo_auto_increment_generators.clear();
+        
+        // 清空缓存管理器
+        #[cfg(feature = "cache")]
+        self.cache_managers.clear();
         
         // 清空默认别名
         {
@@ -320,6 +440,40 @@ pub async fn health_check() -> std::collections::HashMap<String, bool> {
     get_global_pool_manager().health_check().await
 }
 
+/// 便捷函数 - 获取ID生成器
+pub fn get_id_generator(alias: &str) -> QuickDbResult<Arc<IdGenerator>> {
+    get_global_pool_manager().get_id_generator(alias)
+}
+
+/// 便捷函数 - 获取MongoDB自增ID生成器
+pub fn get_mongo_auto_increment_generator(alias: &str) -> QuickDbResult<Arc<MongoAutoIncrementGenerator>> {
+    get_global_pool_manager().get_mongo_auto_increment_generator(alias)
+}
+
+/// 便捷函数 - 获取缓存管理器
+#[cfg(feature = "cache")]
+pub fn get_cache_manager(alias: &str) -> QuickDbResult<Arc<CacheManager>> {
+    get_global_pool_manager().get_cache_manager(alias)
+}
+
+/// 便捷函数 - 获取缓存统计信息
+#[cfg(feature = "cache")]
+pub async fn get_cache_stats(alias: &str) -> QuickDbResult<CacheStats> {
+    get_global_pool_manager().get_cache_stats(alias).await
+}
+
+/// 便捷函数 - 清理指定数据库的缓存
+#[cfg(feature = "cache")]
+pub async fn clear_cache(alias: &str) -> QuickDbResult<()> {
+    get_global_pool_manager().clear_cache(alias).await
+}
+
+/// 便捷函数 - 清理所有数据库的缓存
+#[cfg(feature = "cache")]
+pub async fn clear_all_caches() -> QuickDbResult<()> {
+    get_global_pool_manager().clear_all_caches().await
+}
+
 /// 便捷函数 - 关闭管理器
 pub async fn shutdown() -> QuickDbResult<()> {
     get_global_pool_manager().shutdown().await
@@ -334,11 +488,14 @@ mod tests {
         DatabaseConfig {
             db_type: DatabaseType::SQLite,
             connection: ConnectionConfig::SQLite {
-                path: format!(":memory:{}", alias),
+                path: ":memory:".to_string(),
                 create_if_missing: true,
             },
             pool: PoolConfig::default(),
             alias: alias.to_string(),
+            id_strategy: IdStrategy::AutoIncrement,
+            #[cfg(feature = "cache")]
+            cache: None,
         }
     }
 
