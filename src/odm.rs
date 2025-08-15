@@ -1,0 +1,967 @@
+//! 异步ODM层 - 使用无锁队列解决生命周期问题
+//! 
+//! 通过消息传递和无锁队列机制避免直接持有连接引用，解决生命周期问题
+
+use crate::error::{QuickDbError, QuickDbResult};
+use crate::types::*;
+use crate::manager::get_global_pool_manager;
+use crate::adapter::{DatabaseAdapter, create_adapter};
+use crate::pool::DatabaseOperation;
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
+use std::collections::HashMap;
+use tokio::sync::{mpsc, oneshot};
+use crossbeam_queue::SegQueue;
+use std::sync::Arc;
+use zerg_creep::{debug, error, info, warn};
+
+/// ODM操作接口
+#[async_trait]
+pub trait OdmOperations {
+    /// 创建记录
+    async fn create(
+        &self,
+        collection: &str,
+        data: HashMap<String, DataValue>,
+        alias: Option<&str>,
+    ) -> QuickDbResult<String>;
+    
+    /// 根据ID查询记录
+    async fn find_by_id(
+        &self,
+        collection: &str,
+        id: &str,
+        alias: Option<&str>,
+    ) -> QuickDbResult<Option<String>>;
+    
+    /// 查询记录
+    async fn find(
+        &self,
+        collection: &str,
+        conditions: Vec<QueryCondition>,
+        options: Option<QueryOptions>,
+        alias: Option<&str>,
+    ) -> QuickDbResult<String>;
+    
+    /// 更新记录
+    async fn update(
+        &self,
+        collection: &str,
+        conditions: Vec<QueryCondition>,
+        updates: HashMap<String, DataValue>,
+        alias: Option<&str>,
+    ) -> QuickDbResult<u64>;
+    
+    /// 根据ID更新记录
+    async fn update_by_id(
+        &self,
+        collection: &str,
+        id: &str,
+        updates: HashMap<String, DataValue>,
+        alias: Option<&str>,
+    ) -> QuickDbResult<bool>;
+    
+    /// 删除记录
+    async fn delete(
+        &self,
+        collection: &str,
+        conditions: Vec<QueryCondition>,
+        alias: Option<&str>,
+    ) -> QuickDbResult<u64>;
+    
+    /// 根据ID删除记录
+    async fn delete_by_id(
+        &self,
+        collection: &str,
+        id: &str,
+        alias: Option<&str>,
+    ) -> QuickDbResult<bool>;
+    
+    /// 统计记录数量
+    async fn count(
+        &self,
+        collection: &str,
+        conditions: Vec<QueryCondition>,
+        alias: Option<&str>,
+    ) -> QuickDbResult<u64>;
+    
+    /// 检查记录是否存在
+    async fn exists(
+        &self,
+        collection: &str,
+        conditions: Vec<QueryCondition>,
+        alias: Option<&str>,
+    ) -> QuickDbResult<bool>;
+}
+
+/// ODM操作请求类型
+#[derive(Debug)]
+pub enum OdmRequest {
+    Create {
+        collection: String,
+        data: HashMap<String, DataValue>,
+        alias: Option<String>,
+        response: oneshot::Sender<QuickDbResult<String>>,
+    },
+    FindById {
+        collection: String,
+        id: String,
+        alias: Option<String>,
+        response: oneshot::Sender<QuickDbResult<Option<String>>>,
+    },
+    Find {
+        collection: String,
+        conditions: Vec<QueryCondition>,
+        options: Option<QueryOptions>,
+        alias: Option<String>,
+        response: oneshot::Sender<QuickDbResult<String>>,
+    },
+    Update {
+        collection: String,
+        conditions: Vec<QueryCondition>,
+        updates: HashMap<String, DataValue>,
+        alias: Option<String>,
+        response: oneshot::Sender<QuickDbResult<u64>>,
+    },
+    UpdateById {
+        collection: String,
+        id: String,
+        updates: HashMap<String, DataValue>,
+        alias: Option<String>,
+        response: oneshot::Sender<QuickDbResult<bool>>,
+    },
+    Delete {
+        collection: String,
+        conditions: Vec<QueryCondition>,
+        alias: Option<String>,
+        response: oneshot::Sender<QuickDbResult<u64>>,
+    },
+    DeleteById {
+        collection: String,
+        id: String,
+        alias: Option<String>,
+        response: oneshot::Sender<QuickDbResult<bool>>,
+    },
+    Count {
+        collection: String,
+        conditions: Vec<QueryCondition>,
+        alias: Option<String>,
+        response: oneshot::Sender<QuickDbResult<u64>>,
+    },
+    Exists {
+        collection: String,
+        conditions: Vec<QueryCondition>,
+        alias: Option<String>,
+        response: oneshot::Sender<QuickDbResult<bool>>,
+    },
+}
+
+/// 异步ODM管理器 - 使用消息传递避免生命周期问题
+pub struct AsyncOdmManager {
+    /// 请求发送器
+    request_sender: mpsc::UnboundedSender<OdmRequest>,
+    /// 默认别名
+    default_alias: String,
+}
+
+impl AsyncOdmManager {
+    /// 创建新的异步ODM管理器
+    pub fn new() -> Self {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        
+        // 启动后台处理任务
+        tokio::spawn(Self::process_requests(receiver));
+        
+        info!("创建异步ODM管理器");
+        
+        Self {
+            request_sender: sender,
+            default_alias: "default".to_string(),
+        }
+    }
+    
+    /// 设置默认别名
+    pub fn set_default_alias(&mut self, alias: &str) {
+        info!("设置默认别名: {}", alias);
+        self.default_alias = alias.to_string();
+    }
+    
+    /// 获取实际使用的别名
+    fn get_actual_alias(&self, alias: Option<&str>) -> String {
+        alias.unwrap_or(&self.default_alias).to_string()
+    }
+    
+    /// 后台请求处理任务
+    async fn process_requests(mut receiver: mpsc::UnboundedReceiver<OdmRequest>) {
+        info!("启动ODM后台处理任务");
+        
+        while let Some(request) = receiver.recv().await {
+            match request {
+                OdmRequest::Create { collection, data, alias, response } => {
+                    let result = Self::handle_create(&collection, data, alias).await;
+                    let _ = response.send(result);
+                },
+                OdmRequest::FindById { collection, id, alias, response } => {
+                    let result = Self::handle_find_by_id(&collection, &id, alias).await;
+                    let _ = response.send(result);
+                },
+                OdmRequest::Find { collection, conditions, options, alias, response } => {
+                    let result = Self::handle_find(&collection, conditions, options, alias).await;
+                    let _ = response.send(result);
+                },
+                OdmRequest::Update { collection, conditions, updates, alias, response } => {
+                    let result = Self::handle_update(&collection, conditions, updates, alias).await;
+                    let _ = response.send(result);
+                },
+                OdmRequest::UpdateById { collection, id, updates, alias, response } => {
+                    let result = Self::handle_update_by_id(&collection, &id, updates, alias).await;
+                    let _ = response.send(result);
+                },
+                OdmRequest::Delete { collection, conditions, alias, response } => {
+                    let result = Self::handle_delete(&collection, conditions, alias).await;
+                    let _ = response.send(result);
+                },
+                OdmRequest::DeleteById { collection, id, alias, response } => {
+                    let result = Self::handle_delete_by_id(&collection, &id, alias).await;
+                    let _ = response.send(result);
+                },
+                OdmRequest::Count { collection, conditions, alias, response } => {
+                    let result = Self::handle_count(&collection, conditions, alias).await;
+                    let _ = response.send(result);
+                },
+                OdmRequest::Exists { collection, conditions, alias, response } => {
+                    let result = Self::handle_exists(&collection, conditions, alias).await;
+                    let _ = response.send(result);
+                },
+            }
+        }
+        
+        warn!("ODM后台处理任务结束");
+    }
+    
+    /// 处理创建请求
+    async fn handle_create(
+        collection: &str,
+        data: HashMap<String, DataValue>,
+        alias: Option<String>,
+    ) -> QuickDbResult<String> {
+        let actual_alias = alias.unwrap_or_else(|| "default".to_string());
+        debug!("处理创建请求: collection={}, alias={}", collection, actual_alias);
+        
+        let manager = get_global_pool_manager();
+        let connection_pools = manager.get_connection_pools();
+        let connection_pool = connection_pools.get(&actual_alias)
+            .ok_or_else(|| QuickDbError::AliasNotFound {
+                alias: actual_alias.clone(),
+            })?;
+        
+        // 创建oneshot通道用于接收响应
+        let (response_tx, response_rx) = oneshot::channel();
+        
+        // 发送DatabaseOperation::Create请求到连接池
+        let operation = crate::pool::DatabaseOperation::Create {
+            table: collection.to_string(),
+            data: data.clone(),
+            response: response_tx,
+        };
+        
+        connection_pool.operation_sender.send(operation)
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "连接池操作通道已关闭".to_string(),
+            })?;
+        
+        // 等待响应
+        let result = response_rx.await
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "等待连接池响应超时".to_string(),
+            })??;
+        
+        // 将结果序列化为JSON字符串
+        serde_json::to_string(&result)
+            .map_err(|e| QuickDbError::SerializationError { message: format!("序列化失败: {}", e) })
+    }
+    
+    /// 处理根据ID查询请求
+    async fn handle_find_by_id(
+        collection: &str,
+        id: &str,
+        alias: Option<String>,
+    ) -> QuickDbResult<Option<String>> {
+        let actual_alias = alias.unwrap_or_else(|| "default".to_string());
+        debug!("处理根据ID查询请求: collection={}, id={}, alias={}", collection, id, actual_alias);
+        
+        let manager = get_global_pool_manager();
+        let connection_pools = manager.get_connection_pools();
+        let connection_pool = connection_pools.get(&actual_alias)
+            .ok_or_else(|| QuickDbError::AliasNotFound {
+                alias: actual_alias.clone(),
+            })?;
+        
+        // 创建oneshot通道用于接收响应
+        let (response_tx, response_rx) = oneshot::channel();
+        
+        // 发送DatabaseOperation::FindById请求到连接池
+        let operation = DatabaseOperation::FindById {
+            table: collection.to_string(),
+            id: DataValue::String(id.to_string()),
+            response: response_tx,
+        };
+        
+        connection_pool.operation_sender.send(operation)
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "连接池操作通道已关闭".to_string(),
+            })?;
+        
+        // 等待响应
+        let result = response_rx.await
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "等待连接池响应超时".to_string(),
+            })??;
+        
+        if let Some(value) = result {
+            Ok(Some(serde_json::to_string(&value)
+                .map_err(|e| QuickDbError::SerializationError { message: format!("序列化失败: {}", e) })?)
+            )
+        } else {
+            Ok(None)
+        }
+    }
+    
+    /// 处理查询请求
+    async fn handle_find(
+        collection: &str,
+        conditions: Vec<QueryCondition>,
+        options: Option<QueryOptions>,
+        alias: Option<String>,
+    ) -> QuickDbResult<String> {
+        let actual_alias = alias.unwrap_or_else(|| "default".to_string());
+        debug!("处理查询请求: collection={}, alias={}", collection, actual_alias);
+        
+        let manager = get_global_pool_manager();
+        let connection_pools = manager.get_connection_pools();
+        let connection_pool = connection_pools.get(&actual_alias)
+            .ok_or_else(|| QuickDbError::AliasNotFound {
+                alias: actual_alias.clone(),
+            })?;
+        
+        // 创建oneshot通道用于接收响应
+        let (response_tx, response_rx) = oneshot::channel();
+        
+        // 发送DatabaseOperation::Find请求到连接池
+        let operation = DatabaseOperation::Find {
+            table: collection.to_string(),
+            conditions,
+            options: options.unwrap_or_default(),
+            response: response_tx,
+        };
+        
+        connection_pool.operation_sender.send(operation)
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "连接池操作通道已关闭".to_string(),
+            })?;
+        
+        // 等待响应
+        let result = response_rx.await
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "等待连接池响应超时".to_string(),
+            })??;
+        
+        serde_json::to_string(&result)
+            .map_err(|e| QuickDbError::SerializationError { message: format!("序列化失败: {}", e) })
+    }
+    
+    /// 处理更新请求
+    async fn handle_update(
+        collection: &str,
+        conditions: Vec<QueryCondition>,
+        updates: HashMap<String, DataValue>,
+        alias: Option<String>,
+    ) -> QuickDbResult<u64> {
+        let actual_alias = alias.unwrap_or_else(|| "default".to_string());
+        debug!("处理更新请求: collection={}, alias={}", collection, actual_alias);
+        
+        let manager = get_global_pool_manager();
+        let connection_pools = manager.get_connection_pools();
+        let connection_pool = connection_pools.get(&actual_alias)
+            .ok_or_else(|| QuickDbError::AliasNotFound {
+                alias: actual_alias.clone(),
+            })?;
+        
+        // 创建oneshot通道用于接收响应
+        let (response_tx, response_rx) = oneshot::channel();
+        
+        // 发送DatabaseOperation::Update请求到连接池
+        let operation = DatabaseOperation::Update {
+            table: collection.to_string(),
+            conditions,
+            data: updates,
+            response: response_tx,
+        };
+        
+        connection_pool.operation_sender.send(operation)
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "连接池操作通道已关闭".to_string(),
+            })?;
+        
+        // 等待响应
+        let affected_rows = response_rx.await
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "等待连接池响应超时".to_string(),
+            })??;
+        
+        Ok(affected_rows)
+    }
+    
+    /// 处理根据ID更新请求
+    async fn handle_update_by_id(
+        collection: &str,
+        id: &str,
+        updates: HashMap<String, DataValue>,
+        alias: Option<String>,
+    ) -> QuickDbResult<bool> {
+        let actual_alias = alias.unwrap_or_else(|| "default".to_string());
+        debug!("处理根据ID更新请求: collection={}, id={}, alias={}", collection, id, actual_alias);
+        
+        let manager = get_global_pool_manager();
+        let connection_pools = manager.get_connection_pools();
+        let connection_pool = connection_pools.get(&actual_alias)
+            .ok_or_else(|| QuickDbError::AliasNotFound {
+                alias: actual_alias.clone(),
+            })?;
+        
+        // 创建oneshot通道用于接收响应
+        let (response_tx, response_rx) = oneshot::channel();
+        
+        // 发送DatabaseOperation::UpdateById请求到连接池
+        let operation = DatabaseOperation::UpdateById {
+            table: collection.to_string(),
+            id: DataValue::String(id.to_string()),
+            data: updates,
+            response: response_tx,
+        };
+        
+        connection_pool.operation_sender.send(operation)
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "连接池操作通道已关闭".to_string(),
+            })?;
+        
+        // 等待响应
+        let result = response_rx.await
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "等待连接池响应超时".to_string(),
+            })??;
+        
+        Ok(result)
+    }
+    
+    /// 处理删除请求
+    async fn handle_delete(
+        collection: &str,
+        conditions: Vec<QueryCondition>,
+        alias: Option<String>,
+    ) -> QuickDbResult<u64> {
+        let actual_alias = alias.unwrap_or_else(|| "default".to_string());
+        debug!("处理删除请求: collection={}, alias={}", collection, actual_alias);
+        
+        let manager = get_global_pool_manager();
+        let connection_pools = manager.get_connection_pools();
+        let connection_pool = connection_pools.get(&actual_alias)
+            .ok_or_else(|| QuickDbError::AliasNotFound {
+                alias: actual_alias.clone(),
+            })?;
+        
+        // 创建oneshot通道用于接收响应
+        let (response_tx, response_rx) = oneshot::channel();
+        
+        // 发送DatabaseOperation::Delete请求到连接池
+        let operation = DatabaseOperation::Delete {
+            table: collection.to_string(),
+            conditions,
+            response: response_tx,
+        };
+        
+        connection_pool.operation_sender.send(operation)
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "连接池操作通道已关闭".to_string(),
+            })?;
+        
+        // 等待响应
+        let affected_rows = response_rx.await
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "等待连接池响应超时".to_string(),
+            })??;
+        
+        Ok(affected_rows)
+    }
+    
+    /// 处理根据ID删除请求
+    async fn handle_delete_by_id(
+        collection: &str,
+        id: &str,
+        alias: Option<String>,
+    ) -> QuickDbResult<bool> {
+        let actual_alias = alias.unwrap_or_else(|| "default".to_string());
+        debug!("处理根据ID删除请求: collection={}, id={}, alias={}", collection, id, actual_alias);
+        
+        let manager = get_global_pool_manager();
+        let connection_pools = manager.get_connection_pools();
+        let connection_pool = connection_pools.get(&actual_alias)
+            .ok_or_else(|| QuickDbError::AliasNotFound {
+                alias: actual_alias.clone(),
+            })?;
+        
+        // 创建oneshot通道用于接收响应
+        let (response_tx, response_rx) = oneshot::channel();
+        
+        // 发送DatabaseOperation::DeleteById请求到连接池
+        let operation = DatabaseOperation::DeleteById {
+            table: collection.to_string(),
+            id: DataValue::String(id.to_string()),
+            response: response_tx,
+        };
+        
+        connection_pool.operation_sender.send(operation)
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "连接池操作通道已关闭".to_string(),
+            })?;
+        
+        // 等待响应
+        let result = response_rx.await
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "等待连接池响应超时".to_string(),
+            })??;
+        
+        Ok(result)
+    }
+    
+    /// 处理计数请求
+    async fn handle_count(
+        collection: &str,
+        conditions: Vec<QueryCondition>,
+        alias: Option<String>,
+    ) -> QuickDbResult<u64> {
+        let actual_alias = alias.unwrap_or_else(|| "default".to_string());
+        debug!("处理计数请求: collection={}, alias={}", collection, actual_alias);
+        
+        let manager = get_global_pool_manager();
+        let connection_pools = manager.get_connection_pools();
+        let connection_pool = connection_pools.get(&actual_alias)
+            .ok_or_else(|| QuickDbError::AliasNotFound {
+                alias: actual_alias.clone(),
+            })?;
+        
+        // 创建oneshot通道用于接收响应
+        let (response_tx, response_rx) = oneshot::channel();
+        
+        // 发送DatabaseOperation::Count请求到连接池
+        let operation = DatabaseOperation::Count {
+            table: collection.to_string(),
+            conditions,
+            response: response_tx,
+        };
+        
+        connection_pool.operation_sender.send(operation)
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "连接池操作通道已关闭".to_string(),
+            })?;
+        
+        // 等待响应
+        let count = response_rx.await
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "等待连接池响应超时".to_string(),
+            })??;
+        
+        Ok(count)
+    }
+    
+    /// 处理存在性检查请求
+    async fn handle_exists(
+        collection: &str,
+        conditions: Vec<QueryCondition>,
+        alias: Option<String>,
+    ) -> QuickDbResult<bool> {
+        let actual_alias = alias.unwrap_or_else(|| "default".to_string());
+        debug!("处理存在性检查请求: collection={}, alias={}", collection, actual_alias);
+        
+        let manager = get_global_pool_manager();
+        let connection_pools = manager.get_connection_pools();
+        let connection_pool = connection_pools.get(&actual_alias)
+            .ok_or_else(|| QuickDbError::AliasNotFound {
+                alias: actual_alias.clone(),
+            })?;
+        
+        // 使用生产者/消费者模式发送操作到连接池
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let operation = DatabaseOperation::Exists {
+            table: collection.to_string(),
+            conditions,
+            response: tx,
+        };
+        
+        connection_pool.operation_sender.send(operation)
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "连接池操作通道已关闭".to_string(),
+            })?;
+        
+        let result = rx.await
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "等待数据库操作结果超时".to_string(),
+            })??;
+        
+        Ok(result)
+    }
+}
+
+/// 异步ODM操作接口实现
+#[async_trait]
+impl OdmOperations for AsyncOdmManager {
+    async fn create(
+        &self,
+        collection: &str,
+        data: HashMap<String, DataValue>,
+        alias: Option<&str>,
+    ) -> QuickDbResult<String> {
+        let (sender, receiver) = oneshot::channel();
+        
+        let request = OdmRequest::Create {
+            collection: collection.to_string(),
+            data,
+            alias: alias.map(|s| s.to_string()),
+            response: sender,
+        };
+        
+        self.request_sender.send(request)
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "ODM后台任务已停止".to_string(),
+            })?;
+        
+        receiver.await
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "ODM请求处理失败".to_string(),
+            })?
+    }
+    
+    async fn find_by_id(
+        &self,
+        collection: &str,
+        id: &str,
+        alias: Option<&str>,
+    ) -> QuickDbResult<Option<String>> {
+        let (sender, receiver) = oneshot::channel();
+        
+        let request = OdmRequest::FindById {
+            collection: collection.to_string(),
+            id: id.to_string(),
+            alias: alias.map(|s| s.to_string()),
+            response: sender,
+        };
+        
+        self.request_sender.send(request)
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "ODM后台任务已停止".to_string(),
+            })?;
+        
+        receiver.await
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "ODM请求处理失败".to_string(),
+            })?
+    }
+    
+    async fn find(
+        &self,
+        collection: &str,
+        conditions: Vec<QueryCondition>,
+        options: Option<QueryOptions>,
+        alias: Option<&str>,
+    ) -> QuickDbResult<String> {
+        let (sender, receiver) = oneshot::channel();
+        
+        let request = OdmRequest::Find {
+            collection: collection.to_string(),
+            conditions,
+            options,
+            alias: alias.map(|s| s.to_string()),
+            response: sender,
+        };
+        
+        self.request_sender.send(request)
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "ODM后台任务已停止".to_string(),
+            })?;
+        
+        receiver.await
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "ODM请求处理失败".to_string(),
+            })?
+    }
+    
+    async fn update(
+        &self,
+        collection: &str,
+        conditions: Vec<QueryCondition>,
+        updates: HashMap<String, DataValue>,
+        alias: Option<&str>,
+    ) -> QuickDbResult<u64> {
+        let (sender, receiver) = oneshot::channel();
+        
+        let request = OdmRequest::Update {
+            collection: collection.to_string(),
+            conditions,
+            updates,
+            alias: alias.map(|s| s.to_string()),
+            response: sender,
+        };
+        
+        self.request_sender.send(request)
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "ODM后台任务已停止".to_string(),
+            })?;
+        
+        receiver.await
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "ODM请求处理失败".to_string(),
+            })?
+    }
+    
+    async fn update_by_id(
+        &self,
+        collection: &str,
+        id: &str,
+        updates: HashMap<String, DataValue>,
+        alias: Option<&str>,
+    ) -> QuickDbResult<bool> {
+        let (sender, receiver) = oneshot::channel();
+        
+        let request = OdmRequest::UpdateById {
+            collection: collection.to_string(),
+            id: id.to_string(),
+            updates,
+            alias: alias.map(|s| s.to_string()),
+            response: sender,
+        };
+        
+        self.request_sender.send(request)
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "ODM后台任务已停止".to_string(),
+            })?;
+        
+        receiver.await
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "ODM请求处理失败".to_string(),
+            })?
+    }
+    
+    async fn delete(
+        &self,
+        collection: &str,
+        conditions: Vec<QueryCondition>,
+        alias: Option<&str>,
+    ) -> QuickDbResult<u64> {
+        let (sender, receiver) = oneshot::channel();
+        
+        let request = OdmRequest::Delete {
+            collection: collection.to_string(),
+            conditions,
+            alias: alias.map(|s| s.to_string()),
+            response: sender,
+        };
+        
+        self.request_sender.send(request)
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "ODM后台任务已停止".to_string(),
+            })?;
+        
+        receiver.await
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "ODM请求处理失败".to_string(),
+            })?
+    }
+    
+    async fn delete_by_id(
+        &self,
+        collection: &str,
+        id: &str,
+        alias: Option<&str>,
+    ) -> QuickDbResult<bool> {
+        let (sender, receiver) = oneshot::channel();
+        
+        let request = OdmRequest::DeleteById {
+            collection: collection.to_string(),
+            id: id.to_string(),
+            alias: alias.map(|s| s.to_string()),
+            response: sender,
+        };
+        
+        self.request_sender.send(request)
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "ODM后台任务已停止".to_string(),
+            })?;
+        
+        receiver.await
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "ODM请求处理失败".to_string(),
+            })?
+    }
+    
+    async fn count(
+        &self,
+        collection: &str,
+        conditions: Vec<QueryCondition>,
+        alias: Option<&str>,
+    ) -> QuickDbResult<u64> {
+        let (sender, receiver) = oneshot::channel();
+        
+        let request = OdmRequest::Count {
+            collection: collection.to_string(),
+            conditions,
+            alias: alias.map(|s| s.to_string()),
+            response: sender,
+        };
+        
+        self.request_sender.send(request)
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "ODM后台任务已停止".to_string(),
+            })?;
+        
+        receiver.await
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "ODM请求处理失败".to_string(),
+            })?
+    }
+    
+    async fn exists(
+        &self,
+        collection: &str,
+        conditions: Vec<QueryCondition>,
+        alias: Option<&str>,
+    ) -> QuickDbResult<bool> {
+        let (sender, receiver) = oneshot::channel();
+        
+        let request = OdmRequest::Exists {
+            collection: collection.to_string(),
+            conditions,
+            alias: alias.map(|s| s.to_string()),
+            response: sender,
+        };
+        
+        self.request_sender.send(request)
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "ODM后台任务已停止".to_string(),
+            })?;
+        
+        receiver.await
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "ODM请求处理失败".to_string(),
+            })?
+    }
+}
+
+/// 全局异步ODM管理器实例
+static ASYNC_ODM_MANAGER: once_cell::sync::Lazy<tokio::sync::RwLock<AsyncOdmManager>> = 
+    once_cell::sync::Lazy::new(|| {
+        tokio::sync::RwLock::new(AsyncOdmManager::new())
+    });
+
+/// 获取全局ODM管理器
+pub async fn get_odm_manager() -> tokio::sync::RwLockReadGuard<'static, AsyncOdmManager> {
+    ASYNC_ODM_MANAGER.read().await
+}
+
+/// 获取可变的全局ODM管理器
+pub async fn get_odm_manager_mut() -> tokio::sync::RwLockWriteGuard<'static, AsyncOdmManager> {
+    ASYNC_ODM_MANAGER.write().await
+}
+
+/// 便捷函数：创建记录
+pub async fn create(
+    collection: &str,
+    data: HashMap<String, DataValue>,
+    alias: Option<&str>,
+) -> QuickDbResult<String> {
+    let manager = get_odm_manager().await;
+    manager.create(collection, data, alias).await
+}
+
+/// 便捷函数：根据ID查询记录
+pub async fn find_by_id(
+    collection: &str,
+    id: &str,
+    alias: Option<&str>,
+) -> QuickDbResult<Option<String>> {
+    let manager = get_odm_manager().await;
+    manager.find_by_id(collection, id, alias).await
+}
+
+/// 便捷函数：查询记录
+pub async fn find(
+    collection: &str,
+    conditions: Vec<QueryCondition>,
+    options: Option<QueryOptions>,
+    alias: Option<&str>,
+) -> QuickDbResult<String> {
+    let manager = get_odm_manager().await;
+    manager.find(collection, conditions, options, alias).await
+}
+
+/// 便捷函数：更新记录
+pub async fn update(
+    collection: &str,
+    conditions: Vec<QueryCondition>,
+    updates: HashMap<String, DataValue>,
+    alias: Option<&str>,
+) -> QuickDbResult<u64> {
+    let manager = get_odm_manager().await;
+    manager.update(collection, conditions, updates, alias).await
+}
+
+/// 便捷函数：根据ID更新记录
+pub async fn update_by_id(
+    collection: &str,
+    id: &str,
+    updates: HashMap<String, DataValue>,
+    alias: Option<&str>,
+) -> QuickDbResult<bool> {
+    let manager = get_odm_manager().await;
+    manager.update_by_id(collection, id, updates, alias).await
+}
+
+/// 便捷函数：删除记录
+pub async fn delete(
+    collection: &str,
+    conditions: Vec<QueryCondition>,
+    alias: Option<&str>,
+) -> QuickDbResult<u64> {
+    let manager = get_odm_manager().await;
+    manager.delete(collection, conditions, alias).await
+}
+
+/// 便捷函数：根据ID删除记录
+pub async fn delete_by_id(
+    collection: &str,
+    id: &str,
+    alias: Option<&str>,
+) -> QuickDbResult<bool> {
+    let manager = get_odm_manager().await;
+    manager.delete_by_id(collection, id, alias).await
+}
+
+/// 便捷函数：统计记录数量
+pub async fn count(
+    collection: &str,
+    conditions: Vec<QueryCondition>,
+    alias: Option<&str>,
+) -> QuickDbResult<u64> {
+    let manager = get_odm_manager().await;
+    manager.count(collection, conditions, alias).await
+}
+
+/// 便捷函数：检查记录是否存在
+pub async fn exists(
+    collection: &str,
+    conditions: Vec<QueryCondition>,
+    alias: Option<&str>,
+) -> QuickDbResult<bool> {
+    let manager = get_odm_manager().await;
+    manager.exists(collection, conditions, alias).await
+}

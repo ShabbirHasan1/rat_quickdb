@@ -1,0 +1,958 @@
+//! 连接池模块
+//!
+//! 基于生产者/消费者模式的高性能数据库连接池
+//! SQLite: 单线程队列模式，避免锁竞争
+//! MySQL/PostgreSQL/MongoDB: 多连接长连接池，支持保活和重试
+
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use std::collections::HashMap;
+use crossbeam_queue::SegQueue;
+use tokio::sync::{mpsc, oneshot};
+use tokio::time::timeout;
+use uuid::Uuid;
+use serde_json::Value;
+use zerg_creep::{debug, info, warn, error};
+
+use crate::types::*;
+use crate::error::{QuickDbError, QuickDbResult};
+use crate::model::FieldType;
+
+/// 池化连接 - 用于兼容旧接口
+#[derive(Debug, Clone)]
+pub struct PooledConnection {
+    /// 连接ID
+    pub id: String,
+    /// 数据库类型
+    pub db_type: DatabaseType,
+    /// 数据库别名（用于兼容manager.rs）
+    pub alias: String,
+}
+
+/// 数据库操作请求
+#[derive(Debug)]
+pub enum DatabaseOperation {
+    /// 创建记录
+    Create {
+        table: String,
+        data: HashMap<String, DataValue>,
+        response: oneshot::Sender<QuickDbResult<serde_json::Value>>,
+    },
+    /// 根据ID查找记录
+    FindById {
+        table: String,
+        id: DataValue,
+        response: oneshot::Sender<QuickDbResult<Option<serde_json::Value>>>,
+    },
+    /// 查找记录
+    Find {
+        table: String,
+        conditions: Vec<QueryCondition>,
+        options: QueryOptions,
+        response: oneshot::Sender<QuickDbResult<Vec<Value>>>,
+    },
+    /// 更新记录
+    Update {
+        table: String,
+        conditions: Vec<QueryCondition>,
+        data: HashMap<String, DataValue>,
+        response: oneshot::Sender<QuickDbResult<u64>>,
+    },
+    /// 根据ID更新记录
+    UpdateById {
+        table: String,
+        id: DataValue,
+        data: HashMap<String, DataValue>,
+        response: oneshot::Sender<QuickDbResult<bool>>,
+    },
+    /// 删除记录
+    Delete {
+        table: String,
+        conditions: Vec<QueryCondition>,
+        response: oneshot::Sender<QuickDbResult<u64>>,
+    },
+    /// 根据ID删除记录
+    DeleteById {
+        table: String,
+        id: DataValue,
+        response: oneshot::Sender<QuickDbResult<bool>>,
+    },
+    /// 统计记录
+    Count {
+        table: String,
+        conditions: Vec<QueryCondition>,
+        response: oneshot::Sender<QuickDbResult<u64>>,
+    },
+    /// 检查存在
+    Exists {
+        table: String,
+        conditions: Vec<QueryCondition>,
+        response: oneshot::Sender<QuickDbResult<bool>>,
+    },
+    /// 创建表
+    CreateTable {
+        table: String,
+        fields: HashMap<String, FieldType>,
+        response: oneshot::Sender<QuickDbResult<()>>,
+    },
+    /// 创建索引
+    CreateIndex {
+        table: String,
+        index_name: String,
+        fields: Vec<String>,
+        unique: bool,
+        response: oneshot::Sender<QuickDbResult<()>>,
+    },
+}
+
+/// 原生数据库连接枚举 - 直接持有数据库连接，不使用Arc包装
+#[derive(Debug)]
+pub enum DatabaseConnection {
+    #[cfg(feature = "sqlite")]
+    SQLite(sqlx::SqlitePool),
+    
+    #[cfg(feature = "postgresql")]
+    PostgreSQL(sqlx::PgPool),
+    
+    #[cfg(feature = "mysql")]
+    MySQL(sqlx::MySqlPool),
+    
+    #[cfg(feature = "mongodb")]
+    MongoDB(mongodb::Database),
+}
+
+/// 连接工作器 - 持有单个数据库连接并处理操作
+#[derive(Debug)]
+pub struct ConnectionWorker {
+    /// 工作器ID
+    pub id: String,
+    /// 数据库连接
+    pub connection: DatabaseConnection,
+    /// 连接创建时间
+    pub created_at: Instant,
+    /// 最后使用时间
+    pub last_used: Instant,
+    /// 重试次数
+    pub retry_count: u32,
+    /// 数据库类型
+    pub db_type: DatabaseType,
+}
+
+/// 连接池配置扩展
+#[derive(Debug, Clone)]
+pub struct ExtendedPoolConfig {
+    /// 基础连接池配置
+    pub base: PoolConfig,
+    /// 最大重试次数
+    pub max_retries: u32,
+    /// 重试间隔（毫秒）
+    pub retry_interval_ms: u64,
+    /// 保活检测间隔（秒）
+    pub keepalive_interval_sec: u64,
+    /// 连接健康检查超时（秒）
+    pub health_check_timeout_sec: u64,
+}
+
+impl Default for ExtendedPoolConfig {
+    fn default() -> Self {
+        Self {
+            base: PoolConfig::default(),
+            max_retries: 3,
+            retry_interval_ms: 1000,
+            keepalive_interval_sec: 30,
+            health_check_timeout_sec: 5,
+        }
+    }
+}
+
+/// 新的连接池 - 基于生产者/消费者模式
+#[derive(Debug)]
+pub struct ConnectionPool {
+    /// 数据库配置
+    pub db_config: DatabaseConfig,
+    /// 扩展连接池配置
+    pub config: ExtendedPoolConfig,
+    /// 操作请求发送器
+    pub operation_sender: mpsc::UnboundedSender<DatabaseOperation>,
+    /// 数据库类型
+    pub db_type: DatabaseType,
+}
+
+/// SQLite 单线程工作器
+pub struct SqliteWorker {
+    /// 数据库连接
+    connection: DatabaseConnection,
+    /// 操作接收器
+    operation_receiver: mpsc::UnboundedReceiver<DatabaseOperation>,
+    /// 数据库配置
+    db_config: DatabaseConfig,
+    /// 重试计数
+    retry_count: u32,
+    /// 最大重试次数
+    max_retries: u32,
+}
+
+/// 多连接工作器管理器（用于MySQL/PostgreSQL/MongoDB）
+pub struct MultiConnectionManager {
+    /// 工作器列表
+    workers: Vec<ConnectionWorker>,
+    /// 可用工作器队列
+    available_workers: SegQueue<usize>,
+    /// 操作接收器
+    operation_receiver: mpsc::UnboundedReceiver<DatabaseOperation>,
+    /// 数据库配置
+    db_config: DatabaseConfig,
+    /// 扩展配置
+    config: ExtendedPoolConfig,
+    /// 保活任务句柄
+    keepalive_handle: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl SqliteWorker {
+    /// 运行SQLite工作器
+    pub async fn run(mut self) {
+        info!("SQLite工作器开始运行: 别名={}", self.db_config.alias);
+        
+        while let Some(operation) = self.operation_receiver.recv().await {
+            if let Err(e) = self.handle_operation(operation).await {
+                error!("SQLite操作处理失败: {}", e);
+                
+                // 重试逻辑
+                if self.retry_count < self.max_retries {
+                    self.retry_count += 1;
+                    warn!("SQLite操作重试 {}/{}", self.retry_count, self.max_retries);
+                    tokio::time::sleep(Duration::from_millis(1000)).await;
+                } else {
+                    error!("SQLite操作重试次数超限，程序退出");
+                    std::process::exit(1);
+                }
+            } else {
+                self.retry_count = 0; // 重置重试计数
+            }
+        }
+        
+        info!("SQLite工作器停止运行");
+    }
+    
+    /// 处理数据库操作
+    async fn handle_operation(&mut self, operation: DatabaseOperation) -> QuickDbResult<()> {
+        use crate::adapter::{create_adapter, DatabaseAdapter};
+        
+        let adapter = create_adapter(&self.db_config.db_type)?;
+        
+        match operation {
+            DatabaseOperation::Create { table, data, response } => {
+                let result = adapter.create(&self.connection, &table, &data).await;
+                let _ = response.send(result);
+            },
+            DatabaseOperation::FindById { table, id, response } => {
+                let result = adapter.find_by_id(&self.connection, &table, &id).await;
+                let _ = response.send(result);
+            },
+            DatabaseOperation::Find { table, conditions, options, response } => {
+                let result = adapter.find(&self.connection, &table, &conditions, &options).await;
+                let _ = response.send(result);
+            },
+            DatabaseOperation::Update { table, conditions, data, response } => {
+                let result = adapter.update(&self.connection, &table, &conditions, &data).await;
+                let _ = response.send(result);
+            },
+            DatabaseOperation::UpdateById { table, id, data, response } => {
+                let result = adapter.update_by_id(&self.connection, &table, &id, &data).await;
+                let _ = response.send(result);
+            },
+            DatabaseOperation::Delete { table, conditions, response } => {
+                let result = adapter.delete(&self.connection, &table, &conditions).await;
+                let _ = response.send(result);
+            },
+            DatabaseOperation::DeleteById { table, id, response } => {
+                let result = adapter.delete_by_id(&self.connection, &table, &id).await;
+                let _ = response.send(result);
+            },
+            DatabaseOperation::Count { table, conditions, response } => {
+                let result = adapter.count(&self.connection, &table, &conditions).await;
+                let _ = response.send(result);
+            },
+            DatabaseOperation::Exists { table, conditions, response } => {
+                let result = adapter.exists(&self.connection, &table, &conditions).await;
+                let _ = response.send(result);
+            },
+            DatabaseOperation::CreateTable { table, fields, response } => {
+                let result = adapter.create_table(&self.connection, &table, &fields).await;
+                let _ = response.send(result);
+            },
+            DatabaseOperation::CreateIndex { table, index_name, fields, unique, response } => {
+                let result = adapter.create_index(&self.connection, &table, &index_name, &fields, unique).await;
+                let _ = response.send(result);
+            },
+        }
+        
+        Ok(())
+    }
+}
+
+impl MultiConnectionManager {
+    /// 创建初始连接
+    pub async fn create_initial_connections(&mut self) -> QuickDbResult<()> {
+        info!("创建初始连接池，大小: {}", self.config.base.max_connections);
+        
+        for i in 0..self.config.base.max_connections {
+            let worker = self.create_connection_worker(i as usize).await?;
+            self.workers.push(worker);
+            self.available_workers.push(i as usize);
+        }
+        
+        Ok(())
+    }
+    
+    /// 创建连接工作器
+    async fn create_connection_worker(&self, index: usize) -> QuickDbResult<ConnectionWorker> {
+        let connection = self.create_database_connection().await?;
+        
+        Ok(ConnectionWorker {
+            id: format!("{}-worker-{}", self.db_config.alias, index),
+            connection,
+            created_at: Instant::now(),
+            last_used: Instant::now(),
+            retry_count: 0,
+            db_type: self.db_config.db_type.clone(),
+        })
+    }
+    
+    /// 创建数据库连接
+    async fn create_database_connection(&self) -> QuickDbResult<DatabaseConnection> {
+        match &self.db_config.db_type {
+            #[cfg(feature = "postgresql")]
+            DatabaseType::PostgreSQL => {
+                let connection_string = match &self.db_config.connection {
+                    crate::types::ConnectionConfig::PostgreSQL { host, port, database, username, password } => {
+                        format!("postgresql://{}:{}@{}:{}/{}", username, password, host, port, database)
+                    }
+                    _ => return Err(QuickDbError::ConfigError {
+                        message: "PostgreSQL连接配置类型不匹配".to_string(),
+                    }),
+                };
+                
+                let pool = sqlx::PgPool::connect(&connection_string)
+                    .await
+                    .map_err(|e| QuickDbError::ConnectionError {
+                        message: format!("PostgreSQL连接失败: {}", e),
+                    })?;
+                Ok(DatabaseConnection::PostgreSQL(pool))
+            },
+            #[cfg(feature = "mysql")]
+            DatabaseType::MySQL => {
+                let connection_string = match &self.db_config.connection {
+                    crate::types::ConnectionConfig::MySQL { host, port, database, username, password } => {
+                        format!("mysql://{}:{}@{}:{}/{}", username, password, host, port, database)
+                    }
+                    _ => return Err(QuickDbError::ConfigError {
+                        message: "MySQL连接配置类型不匹配".to_string(),
+                    }),
+                };
+                
+                let pool = sqlx::MySqlPool::connect(&connection_string)
+                    .await
+                    .map_err(|e| QuickDbError::ConnectionError {
+                        message: format!("MySQL连接失败: {}", e),
+                    })?;
+                Ok(DatabaseConnection::MySQL(pool))
+            },
+            #[cfg(feature = "mongodb")]
+            DatabaseType::MongoDB => {
+                let (connection_string, database_name) = match &self.db_config.connection {
+                    crate::types::ConnectionConfig::MongoDB { connection_string, database } => {
+                        (connection_string.clone(), database.clone())
+                    }
+                    _ => return Err(QuickDbError::ConfigError {
+                        message: "MongoDB连接配置类型不匹配".to_string(),
+                    }),
+                };
+                
+                let client = mongodb::Client::with_uri_str(&connection_string)
+                    .await
+                    .map_err(|e| QuickDbError::ConnectionError {
+                        message: format!("MongoDB连接失败: {}", e),
+                    })?;
+                let db = client.database(&database_name);
+                Ok(DatabaseConnection::MongoDB(db))
+            },
+            _ => Err(QuickDbError::ConfigError {
+                message: "不支持的数据库类型用于多连接管理器".to_string(),
+            }),
+        }
+    }
+    
+    /// 启动连接保活任务
+    pub fn start_keepalive_task(&mut self) {
+        let keepalive_interval = Duration::from_secs(self.config.keepalive_interval_sec);
+        let health_check_timeout = Duration::from_secs(self.config.health_check_timeout_sec);
+        
+        // 这里需要实现保活逻辑的占位符
+        let handle = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(keepalive_interval);
+            
+            loop {
+                interval.tick().await;
+                debug!("执行连接保活检查");
+                // TODO: 实现具体的保活逻辑
+            }
+        });
+        
+        self.keepalive_handle = Some(handle);
+    }
+    
+    /// 运行多连接管理器
+    pub async fn run(mut self) {
+        info!("多连接管理器开始运行: 别名={}", self.db_config.alias);
+        
+        // 创建初始连接
+        if let Err(e) = self.create_initial_connections().await {
+            error!("创建初始连接失败: {}", e);
+            return;
+        }
+        
+        // 启动保活任务
+        self.start_keepalive_task();
+        
+        while let Some(operation) = self.operation_receiver.recv().await {
+            if let Err(e) = self.handle_operation(operation).await {
+                error!("多连接操作处理失败: {}", e);
+            }
+        }
+        
+        info!("多连接管理器停止运行");
+    }
+    
+    /// 处理数据库操作
+    async fn handle_operation(&mut self, operation: DatabaseOperation) -> QuickDbResult<()> {
+        // 获取可用工作器
+        let worker_index = match self.available_workers.pop() {
+            Some(index) => index,
+            None => {
+                // 所有工作器都在使用中，等待或创建新连接
+                return Err(QuickDbError::ConnectionError {
+                    message: "所有连接都在使用中".to_string(),
+                });
+            }
+        };
+        
+        // 获取工作器的连接
+        let worker = &mut self.workers[worker_index];
+        worker.last_used = Instant::now();
+        
+        // 创建适配器
+        use crate::adapter::{create_adapter, DatabaseAdapter};
+        let adapter = create_adapter(&worker.db_type)?;
+        
+        // 处理具体操作
+        let result = match operation {
+            DatabaseOperation::Create { table, data, response } => {
+                let result = adapter.create(&worker.connection, &table, &data).await;
+                let _ = response.send(result);
+                Ok(())
+            },
+            DatabaseOperation::FindById { table, id, response } => {
+                let result = adapter.find_by_id(&worker.connection, &table, &id).await;
+                let _ = response.send(result);
+                Ok(())
+            },
+            DatabaseOperation::Find { table, conditions, options, response } => {
+                let result = adapter.find(&worker.connection, &table, &conditions, &options).await;
+                let _ = response.send(result);
+                Ok(())
+            },
+            DatabaseOperation::Update { table, conditions, data, response } => {
+                let result = adapter.update(&worker.connection, &table, &conditions, &data).await;
+                let _ = response.send(result);
+                Ok(())
+            },
+            DatabaseOperation::UpdateById { table, id, data, response } => {
+                let result = adapter.update_by_id(&worker.connection, &table, &id, &data).await;
+                let _ = response.send(result);
+                Ok(())
+            },
+            DatabaseOperation::Delete { table, conditions, response } => {
+                let result = adapter.delete(&worker.connection, &table, &conditions).await;
+                let _ = response.send(result);
+                Ok(())
+            },
+            DatabaseOperation::DeleteById { table, id, response } => {
+                let result = adapter.delete_by_id(&worker.connection, &table, &id).await;
+                let _ = response.send(result);
+                Ok(())
+            },
+            DatabaseOperation::Count { table, conditions, response } => {
+                let result = adapter.count(&worker.connection, &table, &conditions).await;
+                let _ = response.send(result);
+                Ok(())
+            },
+            DatabaseOperation::Exists { table, conditions, response } => {
+                let result = adapter.exists(&worker.connection, &table, &conditions).await;
+                let _ = response.send(result);
+                Ok(())
+            },
+            DatabaseOperation::CreateTable { table, fields, response } => {
+                let result = adapter.create_table(&worker.connection, &table, &fields).await;
+                let _ = response.send(result);
+                Ok(())
+            },
+            DatabaseOperation::CreateIndex { table, index_name, fields, unique, response } => {
+                let result = adapter.create_index(&worker.connection, &table, &index_name, &fields, unique).await;
+                let _ = response.send(result);
+                Ok(())
+            },
+        };
+        
+        // 处理连接错误和重试逻辑
+        if let Err(ref e) = result {
+            worker.retry_count += 1;
+            if worker.retry_count > self.config.max_retries {
+                error!("工作器 {} 重试次数超限: {}", worker.id, e);
+                // 重新创建连接
+                match self.create_connection_worker(worker_index).await {
+                    Ok(new_worker) => {
+                        self.workers[worker_index] = new_worker;
+                        info!("工作器 {} 连接已重新创建", worker_index);
+                    },
+                    Err(create_err) => {
+                        error!("重新创建工作器连接失败: {}", create_err);
+                        // 如果无法重新创建连接，程序退出
+                        std::process::exit(1);
+                    }
+                }
+            } else {
+                warn!("工作器 {} 操作失败，重试 {}/{}: {}", worker.id, worker.retry_count, self.config.max_retries, e);
+            }
+        } else {
+            // 操作成功，重置重试计数
+            worker.retry_count = 0;
+        }
+        
+        // 归还工作器
+        self.available_workers.push(worker_index);
+        
+        result
+    }
+}
+
+impl ConnectionPool {
+    /// 使用配置创建连接池
+    pub async fn with_config(db_config: DatabaseConfig, config: ExtendedPoolConfig) -> QuickDbResult<Self> {
+        let (operation_sender, operation_receiver) = mpsc::unbounded_channel();
+        
+        let pool = Self {
+            db_type: db_config.db_type.clone(),
+            db_config: db_config.clone(),
+            config: config.clone(),
+            operation_sender,
+        };
+        
+        // 根据数据库类型启动对应的工作器
+        match &db_config.db_type {
+            #[cfg(feature = "sqlite")]
+            DatabaseType::SQLite => {
+                pool.start_sqlite_worker(operation_receiver, db_config, config).await?;
+            },
+            _ => {
+                pool.start_multi_connection_manager(operation_receiver, db_config, config).await?;
+            }
+        }
+        
+        Ok(pool)
+    }
+    
+    /// 启动SQLite工作器
+    #[cfg(feature = "sqlite")]
+    async fn start_sqlite_worker(
+        &self,
+        operation_receiver: mpsc::UnboundedReceiver<DatabaseOperation>,
+        db_config: DatabaseConfig,
+        config: ExtendedPoolConfig,
+    ) -> QuickDbResult<()> {
+        let connection = self.create_sqlite_connection().await?;
+        
+        let worker = SqliteWorker {
+            connection,
+            operation_receiver,
+            db_config,
+            retry_count: 0,
+            max_retries: config.max_retries,
+        };
+        
+        // 启动工作器
+        tokio::spawn(async move {
+            worker.run().await;
+        });
+        
+        Ok(())
+    }
+    
+    /// 启动多连接管理器
+    async fn start_multi_connection_manager(
+        &self,
+        operation_receiver: mpsc::UnboundedReceiver<DatabaseOperation>,
+        db_config: DatabaseConfig,
+        config: ExtendedPoolConfig,
+    ) -> QuickDbResult<()> {
+        let manager = MultiConnectionManager {
+            workers: Vec::new(),
+            available_workers: SegQueue::new(),
+            operation_receiver,
+            db_config,
+            config,
+            keepalive_handle: None,
+        };
+        
+        // 启动管理器
+        tokio::spawn(async move {
+            manager.run().await;
+        });
+        
+        Ok(())
+    }
+    
+    /// 创建SQLite连接
+    #[cfg(feature = "sqlite")]
+    async fn create_sqlite_connection(&self) -> QuickDbResult<DatabaseConnection> {
+        let connection_string = match &self.db_config.connection {
+            crate::types::ConnectionConfig::SQLite { path, .. } => {
+                format!("sqlite:{}", path)
+            }
+            _ => return Err(QuickDbError::ConfigError {
+                message: "SQLite连接配置类型不匹配".to_string(),
+            }),
+        };
+        
+        let pool = sqlx::SqlitePool::connect(&connection_string)
+            .await
+            .map_err(|e| QuickDbError::ConnectionError {
+                message: format!("SQLite连接失败: {}", e),
+            })?;
+        Ok(DatabaseConnection::SQLite(pool))
+    }
+    
+    /// 发送操作请求并等待响应
+    async fn send_operation<T>(&self, operation: DatabaseOperation) -> QuickDbResult<T>
+    where
+        T: Send + 'static,
+    {
+        // 这是一个泛型占位符，实际实现需要根据具体操作类型来处理
+        Err(QuickDbError::QueryError {
+            message: "操作发送未实现".to_string(),
+        })
+    }
+    
+    /// 创建记录
+    pub async fn create(
+        &self,
+        table: &str,
+        data: &HashMap<String, DataValue>,
+    ) -> QuickDbResult<serde_json::Value> {
+        let (response_sender, response_receiver) = oneshot::channel();
+        
+        let operation = DatabaseOperation::Create {
+            table: table.to_string(),
+            data: data.clone(),
+            response: response_sender,
+        };
+        
+        self.operation_sender.send(operation)
+            .map_err(|_| QuickDbError::QueryError {
+                message: "发送操作失败".to_string(),
+            })?;
+        
+        response_receiver.await
+            .map_err(|_| QuickDbError::QueryError {
+                message: "接收响应失败".to_string(),
+            })?
+    }
+    
+    /// 根据ID查找记录
+    pub async fn find_by_id(
+        &self,
+        table: &str,
+        id: &DataValue,
+    ) -> QuickDbResult<Option<serde_json::Value>> {
+        let (response_sender, response_receiver) = oneshot::channel();
+        
+        let operation = DatabaseOperation::FindById {
+            table: table.to_string(),
+            id: id.clone(),
+            response: response_sender,
+        };
+        
+        self.operation_sender.send(operation)
+            .map_err(|_| QuickDbError::QueryError {
+                message: "发送操作失败".to_string(),
+            })?;
+        
+        response_receiver.await
+            .map_err(|_| QuickDbError::QueryError {
+                message: "接收响应失败".to_string(),
+            })?
+    }
+    
+    /// 查找记录
+    pub async fn find(
+        &self,
+        table: &str,
+        conditions: &[QueryCondition],
+        options: &QueryOptions,
+    ) -> QuickDbResult<Vec<serde_json::Value>> {
+        let (response_sender, response_receiver) = oneshot::channel();
+        
+        let operation = DatabaseOperation::Find {
+            table: table.to_string(),
+            conditions: conditions.to_vec(),
+            options: options.clone(),
+            response: response_sender,
+        };
+        
+        self.operation_sender.send(operation)
+            .map_err(|_| QuickDbError::QueryError {
+                message: "发送操作失败".to_string(),
+            })?;
+        
+        response_receiver.await
+            .map_err(|_| QuickDbError::QueryError {
+                message: "接收响应失败".to_string(),
+            })?
+    }
+    
+    /// 更新记录
+    pub async fn update(
+        &self,
+        table: &str,
+        conditions: &[QueryCondition],
+        data: &HashMap<String, DataValue>,
+    ) -> QuickDbResult<u64> {
+        let (response_sender, response_receiver) = oneshot::channel();
+        
+        let operation = DatabaseOperation::Update {
+            table: table.to_string(),
+            conditions: conditions.to_vec(),
+            data: data.clone(),
+            response: response_sender,
+        };
+        
+        self.operation_sender.send(operation)
+            .map_err(|_| QuickDbError::QueryError {
+                message: "发送操作失败".to_string(),
+            })?;
+        
+        response_receiver.await
+            .map_err(|_| QuickDbError::QueryError {
+                message: "接收响应失败".to_string(),
+            })?
+    }
+    
+    /// 根据ID更新记录
+    pub async fn update_by_id(
+        &self,
+        table: &str,
+        id: &DataValue,
+        data: &HashMap<String, DataValue>,
+    ) -> QuickDbResult<bool> {
+        let (response_sender, response_receiver) = oneshot::channel();
+        
+        let operation = DatabaseOperation::UpdateById {
+            table: table.to_string(),
+            id: id.clone(),
+            data: data.clone(),
+            response: response_sender,
+        };
+        
+        self.operation_sender.send(operation)
+            .map_err(|_| QuickDbError::QueryError {
+                message: "发送操作失败".to_string(),
+            })?;
+        
+        response_receiver.await
+            .map_err(|_| QuickDbError::QueryError {
+                message: "接收响应失败".to_string(),
+            })?
+    }
+    
+    /// 删除记录
+    pub async fn delete(
+        &self,
+        table: &str,
+        conditions: &[QueryCondition],
+    ) -> QuickDbResult<u64> {
+        let (response_sender, response_receiver) = oneshot::channel();
+        
+        let operation = DatabaseOperation::Delete {
+            table: table.to_string(),
+            conditions: conditions.to_vec(),
+            response: response_sender,
+        };
+        
+        self.operation_sender.send(operation)
+            .map_err(|_| QuickDbError::QueryError {
+                message: "发送操作失败".to_string(),
+            })?;
+        
+        response_receiver.await
+            .map_err(|_| QuickDbError::QueryError {
+                message: "接收响应失败".to_string(),
+            })?
+    }
+    
+    /// 根据ID删除记录
+    pub async fn delete_by_id(
+        &self,
+        table: &str,
+        id: &DataValue,
+    ) -> QuickDbResult<bool> {
+        let (response_sender, response_receiver) = oneshot::channel();
+        
+        let operation = DatabaseOperation::DeleteById {
+            table: table.to_string(),
+            id: id.clone(),
+            response: response_sender,
+        };
+        
+        self.operation_sender.send(operation)
+            .map_err(|_| QuickDbError::QueryError {
+                message: "发送操作失败".to_string(),
+            })?;
+        
+        response_receiver.await
+            .map_err(|_| QuickDbError::QueryError {
+                message: "接收响应失败".to_string(),
+            })?
+    }
+    
+    /// 统计记录
+    pub async fn count(
+        &self,
+        table: &str,
+        conditions: &[QueryCondition],
+    ) -> QuickDbResult<u64> {
+        let (response_sender, response_receiver) = oneshot::channel();
+        
+        let operation = DatabaseOperation::Count {
+            table: table.to_string(),
+            conditions: conditions.to_vec(),
+            response: response_sender,
+        };
+        
+        self.operation_sender.send(operation)
+            .map_err(|_| QuickDbError::QueryError {
+                message: "发送操作失败".to_string(),
+            })?;
+        
+        response_receiver.await
+            .map_err(|_| QuickDbError::QueryError {
+                message: "接收响应失败".to_string(),
+            })?
+    }
+    
+    /// 检查记录是否存在
+    pub async fn exists(
+        &self,
+        table: &str,
+        conditions: &[QueryCondition],
+    ) -> QuickDbResult<bool> {
+        let (response_sender, response_receiver) = oneshot::channel();
+        
+        let operation = DatabaseOperation::Exists {
+            table: table.to_string(),
+            conditions: conditions.to_vec(),
+            response: response_sender,
+        };
+        
+        self.operation_sender.send(operation)
+            .map_err(|_| QuickDbError::QueryError {
+                message: "发送操作失败".to_string(),
+            })?;
+        
+        response_receiver.await
+            .map_err(|_| QuickDbError::QueryError {
+                message: "接收响应失败".to_string(),
+            })?
+    }
+    
+    /// 创建表
+    pub async fn create_table(
+        &self,
+        table: &str,
+        fields: &HashMap<String, FieldType>,
+    ) -> QuickDbResult<()> {
+        let (response_sender, response_receiver) = oneshot::channel();
+        
+        let operation = DatabaseOperation::CreateTable {
+            table: table.to_string(),
+            fields: fields.clone(),
+            response: response_sender,
+        };
+        
+        self.operation_sender.send(operation)
+            .map_err(|_| QuickDbError::QueryError {
+                message: "发送操作失败".to_string(),
+            })?;
+        
+        response_receiver.await
+            .map_err(|_| QuickDbError::QueryError {
+                message: "接收响应失败".to_string(),
+            })?
+    }
+    
+    /// 创建索引
+    pub async fn create_index(
+        &self,
+        table: &str,
+        index_name: &str,
+        fields: &[String],
+        unique: bool,
+    ) -> QuickDbResult<()> {
+        let (response_sender, response_receiver) = oneshot::channel();
+        
+        let operation = DatabaseOperation::CreateIndex {
+            table: table.to_string(),
+            index_name: index_name.to_string(),
+            fields: fields.to_vec(),
+            unique,
+            response: response_sender,
+        };
+        
+        self.operation_sender.send(operation)
+            .map_err(|_| QuickDbError::QueryError {
+                message: "发送操作失败".to_string(),
+            })?;
+        
+        response_receiver.await
+            .map_err(|_| QuickDbError::QueryError {
+                message: "接收响应失败".to_string(),
+            })?
+    }
+    
+    /// 获取数据库类型
+    pub fn get_database_type(&self) -> &DatabaseType {
+        &self.db_config.db_type
+    }
+    
+    /// 获取连接（兼容旧接口）
+    pub async fn get_connection(&self) -> QuickDbResult<PooledConnection> {
+        // 在新架构中，我们不再直接返回连接
+        // 这个方法主要用于兼容性，返回一个虚拟连接
+        Ok(PooledConnection {
+            id: format!("{}-virtual", self.db_config.alias),
+            db_type: self.db_config.db_type.clone(),
+            alias: self.db_config.alias.clone(),
+        })
+    }
+    
+    /// 释放连接（兼容旧接口）
+    pub async fn release_connection(&self, _connection_id: &str) -> QuickDbResult<()> {
+        // 在新架构中，连接由工作器自动管理，这个方法为空实现
+        Ok(())
+    }
+    
+    /// 清理过期连接（兼容旧接口）
+    pub async fn cleanup_expired_connections(&self) {
+        // 在新架构中，连接由工作器自动管理，这个方法为空实现
+        debug!("清理过期连接（新架构中自动管理）");
+    }
+}
