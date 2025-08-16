@@ -383,12 +383,19 @@ impl SqliteWorker {
     
     /// 处理数据库操作
     async fn handle_operation(&mut self, operation: DatabaseOperation) -> QuickDbResult<()> {
-        use crate::adapter::{create_adapter, DatabaseAdapter};
+        use crate::adapter::{create_adapter, create_adapter_with_cache, DatabaseAdapter};
         
         // 执行健康检查
         self.perform_health_check().await;
         
-        let adapter = create_adapter(&self.db_config.db_type)?;
+        // 根据是否有缓存管理器选择适配器
+        let adapter = if let Some(cache_manager) = &self.cache_manager {
+            debug!("SQLite工作器使用缓存适配器");
+            create_adapter_with_cache(&self.db_config.db_type, cache_manager.clone())?
+        } else {
+            debug!("SQLite工作器使用普通适配器");
+            create_adapter(&self.db_config.db_type)?
+        };
         
         match operation {
             DatabaseOperation::Create { table, data, response } => {
@@ -638,8 +645,14 @@ impl MultiConnectionManager {
         worker.last_used = Instant::now();
         
         // 创建适配器
-        use crate::adapter::{create_adapter, DatabaseAdapter};
-        let adapter = create_adapter(&worker.db_type)?;
+        use crate::adapter::{create_adapter, create_adapter_with_cache, DatabaseAdapter};
+        let adapter = if let Some(cache_manager) = &self.cache_manager {
+            debug!("多连接管理器使用缓存适配器");
+            create_adapter_with_cache(&worker.db_type, cache_manager.clone())?
+        } else {
+            debug!("多连接管理器使用普通适配器");
+            create_adapter(&worker.db_type)?
+        };
         
         // 处理具体操作
         let result = match operation {
@@ -735,6 +748,15 @@ impl MultiConnectionManager {
 impl ConnectionPool {
     /// 使用配置创建连接池
     pub async fn with_config(db_config: DatabaseConfig, config: ExtendedPoolConfig) -> QuickDbResult<Self> {
+        Self::with_config_and_cache(db_config, config, None).await
+    }
+    
+    /// 使用配置和缓存管理器创建连接池
+    pub async fn with_config_and_cache(
+        db_config: DatabaseConfig, 
+        config: ExtendedPoolConfig,
+        cache_manager: Option<Arc<crate::cache::CacheManager>>
+    ) -> QuickDbResult<Self> {
         let (operation_sender, operation_receiver) = mpsc::unbounded_channel();
         
         let pool = Self {
@@ -742,7 +764,7 @@ impl ConnectionPool {
             db_config: db_config.clone(),
             config: config.clone(),
             operation_sender,
-            cache_manager: None,
+            cache_manager: cache_manager.clone(),
         };
         
         // 根据数据库类型启动对应的工作器

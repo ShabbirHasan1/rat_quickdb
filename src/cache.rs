@@ -7,7 +7,7 @@ use crate::types::{
     CacheConfig, CacheStrategy, CompressionAlgorithm, DataValue, IdType, QueryOptions, SortDirection,
 };
 use rat_memcache::RatMemCacheBuilder;
-use rat_memcache::config::{L1Config, TtlConfig, CompressionConfig};
+use rat_memcache::config::{L1Config, L2Config, TtlConfig, CompressionConfig};
 use rat_memcache::types::EvictionStrategy;
 use anyhow::{anyhow, Result};
 use rat_memcache::{RatMemCache, CacheOptions};
@@ -111,16 +111,79 @@ pub struct CacheManager {
 impl CacheManager {
     /// 创建新的缓存管理器
     pub async fn new(config: CacheConfig) -> Result<Self> {
-        let mut builder = RatMemCacheBuilder::new();
+        // 直接使用用户传入的配置，不使用预设配置
+        debug!("创建缓存管理器，配置: {:?}", config);
+        
+        let builder = RatMemCacheBuilder::new()
+            .l1_config(rat_memcache::config::L1Config {
+                max_memory: config.l1_config.max_memory_mb * 1024 * 1024, // 转换为字节
+                max_entries: config.l1_config.max_capacity,
+                eviction_strategy: match config.strategy {
+                    CacheStrategy::Lru => EvictionStrategy::Lru,
+                    CacheStrategy::Lfu => EvictionStrategy::Lfu,
+                    CacheStrategy::Fifo => EvictionStrategy::Fifo,
+                    CacheStrategy::Custom(_) => EvictionStrategy::Lru, // 默认使用LRU
+                },
+                enable_smart_transfer: true,
+                pool_size: 1000,
+            })
+            .l2_config(rat_memcache::config::L2Config {
+                enable_l2_cache: config.l2_config.is_some(),
+                data_dir: config.l2_config.as_ref().map(|c| PathBuf::from(&c.storage_path)),
+                max_disk_size: config.l2_config.as_ref().map(|c| c.max_disk_mb as u64 * 1024 * 1024).unwrap_or(500 * 1024 * 1024),
+                write_buffer_size: 64 * 1024 * 1024,
+                max_write_buffer_number: 3,
+                block_cache_size: 16 * 1024 * 1024,
+                enable_compression: config.compression_config.enabled,
+                compression_level: config.l2_config.as_ref().map(|c| c.compression_level).unwrap_or(6),
+                background_threads: 2,
+            })
+            .compression_config(rat_memcache::config::CompressionConfig {
+                enable_lz4: config.compression_config.enabled,
+                compression_threshold: config.compression_config.threshold_bytes,
+                compression_level: config.l2_config.as_ref().map(|c| c.compression_level).unwrap_or(6),
+                auto_compression: true,
+                min_compression_ratio: 0.8,
+            })
+            .ttl_config(rat_memcache::config::TtlConfig {
+                default_ttl: Some(config.ttl_config.default_ttl_secs),
+                max_ttl: config.ttl_config.max_ttl_secs,
+                cleanup_interval: config.ttl_config.check_interval_secs,
+                max_cleanup_entries: 1000,
+                lazy_expiration: true,
+                active_expiration: true,
+            })
+            .performance_config(rat_memcache::config::PerformanceConfig {
+                worker_threads: 4,
+                enable_concurrency: true,
+                read_write_separation: true,
+                batch_size: 1000,
+                enable_warmup: true,
+                stats_interval: 60,
+                enable_background_stats: true,
+                l2_write_strategy: "WriteThrough".to_string(),
+                l2_write_threshold: 1024,
+                l2_write_ttl_threshold: 3600,
+            })
+            .logging_config(rat_memcache::config::LoggingConfig {
+                level: "INFO".to_string(),
+                enable_colors: true,
+                show_timestamp: true,
+                enable_performance_logs: true,
+                enable_audit_logs: true,
+                enable_cache_logs: true,
+            });
 
-        let cache = rat_memcache::RatMemCacheBuilder::new()
-            .development_preset()
-            .map_err(|e| anyhow!("Failed to create development preset: {}", e))?
+        let cache = builder
             .build()
             .await
             .map_err(|e| anyhow!("Failed to create cache: {}", e))?;
 
-        info!("缓存管理器初始化成功");
+        info!("缓存管理器初始化成功 - L1容量: {}, L1内存: {}MB, L2磁盘: {}MB, 策略: {:?}", 
+              config.l1_config.max_capacity, 
+              config.l1_config.max_memory_mb,
+              config.l2_config.as_ref().map(|c| c.max_disk_mb).unwrap_or(0),
+              config.strategy);
 
         Ok(Self {
             cache: Arc::new(cache),
@@ -146,7 +209,9 @@ impl CacheManager {
     /// 生成查询缓存键 - 优化版本，避免复杂序列化
     fn generate_query_cache_key(&self, table: &str, options: &QueryOptions) -> String {
         let query_signature = self.build_query_signature(options);
-        format!("{}:{}:query:{}", CACHE_KEY_PREFIX, table, query_signature)
+        let key = format!("{}:{}:query:{}", CACHE_KEY_PREFIX, table, query_signature);
+        debug!("生成查询缓存键: table={}, key={}", table, key);
+        key
     }
 
     /// 构建查询签名 - 高效版本，避免JSON序列化
@@ -307,6 +372,11 @@ impl CacheManager {
             return Ok(());
         }
 
+        let start_time = Instant::now();
+        let key = self.generate_query_cache_key(table, options);
+        
+        debug!("尝试缓存查询结果: table={}, key={}, options={:?}, 结果数量={}", table, key, options, results.len());
+
         // 优化：避免缓存空结果或过大结果
         if results.is_empty() {
             debug!("跳过缓存空查询结果: table={}", table);
@@ -318,8 +388,6 @@ impl CacheManager {
             debug!("跳过缓存过大查询结果: table={}, count={}", table, results.len());
             return Ok(());
         }
-
-        let key = self.generate_query_cache_key(table, options);
         
         // 优化：提取JSON值进行序列化，减少包装开销
         let json_results: Vec<serde_json::Value> = results.iter()
@@ -338,9 +406,19 @@ impl CacheManager {
             .map_err(|e| anyhow!("Failed to cache query results: {}", e))?;
 
         // 记录缓存键
-        self.track_cache_key(table, key).await;
+        self.track_cache_key(table, key.clone()).await;
 
-        debug!("已缓存查询结果: table={}, count={}", table, results.len());
+        // 更新统计信息
+        let elapsed = start_time.elapsed();
+        self.writes_counter.fetch_add(1, Ordering::Relaxed);
+        {
+            let mut stats = self.stats.write().await;
+            stats.writes += 1;
+            stats.write_count += 1;
+            stats.total_write_latency_ns += elapsed.as_nanos() as u64;
+        }
+
+        debug!("已缓存查询结果: table={}, key={}, count={}", table, key, results.len());
         Ok(())
     }
 
@@ -354,7 +432,10 @@ impl CacheManager {
             return Ok(None);
         }
 
+        let start_time = Instant::now();
         let key = self.generate_query_cache_key(table, options);
+        
+        debug!("尝试获取查询缓存: table={}, key={}, options={:?}", table, key, options);
         
         match self.cache.get(&key).await {
             Ok(Some(data)) => {
@@ -365,16 +446,46 @@ impl CacheManager {
                 let data_values: Vec<DataValue> = json_results.into_iter()
                     .map(|json_val| DataValue::Json(json_val))
                     .collect();
+                
+                // 更新命中统计
+                let elapsed = start_time.elapsed();
+                self.hits_counter.fetch_add(1, Ordering::Relaxed);
+                {
+                    let mut stats = self.stats.write().await;
+                    stats.hits += 1;
+                    stats.query_count += 1;
+                    stats.total_query_latency_ns += elapsed.as_nanos() as u64;
+                }
                     
-                debug!("查询缓存命中: table={}, count={}", table, data_values.len());
+                debug!("查询缓存命中: table={}, key={}, count={}", table, key, data_values.len());
                 Ok(Some(data_values))
             }
             Ok(None) => {
-                debug!("查询缓存未命中: table={}", table);
+                // 更新未命中统计
+                let elapsed = start_time.elapsed();
+                self.misses_counter.fetch_add(1, Ordering::Relaxed);
+                {
+                    let mut stats = self.stats.write().await;
+                    stats.misses += 1;
+                    stats.query_count += 1;
+                    stats.total_query_latency_ns += elapsed.as_nanos() as u64;
+                }
+                
+                debug!("查询缓存未命中: table={}, key={}", table, key);
                 Ok(None)
             }
             Err(e) => {
-                warn!("查询缓存读取失败: {}", e);
+                // 错误也算作未命中
+                let elapsed = start_time.elapsed();
+                self.misses_counter.fetch_add(1, Ordering::Relaxed);
+                {
+                    let mut stats = self.stats.write().await;
+                    stats.misses += 1;
+                    stats.query_count += 1;
+                    stats.total_query_latency_ns += elapsed.as_nanos() as u64;
+                }
+                
+                warn!("查询缓存读取失败: table={}, key={}, error={}", table, key, e);
                 Ok(None)
             }
         }

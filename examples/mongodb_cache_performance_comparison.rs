@@ -7,7 +7,7 @@ use rat_quickdb::{
     types::*,
     odm::AsyncOdmManager,
     manager::{PoolManager, get_global_pool_manager},
-    error::QuickDbResult,
+    error::{QuickDbResult, QuickDbError},
     odm::OdmOperations,
     types::MongoDbConnectionBuilder,
 };
@@ -96,9 +96,6 @@ struct CachePerformanceTest {
 impl CachePerformanceTest {
     /// 创建新的性能测试实例
     async fn new() -> QuickDbResult<Self> {
-        // 初始化日志
-        zerg_creep::init_logger();
-        
         // 创建带缓存的数据库配置
         let cached_config = Self::create_cached_database_config();
         
@@ -153,11 +150,7 @@ impl CachePerformanceTest {
                     compression_level: Some(3),
                     compression_threshold: Some(1024),
                 }),
-                options: Some({
-                    let mut opts = std::collections::HashMap::new();
-                    opts.insert("compressors".to_string(), "zstd".to_string());
-                    opts
-                }),
+                options: None, // 移除重复的压缩器配置，使用zstd_config
             },
             pool: PoolConfig {
                 min_connections: 2,
@@ -176,7 +169,7 @@ impl CachePerformanceTest {
                     enable_stats: true,
                 },
                 l2_config: Some(L2CacheConfig {
-                    storage_path: "/tmp/mongodb_cache_test".to_string(),
+                    storage_path: "./cache/mongodb_cache_test".to_string(),
                     max_disk_mb: 500,
                     compression_level: 6,
                     enable_wal: true,
@@ -191,6 +184,7 @@ impl CachePerformanceTest {
                     algorithm: CompressionAlgorithm::Zstd,
                     threshold_bytes: 1024,
                 },
+
             }),
             id_strategy: IdStrategy::ObjectId,
         }
@@ -223,11 +217,7 @@ impl CachePerformanceTest {
                     compression_level: Some(3),
                     compression_threshold: Some(1024),
                 }),
-                options: Some({
-                    let mut opts = std::collections::HashMap::new();
-                    opts.insert("compressors".to_string(), "zstd".to_string());
-                    opts
-                }),
+                options: None, // 移除重复的压缩器配置，使用zstd_config
             },
             pool: PoolConfig {
                 min_connections: 2,
@@ -268,23 +258,23 @@ impl CachePerformanceTest {
     async fn setup_test_data(&mut self) -> QuickDbResult<()> {
         info!("设置MongoDB测试数据");
         
-        // 创建测试用户数据
+        // 创建测试用户数据，为不同数据库使用不同的ID前缀避免冲突
         for i in 1..=100 {
-            // 为缓存数据库创建用户
-            let cached_user_id = format!("cached_user_{:03}_{}", i, uuid::Uuid::new_v4().simple());
+            // 为缓存数据库创建用户（使用cached_前缀）
+            let cached_user_id = format!("cached_user_{:03}", i);
             let cached_user = TestUser::new(
                 &cached_user_id,
-                &format!("用户{}", i),
-                &format!("user{}@example.com", i),
+                &format!("缓存用户{}", i),
+                &format!("cached_user{}@example.com", i),
                 20 + (i % 50),
             );
             
-            // 为非缓存数据库创建用户
-            let non_cached_user_id = format!("non_cached_user_{:03}_{}", i, uuid::Uuid::new_v4().simple());
+            // 为非缓存数据库创建用户（使用non_cached_前缀）
+            let non_cached_user_id = format!("non_cached_user_{:03}", i);
             let non_cached_user = TestUser::new(
                 &non_cached_user_id,
-                &format!("用户{}", i),
-                &format!("user{}@example.com", i),
+                &format!("非缓存用户{}", i),
+                &format!("non_cached_user{}@example.com", i),
                 20 + (i % 50),
             );
             
@@ -293,7 +283,7 @@ impl CachePerformanceTest {
             self.odm.create(&self.table_name, non_cached_user.to_data_map(), Some("mongodb_non_cached")).await?;
         }
         
-        info!("MongoDB测试数据设置完成，使用表名: {}", self.table_name);
+        info!("MongoDB测试数据设置完成，使用表名: {}，共创建200条记录（每个数据库100条）", self.table_name);
         Ok(())
     }
     
@@ -301,18 +291,26 @@ impl CachePerformanceTest {
     async fn warmup_cache(&mut self) -> QuickDbResult<()> {
         info!("预热MongoDB缓存");
         
-        // 执行一些查询来预热缓存
-        for i in 1..=10 {
+        // 执行一些查询来预热缓存，使用缓存数据库的ID格式
+        for i in 1..=20 {
             let conditions = vec![QueryCondition {
                 field: "_id".to_string(),
                 operator: QueryOperator::Eq,
-                value: DataValue::String(format!("user_{}", i)),
+                value: DataValue::String(format!("cached_user_{:03}", i)),
             }];
             
             let _ = self.odm.find(&self.table_name, conditions, Some(QueryOptions::default()), Some("mongodb_cached")).await;
         }
         
-        info!("MongoDB缓存预热完成");
+        // 预热一些范围查询
+        let age_conditions = vec![QueryCondition {
+            field: "age".to_string(),
+            operator: QueryOperator::Gte,
+            value: DataValue::Int(25),
+        }];
+        let _ = self.odm.find(&self.table_name, age_conditions, Some(QueryOptions::default()), Some("mongodb_cached")).await;
+        
+        info!("MongoDB缓存预热完成，预热了20条单记录查询和1次范围查询");
         Ok(())
     }
     
@@ -320,25 +318,26 @@ impl CachePerformanceTest {
     async fn test_query_operations(&mut self) -> QuickDbResult<()> {
         info!("测试MongoDB查询操作性能");
         
-        // 测试单条记录查询
+        // 测试缓存数据库的单条记录查询
         let start = Instant::now();
         for i in 1..=50 {
             let conditions = vec![QueryCondition {
                 field: "_id".to_string(),
                 operator: QueryOperator::Eq,
-                value: DataValue::String(format!("user_{}", i)),
+                value: DataValue::String(format!("cached_user_{:03}", i)),
             }];
             
             let _ = self.odm.find(&self.table_name, conditions, Some(QueryOptions::default()), Some("mongodb_cached")).await?;
         }
         let cached_time = start.elapsed();
         
+        // 测试非缓存数据库查询
         let start = Instant::now();
         for i in 1..=50 {
             let conditions = vec![QueryCondition {
                 field: "_id".to_string(),
                 operator: QueryOperator::Eq,
-                value: DataValue::String(format!("user_{}", i)),
+                value: DataValue::String(format!("non_cached_user_{:03}", i)),
             }];
             
             let _ = self.odm.find(&self.table_name, conditions, Some(QueryOptions::default()), Some("mongodb_non_cached")).await?;
@@ -351,39 +350,101 @@ impl CachePerformanceTest {
             non_cached_time,
         ));
         
+        info!("MongoDB查询操作性能测试完成 - 缓存: {:?}, 非缓存: {:?}", cached_time, non_cached_time);
         Ok(())
     }
     
     /// 测试重复查询性能
     async fn test_repeated_queries(&mut self) -> QuickDbResult<()> {
-        info!("测试MongoDB重复查询性能");
+        info!("测试MongoDB重复查询性能 - 大量重复查询场景");
         
-        let conditions = vec![QueryCondition {
-            field: "age".to_string(),
-            operator: QueryOperator::Gte,
-            value: DataValue::Int(25),
+        // 测试缓存数据库的重复查询 - 增加查询次数和多样性
+        let cached_conditions_1 = vec![QueryCondition {
+            field: "_id".to_string(),
+            operator: QueryOperator::Eq,
+            value: DataValue::String("cached_user_001".to_string()),
         }];
         
-        // 带缓存的重复查询
+        let cached_conditions_2 = vec![QueryCondition {
+            field: "_id".to_string(),
+            operator: QueryOperator::Eq,
+            value: DataValue::String("cached_user_002".to_string()),
+        }];
+        
+        let cached_conditions_3 = vec![QueryCondition {
+            field: "_id".to_string(),
+            operator: QueryOperator::Eq,
+            value: DataValue::String("cached_user_003".to_string()),
+        }];
+        
+        // 带缓存的重复查询 - 大幅增加查询次数
         let start = Instant::now();
-        for _ in 0..20 {
-            let _ = self.odm.find(&self.table_name, conditions.clone(), Some(QueryOptions::default()), Some("mongodb_cached")).await?;
+        for i in 0..500 {
+            // 重复查询相同的几条记录，确保缓存命中
+            match i % 3 {
+                0 => { let _ = self.odm.find(&self.table_name, cached_conditions_1.clone(), Some(QueryOptions::default()), Some("mongodb_cached")).await?; }
+                1 => { let _ = self.odm.find(&self.table_name, cached_conditions_2.clone(), Some(QueryOptions::default()), Some("mongodb_cached")).await?; }
+                _ => { let _ = self.odm.find(&self.table_name, cached_conditions_3.clone(), Some(QueryOptions::default()), Some("mongodb_cached")).await?; }
+            }
         }
         let cached_time = start.elapsed();
         
-        // 不带缓存的重复查询
+        // 测试非缓存数据库的重复查询
+        let non_cached_conditions_1 = vec![QueryCondition {
+            field: "_id".to_string(),
+            operator: QueryOperator::Eq,
+            value: DataValue::String("non_cached_user_001".to_string()),
+        }];
+        
+        let non_cached_conditions_2 = vec![QueryCondition {
+            field: "_id".to_string(),
+            operator: QueryOperator::Eq,
+            value: DataValue::String("non_cached_user_002".to_string()),
+        }];
+        
+        let non_cached_conditions_3 = vec![QueryCondition {
+            field: "_id".to_string(),
+            operator: QueryOperator::Eq,
+            value: DataValue::String("non_cached_user_003".to_string()),
+        }];
+        
+        // 不带缓存的重复查询 - 相同的查询次数
         let start = Instant::now();
-        for _ in 0..20 {
-            let _ = self.odm.find(&self.table_name, conditions.clone(), Some(QueryOptions::default()), Some("mongodb_non_cached")).await?;
+        for i in 0..500 {
+            match i % 3 {
+                0 => { let _ = self.odm.find(&self.table_name, non_cached_conditions_1.clone(), Some(QueryOptions::default()), Some("mongodb_non_cached")).await?; }
+                1 => { let _ = self.odm.find(&self.table_name, non_cached_conditions_2.clone(), Some(QueryOptions::default()), Some("mongodb_non_cached")).await?; }
+                _ => { let _ = self.odm.find(&self.table_name, non_cached_conditions_3.clone(), Some(QueryOptions::default()), Some("mongodb_non_cached")).await?; }
+            }
         }
         let non_cached_time = start.elapsed();
         
-        self.results.push(PerformanceResult::new(
-            "重复查询 (20次相同查询)".to_string(),
+        // 获取缓存统计信息
+        let cache_stats = match get_global_pool_manager().get_cache_stats("mongodb_cached").await {
+            Ok(stats) => {
+                info!("缓存统计 - 命中: {}, 未命中: {}, 命中率: {:.1}%", 
+                      stats.hits, stats.misses, stats.hit_rate * 100.0);
+                Some(stats.hit_rate * 100.0)
+            }
+            Err(e) => {
+                warn!("获取缓存统计失败: {}", e);
+                None
+            }
+        };
+        
+        let mut result = PerformanceResult::new(
+            "重复查询 (500次重复查询，3个不同ID循环)".to_string(),
             cached_time,
             non_cached_time,
-        ));
+        );
         
+        if let Some(hit_rate) = cache_stats {
+            result = result.with_cache_hit_rate(hit_rate);
+        }
+        
+        self.results.push(result);
+        
+        info!("MongoDB重复查询性能测试完成 - 缓存: {:?}, 非缓存: {:?}", cached_time, non_cached_time);
         Ok(())
     }
     
@@ -391,30 +452,57 @@ impl CachePerformanceTest {
     async fn test_batch_queries(&mut self) -> QuickDbResult<()> {
         info!("测试MongoDB批量查询性能");
         
-        // 带缓存的批量查询
+        // 带缓存的批量查询（混合ID查询和范围查询）
         let start = Instant::now();
-        let query_options = QueryOptions {
-            pagination: Some(PaginationConfig { skip: 0, limit: 50 }),
-            ..Default::default()
-        };
-        let _ = self.odm.find(&self.table_name, vec![], Some(query_options), Some("mongodb_cached")).await?;
+        // 先查询一些具体ID（这些应该命中缓存）
+        for i in 1..=10 {
+            let conditions = vec![QueryCondition {
+                field: "_id".to_string(),
+                operator: QueryOperator::Eq,
+                value: DataValue::String(format!("cached_user_{:03}", i)),
+            }];
+            let _ = self.odm.find(&self.table_name, conditions, Some(QueryOptions::default()), Some("mongodb_cached")).await?;
+        }
+        // 再查询一些年龄范围
+        for i in 1..=10 {
+            let conditions = vec![QueryCondition {
+                field: "age".to_string(),
+                operator: QueryOperator::Eq,
+                value: DataValue::Int(20 + (i % 50)),
+            }];
+            let _ = self.odm.find(&self.table_name, conditions, Some(QueryOptions::default()), Some("mongodb_cached")).await?;
+        }
         let cached_time = start.elapsed();
         
-        // 不带缓存的批量查询
+        // 不带缓存的批量查询（相同的查询模式）
         let start = Instant::now();
-        let query_options = QueryOptions {
-            pagination: Some(PaginationConfig { skip: 0, limit: 50 }),
-            ..Default::default()
-        };
-        let _ = self.odm.find(&self.table_name, vec![], Some(query_options), Some("mongodb_non_cached")).await?;
+        // 查询相同的ID
+        for i in 1..=10 {
+            let conditions = vec![QueryCondition {
+                field: "_id".to_string(),
+                operator: QueryOperator::Eq,
+                value: DataValue::String(format!("non_cached_user_{:03}", i)),
+            }];
+            let _ = self.odm.find(&self.table_name, conditions, Some(QueryOptions::default()), Some("mongodb_non_cached")).await?;
+        }
+        // 查询相同的年龄范围
+        for i in 1..=10 {
+            let conditions = vec![QueryCondition {
+                field: "age".to_string(),
+                operator: QueryOperator::Eq,
+                value: DataValue::Int(20 + (i % 50)),
+            }];
+            let _ = self.odm.find(&self.table_name, conditions, Some(QueryOptions::default()), Some("mongodb_non_cached")).await?;
+        }
         let non_cached_time = start.elapsed();
         
         self.results.push(PerformanceResult::new(
-            "批量查询 (50条记录)".to_string(),
+            "批量查询 (10次ID查询 + 10次年龄查询)".to_string(),
             cached_time,
             non_cached_time,
         ));
         
+        info!("MongoDB批量查询性能测试完成 - 缓存: {:?}, 非缓存: {:?}", cached_time, non_cached_time);
         Ok(())
     }
     
@@ -431,7 +519,7 @@ impl CachePerformanceTest {
             let conditions = vec![QueryCondition {
                 field: "_id".to_string(),
                 operator: QueryOperator::Eq,
-                value: DataValue::String(format!("user_{}", i)),
+                value: DataValue::String(format!("cached_user_{:03}", i)),
             }];
             
             let _ = self.odm.update(&self.table_name, conditions, update_data.clone(), Some("mongodb_cached")).await?;
@@ -444,7 +532,7 @@ impl CachePerformanceTest {
             let conditions = vec![QueryCondition {
                 field: "_id".to_string(),
                 operator: QueryOperator::Eq,
-                value: DataValue::String(format!("user_{}", i)),
+                value: DataValue::String(format!("non_cached_user_{:03}", i)),
             }];
             
             let _ = self.odm.update(&self.table_name, conditions, update_data.clone(), Some("mongodb_non_cached")).await?;
@@ -524,15 +612,33 @@ impl CachePerformanceTest {
     }
 }
 
+/// 创建缓存目录
+async fn setup_cache_directory() -> QuickDbResult<()> {
+    let cache_dir = "./cache/mongodb_cache_test";
+    if let Err(e) = tokio::fs::create_dir_all(cache_dir).await {
+        error!("创建缓存目录失败: {}", e);
+        return Err(QuickDbError::ConfigError { message: format!("创建缓存目录失败: {}", e) });
+    }
+    info!("缓存目录创建成功: {}", cache_dir);
+    Ok(())
+}
+
 /// 清理测试文件
 async fn cleanup_test_files() {
-    let _ = tokio::fs::remove_dir_all("/tmp/mongodb_cache_test").await;
+    let _ = tokio::fs::remove_dir_all("./cache/mongodb_cache_test").await;
 }
 
 #[tokio::main]
 async fn main() -> QuickDbResult<()> {
+    // 初始化 zerg_creep 日志系统，设置为 debug 级别
+    zerg_creep::init_logger_with_level(zerg_creep::LevelFilter::Debug)
+        .expect("初始化日志系统失败");
+    
     // 清理之前的测试文件
     cleanup_test_files().await;
+    
+    // 创建缓存目录
+    setup_cache_directory().await?;
     
     // 创建并运行性能测试
     let mut test = CachePerformanceTest::new().await?;

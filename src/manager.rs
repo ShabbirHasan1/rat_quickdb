@@ -57,29 +57,31 @@ impl PoolManager {
             self.remove_database(&alias).await?;
         }
         
-        // 创建连接池
-        let pool_config = ExtendedPoolConfig::default();
-        let mut pool = ConnectionPool::with_config(config.clone(), pool_config).await.map_err(|e| {
-            error!("连接池创建失败: 别名={}, 错误={}", alias, e);
-            e
-        })?;
-        
         // 初始化缓存管理器（如果配置了缓存）
-        if let Some(cache_config) = &config.cache {
+        let cache_manager_arc = if let Some(cache_config) = &config.cache {
             match CacheManager::new(cache_config.clone()).await {
                 Ok(cache_manager) => {
                     let cache_manager_arc = Arc::new(cache_manager);
-                    // 设置缓存管理器到连接池
-                    pool.set_cache_manager(cache_manager_arc.clone());
                     // 保存到管理器中
-                    self.cache_managers.insert(alias.clone(), cache_manager_arc);
-                    info!("为数据库 {} 创建并设置缓存管理器", alias);
+                    self.cache_managers.insert(alias.clone(), cache_manager_arc.clone());
+                    info!("为数据库 {} 创建缓存管理器", alias);
+                    Some(cache_manager_arc)
                 }
                 Err(e) => {
                     warn!("为数据库 {} 创建缓存管理器失败: {}", alias, e);
+                    None
                 }
             }
-        }
+        } else {
+            None
+        };
+        
+        // 创建连接池（传入缓存管理器）
+        let pool_config = ExtendedPoolConfig::default();
+        let pool = ConnectionPool::with_config_and_cache(config.clone(), pool_config, cache_manager_arc).await.map_err(|e| {
+            error!("连接池创建失败: 别名={}, 错误={}", alias, e);
+            e
+        })?;
         
         // 添加到管理器
         self.pools.insert(alias.clone(), Arc::new(pool));
