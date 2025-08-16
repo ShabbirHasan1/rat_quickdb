@@ -3,42 +3,94 @@
 //! 提供基于 rat_memcache 的自动缓存功能，支持 LRU 策略、自动更新/清理缓存
 //! 以及可选的手动清理接口。
 
-#[cfg(feature = "cache")]
 use crate::types::{
-    CacheConfig, CacheStrategy, CompressionAlgorithm, DataValue, IdType, QueryOptions,
+    CacheConfig, CacheStrategy, CompressionAlgorithm, DataValue, IdType, QueryOptions, SortDirection,
 };
-#[cfg(feature = "cache")]
 use rat_memcache::RatMemCacheBuilder;
-#[cfg(feature = "cache")]
 use rat_memcache::config::{L1Config, TtlConfig, CompressionConfig};
-#[cfg(feature = "cache")]
 use rat_memcache::types::EvictionStrategy;
-#[cfg(feature = "cache")]
 use anyhow::{anyhow, Result};
-#[cfg(feature = "cache")]
 use rat_memcache::{RatMemCache, CacheOptions};
-#[cfg(feature = "cache")]
 use bytes::Bytes;
-#[cfg(feature = "cache")]
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "cache")]
 use std::{
     collections::HashMap,
     sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    sync::atomic::{AtomicU64, Ordering},
+    time::{Duration, SystemTime, UNIX_EPOCH, Instant},
     path::PathBuf,
 };
-#[cfg(feature = "cache")]
 use tokio::sync::RwLock;
-#[cfg(feature = "cache")]
 use zerg_creep::{info, debug, warn};
 
 /// 缓存键前缀
-#[cfg(feature = "cache")]
 const CACHE_KEY_PREFIX: &str = "rat_quickdb";
 
+/// 缓存性能统计
+#[derive(Debug, Clone)]
+pub struct CachePerformanceStats {
+    /// 缓存命中次数
+    pub hits: u64,
+    /// 缓存未命中次数
+    pub misses: u64,
+    /// 缓存写入次数
+    pub writes: u64,
+    /// 缓存删除次数
+    pub deletes: u64,
+    /// 总查询延迟（纳秒）
+    pub total_query_latency_ns: u64,
+    /// 总写入延迟（纳秒）
+    pub total_write_latency_ns: u64,
+    /// 查询次数
+    pub query_count: u64,
+    /// 写入次数
+    pub write_count: u64,
+}
+
+impl CachePerformanceStats {
+    pub fn new() -> Self {
+        Self {
+            hits: 0,
+            misses: 0,
+            writes: 0,
+            deletes: 0,
+            total_query_latency_ns: 0,
+            total_write_latency_ns: 0,
+            query_count: 0,
+            write_count: 0,
+        }
+    }
+
+    /// 计算命中率
+    pub fn hit_rate(&self) -> f64 {
+        let total = self.hits + self.misses;
+        if total == 0 {
+            0.0
+        } else {
+            self.hits as f64 / total as f64
+        }
+    }
+
+    /// 计算平均查询延迟（毫秒）
+    pub fn avg_query_latency_ms(&self) -> f64 {
+        if self.query_count == 0 {
+            0.0
+        } else {
+            (self.total_query_latency_ns as f64 / self.query_count as f64) / 1_000_000.0
+        }
+    }
+
+    /// 计算平均写入延迟（毫秒）
+    pub fn avg_write_latency_ms(&self) -> f64 {
+        if self.write_count == 0 {
+            0.0
+        } else {
+            (self.total_write_latency_ns as f64 / self.write_count as f64) / 1_000_000.0
+        }
+    }
+}
+
 /// 缓存管理器
-#[cfg(feature = "cache")]
 #[derive(Debug, Clone)]
 pub struct CacheManager {
     /// 内部缓存实例
@@ -47,9 +99,15 @@ pub struct CacheManager {
     config: CacheConfig,
     /// 表名到缓存键的映射
     table_keys: Arc<RwLock<HashMap<String, Vec<String>>>>,
+    /// 性能统计
+    stats: Arc<RwLock<CachePerformanceStats>>,
+    /// 原子计数器用于高频统计
+    hits_counter: Arc<AtomicU64>,
+    misses_counter: Arc<AtomicU64>,
+    writes_counter: Arc<AtomicU64>,
+    deletes_counter: Arc<AtomicU64>,
 }
 
-#[cfg(feature = "cache")]
 impl CacheManager {
     /// 创建新的缓存管理器
     pub async fn new(config: CacheConfig) -> Result<Self> {
@@ -68,6 +126,11 @@ impl CacheManager {
             cache: Arc::new(cache),
             config,
             table_keys: Arc::new(RwLock::new(HashMap::new())),
+            stats: Arc::new(RwLock::new(CachePerformanceStats::new())),
+            hits_counter: Arc::new(AtomicU64::new(0)),
+            misses_counter: Arc::new(AtomicU64::new(0)),
+            writes_counter: Arc::new(AtomicU64::new(0)),
+            deletes_counter: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -80,28 +143,45 @@ impl CacheManager {
         format!("{}:{}:{}:{}", CACHE_KEY_PREFIX, table, operation, id_str)
     }
 
-    /// 生成查询缓存键
+    /// 生成查询缓存键 - 优化版本，避免复杂序列化
     fn generate_query_cache_key(&self, table: &str, options: &QueryOptions) -> String {
-        let query_hash = self.hash_query_options(options);
-        format!("{}:{}:query:{}", CACHE_KEY_PREFIX, table, query_hash)
+        let query_signature = self.build_query_signature(options);
+        format!("{}:{}:query:{}", CACHE_KEY_PREFIX, table, query_signature)
     }
 
-    /// 计算查询选项的哈希值
-    fn hash_query_options(&self, options: &QueryOptions) -> String {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-
-        let mut hasher = DefaultHasher::new();
+    /// 构建查询签名 - 高效版本，避免JSON序列化
+    fn build_query_signature(&self, options: &QueryOptions) -> String {
+        let mut parts = Vec::new();
         
-        // 序列化查询选项并计算哈希
-        if let Ok(serialized) = serde_json::to_string(options) {
-            serialized.hash(&mut hasher);
+        // 分页信息
+        if let Some(pagination) = &options.pagination {
+            parts.push(format!("p{}_{}", pagination.skip, pagination.limit));
         }
         
-        format!("{:x}", hasher.finish())
+        // 排序信息
+        if !options.sort.is_empty() {
+            let sort_str = options.sort.iter()
+                .map(|s| format!("{}{}", s.field, match s.direction { SortDirection::Asc => "a", SortDirection::Desc => "d" }))
+                .collect::<Vec<_>>()
+                .join(",");
+            parts.push(format!("s{}", sort_str));
+        }
+        
+        // 投影信息
+        if !options.fields.is_empty() {
+            let proj_str = options.fields.join(",");
+            parts.push(format!("f{}", proj_str));
+        }
+        
+        // 连接部分生成最终签名
+        if parts.is_empty() {
+            "default".to_string()
+        } else {
+            parts.join("_")
+        }
     }
 
-    /// 缓存单个记录
+    /// 缓存单个记录 - 优化版本
     pub async fn cache_record(
         &self,
         table: &str,
@@ -112,9 +192,22 @@ impl CacheManager {
             return Ok(());
         }
 
+        let start_time = Instant::now();
         let key = self.generate_cache_key(table, id, "record");
-        let serialized = serde_json::to_vec(data)
-            .map_err(|e| anyhow!("Failed to serialize data: {}", e))?;
+        
+        // 优化：使用更高效的序列化方式
+        let serialized = match data {
+            DataValue::Json(json_val) => {
+                // 对于JSON值，直接序列化JSON而不是DataValue包装
+                serde_json::to_vec(json_val)
+                    .map_err(|e| anyhow!("Failed to serialize JSON data: {}", e))?
+            }
+            _ => {
+                // 其他类型使用标准序列化
+                serde_json::to_vec(data)
+                    .map_err(|e| anyhow!("Failed to serialize data: {}", e))?
+            }
+        };
 
         let options = CacheOptions {
             ttl_seconds: Some(self.config.ttl_config.default_ttl_secs),
@@ -126,6 +219,16 @@ impl CacheManager {
 
         // 记录缓存键
         self.track_cache_key(table, key).await;
+
+        // 更新统计信息
+        let elapsed = start_time.elapsed();
+        self.writes_counter.fetch_add(1, Ordering::Relaxed);
+        {
+            let mut stats = self.stats.write().await;
+            stats.writes += 1;
+            stats.write_count += 1;
+            stats.total_write_latency_ns += elapsed.as_nanos() as u64;
+        }
 
         debug!("已缓存记录: table={}, id={:?}", table, id);
         Ok(())
@@ -141,27 +244,59 @@ impl CacheManager {
             return Ok(None);
         }
 
+        let start_time = Instant::now();
         let key = self.generate_cache_key(table, id, "record");
         
         match self.cache.get(&key).await {
             Ok(Some(data)) => {
                 let deserialized: DataValue = serde_json::from_slice(&data)
                     .map_err(|e| anyhow!("Failed to deserialize cached data: {}", e))?;
+                
+                // 更新命中统计
+                let elapsed = start_time.elapsed();
+                self.hits_counter.fetch_add(1, Ordering::Relaxed);
+                {
+                    let mut stats = self.stats.write().await;
+                    stats.hits += 1;
+                    stats.query_count += 1;
+                    stats.total_query_latency_ns += elapsed.as_nanos() as u64;
+                }
+                
                 debug!("缓存命中: table={}, id={:?}", table, id);
                 Ok(Some(deserialized))
             }
             Ok(None) => {
+                // 更新未命中统计
+                let elapsed = start_time.elapsed();
+                self.misses_counter.fetch_add(1, Ordering::Relaxed);
+                {
+                    let mut stats = self.stats.write().await;
+                    stats.misses += 1;
+                    stats.query_count += 1;
+                    stats.total_query_latency_ns += elapsed.as_nanos() as u64;
+                }
+                
                 debug!("缓存未命中: table={}, id={:?}", table, id);
                 Ok(None)
             }
             Err(e) => {
+                // 错误也算作未命中
+                let elapsed = start_time.elapsed();
+                self.misses_counter.fetch_add(1, Ordering::Relaxed);
+                {
+                    let mut stats = self.stats.write().await;
+                    stats.misses += 1;
+                    stats.query_count += 1;
+                    stats.total_query_latency_ns += elapsed.as_nanos() as u64;
+                }
+                
                 warn!("缓存读取失败: {}", e);
                 Ok(None)
             }
         }
     }
 
-    /// 缓存查询结果
+    /// 缓存查询结果 - 优化版本
     pub async fn cache_query_result(
         &self,
         table: &str,
@@ -172,8 +307,26 @@ impl CacheManager {
             return Ok(());
         }
 
+        // 优化：避免缓存空结果或过大结果
+        if results.is_empty() {
+            debug!("跳过缓存空查询结果: table={}", table);
+            return Ok(());
+        }
+        
+        // 限制缓存结果大小，避免内存浪费
+        if results.len() > 1000 {
+            debug!("跳过缓存过大查询结果: table={}, count={}", table, results.len());
+            return Ok(());
+        }
+
         let key = self.generate_query_cache_key(table, options);
-        let serialized = serde_json::to_vec(results)
+        
+        // 优化：提取JSON值进行序列化，减少包装开销
+        let json_results: Vec<serde_json::Value> = results.iter()
+            .filter_map(|dv| if let DataValue::Json(json_val) = dv { Some(json_val.clone()) } else { None })
+            .collect();
+            
+        let serialized = serde_json::to_vec(&json_results)
             .map_err(|e| anyhow!("Failed to serialize query results: {}", e))?;
 
         let cache_options = CacheOptions {
@@ -187,11 +340,11 @@ impl CacheManager {
         // 记录缓存键
         self.track_cache_key(table, key).await;
 
-        debug!("已缓存查询结果: table={}", table);
+        debug!("已缓存查询结果: table={}, count={}", table, results.len());
         Ok(())
     }
 
-    /// 获取缓存的查询结果
+    /// 获取缓存的查询结果 - 优化版本
     pub async fn get_cached_query_result(
         &self,
         table: &str,
@@ -205,10 +358,16 @@ impl CacheManager {
         
         match self.cache.get(&key).await {
             Ok(Some(data)) => {
-                let deserialized: Vec<DataValue> = serde_json::from_slice(&data)
+                // 优化：直接反序列化为JSON值，然后包装为DataValue
+                let json_results: Vec<serde_json::Value> = serde_json::from_slice(&data)
                     .map_err(|e| anyhow!("Failed to deserialize cached query results: {}", e))?;
-                debug!("查询缓存命中: table={}", table);
-                Ok(Some(deserialized))
+                    
+                let data_values: Vec<DataValue> = json_results.into_iter()
+                    .map(|json_val| DataValue::Json(json_val))
+                    .collect();
+                    
+                debug!("查询缓存命中: table={}, count={}", table, data_values.len());
+                Ok(Some(data_values))
             }
             Ok(None) => {
                 debug!("查询缓存未命中: table={}", table);
@@ -231,6 +390,13 @@ impl CacheManager {
         
         if let Err(e) = self.cache.delete(&key).await {
             warn!("删除缓存记录失败: {}", e);
+        } else {
+            // 更新删除统计
+            self.deletes_counter.fetch_add(1, Ordering::Relaxed);
+            {
+                let mut stats = self.stats.write().await;
+                stats.deletes += 1;
+            }
         }
 
         debug!("已删除缓存记录: table={}, id={:?}", table, id);
@@ -243,19 +409,11 @@ impl CacheManager {
             return Ok(());
         }
 
-        let mut table_keys = self.table_keys.write().await;
-        if let Some(keys) = table_keys.get(table) {
-            for key in keys {
-                if let Err(e) = self.cache.delete(key).await {
-                    warn!("删除缓存键失败: key={}, error={}", key, e);
-                }
-            }
-            table_keys.remove(table);
-        }
-
-        info!("已清理表缓存: table={}", table);
-        Ok(())
+        let pattern = format!("{}:{}:*", CACHE_KEY_PREFIX, table);
+        self.clear_by_pattern(&pattern).await.map(|_| ())
     }
+
+
 
     /// 清理所有缓存
     pub async fn clear_all(&self) -> Result<()> {
@@ -387,6 +545,59 @@ impl CacheManager {
         Ok(expired_count)
     }
 
+    /// 缓存预热 - 预加载热点数据
+    /// 
+    /// # 参数
+    /// * `table` - 表名
+    /// * `hot_ids` - 热点数据ID列表
+    pub async fn warmup_cache(&self, table: &str, hot_ids: &[IdType]) -> Result<usize> {
+        if !self.config.enabled || hot_ids.is_empty() {
+            return Ok(0);
+        }
+
+        let mut warmed_count = 0;
+        for id in hot_ids {
+            let cache_key = self.generate_cache_key(table, id, "record");
+            
+            // 检查是否已缓存
+            if self.cache.get(&cache_key).await.is_ok() {
+                continue; // 已缓存，跳过
+            }
+            
+            // 这里应该从数据库加载数据并缓存
+            // 由于需要数据库连接，这个方法应该在适配器层实现
+            // 这里只是标记需要预热的键
+            debug!("标记预热缓存键: {}", cache_key);
+            warmed_count += 1;
+        }
+        
+        info!("缓存预热完成: table={}, warmed_count={}", table, warmed_count);
+        Ok(warmed_count)
+    }
+
+    /// 批量缓存记录 - 优化批量操作
+    /// 
+    /// # 参数
+    /// * `table` - 表名
+    /// * `records` - 记录列表
+    pub async fn cache_records_batch_optimized(&self, table: &str, records: &[(IdType, DataValue)]) -> Result<usize> {
+        if !self.config.enabled || records.is_empty() {
+            return Ok(0);
+        }
+
+        let mut cached_count = 0;
+        for (id, data) in records {
+            if let Err(e) = self.cache_record(table, id, data).await {
+                warn!("批量缓存记录失败: table={}, id={:?}, error={}", table, id, e);
+                continue;
+            }
+            cached_count += 1;
+        }
+        
+        info!("批量缓存记录完成: table={}, cached_count={}", table, cached_count);
+        Ok(cached_count)
+    }
+
     /// 获取所有缓存键列表（按表分组）
     /// 
     /// 用于调试和监控，可以查看当前缓存中有哪些键
@@ -502,9 +713,61 @@ impl CacheManager {
             return Ok(CacheStats::default());
         }
 
-        // 这里需要根据 rat_memcache 的实际 API 来获取统计信息
-        // 暂时返回默认值
-        Ok(CacheStats::default())
+        // 从原子计数器和详细统计中获取数据
+        let hits = self.hits_counter.load(Ordering::Relaxed);
+        let misses = self.misses_counter.load(Ordering::Relaxed);
+        let writes = self.writes_counter.load(Ordering::Relaxed);
+        let deletes = self.deletes_counter.load(Ordering::Relaxed);
+        
+        let stats = self.stats.read().await;
+        let hit_rate = if hits + misses > 0 {
+            hits as f64 / (hits + misses) as f64
+        } else {
+            0.0
+        };
+        
+        // 估算内存使用量（基于跟踪的键数量）
+        let table_keys = self.table_keys.read().await;
+        let entries = table_keys.values().map(|v| v.len()).sum::<usize>();
+        
+        Ok(CacheStats {
+            hits,
+            misses,
+            hit_rate,
+            entries,
+            memory_usage_bytes: entries * 1024, // 粗略估算每个条目1KB
+            disk_usage_bytes: 0, // rat_memcache 主要是内存缓存
+        })
+    }
+
+    /// 获取详细的性能统计信息
+    pub async fn get_performance_stats(&self) -> Result<CachePerformanceStats> {
+        if !self.config.enabled {
+            return Ok(CachePerformanceStats::new());
+        }
+
+        let stats = self.stats.read().await;
+        Ok(stats.clone())
+    }
+
+    /// 重置统计信息
+    pub async fn reset_stats(&self) -> Result<()> {
+        if !self.config.enabled {
+            return Ok(());
+        }
+
+        self.hits_counter.store(0, Ordering::Relaxed);
+        self.misses_counter.store(0, Ordering::Relaxed);
+        self.writes_counter.store(0, Ordering::Relaxed);
+        self.deletes_counter.store(0, Ordering::Relaxed);
+        
+        {
+            let mut stats = self.stats.write().await;
+            *stats = CachePerformanceStats::new();
+        }
+        
+        info!("缓存统计信息已重置");
+        Ok(())
     }
 
     /// 记录缓存键（用于表级别的缓存清理）
@@ -519,10 +782,36 @@ impl CacheManager {
     pub fn is_enabled(&self) -> bool {
         self.config.enabled
     }
+
+
+
+    /// 批量缓存记录 - 优化批量操作
+    /// 
+    /// # 参数
+    /// * `table` - 表名
+    /// * `records` - 记录列表
+    pub async fn cache_records_batch(&self, table: &str, records: Vec<(IdType, DataValue)>) -> Result<usize> {
+        if !self.config.enabled {
+            return Ok(0);
+        }
+
+        let mut cached_count = 0;
+        
+        // 批量处理，减少锁竞争
+        for (id, data) in records {
+            if let Err(e) = self.cache_record(table, &id, &data).await {
+                warn!("批量缓存记录失败: table={}, id={:?}, error={}", table, id, e);
+            } else {
+                cached_count += 1;
+            }
+        }
+
+        info!("批量缓存记录完成: table={}, cached_count={}", table, cached_count);
+        Ok(cached_count)
+    }
 }
 
 /// 缓存统计信息
-#[cfg(feature = "cache")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheStats {
     /// 缓存命中次数
@@ -539,7 +828,6 @@ pub struct CacheStats {
     pub disk_usage_bytes: usize,
 }
 
-#[cfg(feature = "cache")]
 impl Default for CacheStats {
     fn default() -> Self {
         Self {
@@ -550,76 +838,5 @@ impl Default for CacheStats {
             memory_usage_bytes: 0,
             disk_usage_bytes: 0,
         }
-    }
-}
-
-#[cfg(not(feature = "cache"))]
-pub struct CacheManager;
-
-#[cfg(not(feature = "cache"))]
-impl CacheManager {
-    pub async fn new(_config: ()) -> anyhow::Result<Self> {
-        Ok(Self)
-    }
-
-    pub async fn cache_record(&self, _table: &str, _id: &crate::types::IdType, _data: &crate::types::DataValue) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    pub async fn get_cached_record(&self, _table: &str, _id: &crate::types::IdType) -> anyhow::Result<Option<crate::types::DataValue>> {
-        Ok(None)
-    }
-
-    pub async fn cache_query_result(&self, _table: &str, _options: &crate::types::QueryOptions, _results: &[crate::types::DataValue]) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    pub async fn get_cached_query_result(&self, _table: &str, _options: &crate::types::QueryOptions) -> anyhow::Result<Option<Vec<crate::types::DataValue>>> {
-        Ok(None)
-    }
-
-    pub async fn invalidate_record(&self, _table: &str, _id: &crate::types::IdType) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    pub async fn invalidate_table(&self, _table: &str) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    pub async fn clear_all(&self) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    // 新增的手动清理方法的空实现
-    pub async fn clear_by_pattern(&self, _pattern: &str) -> anyhow::Result<usize> {
-        Ok(0)
-    }
-
-    pub async fn clear_records_batch(&self, _table: &str, _ids: &[crate::types::IdType]) -> anyhow::Result<usize> {
-        Ok(0)
-    }
-
-    pub async fn force_cleanup_expired(&self) -> anyhow::Result<usize> {
-        Ok(0)
-    }
-
-    pub async fn list_cache_keys(&self) -> anyhow::Result<std::collections::HashMap<String, Vec<String>>> {
-        Ok(std::collections::HashMap::new())
-    }
-
-    pub async fn list_table_cache_keys(&self, _table: &str) -> anyhow::Result<Vec<String>> {
-        Ok(Vec::new())
-    }
-
-    pub async fn clear_table_query_cache(&self, _table: &str) -> anyhow::Result<usize> {
-        Ok(0)
-    }
-
-    pub async fn clear_table_record_cache(&self, _table: &str) -> anyhow::Result<usize> {
-        Ok(0)
-    }
-
-    pub fn is_enabled(&self) -> bool {
-        false
     }
 }

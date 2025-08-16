@@ -119,49 +119,32 @@ impl CachePerformanceTest {
     
     /// 创建带缓存的数据库配置
     fn create_cached_database_config() -> DatabaseConfig {
-        #[cfg(feature = "cache")]
-        {
-            let cache_config = CacheConfig::default()
-                .enabled(true)
-                .with_strategy(CacheStrategy::Lru)
-                .with_l1_config(
-                    L1CacheConfig::new()
-                        .with_max_capacity(1000)
-                        .with_max_memory_mb(50)
-                        .enable_stats(true)
-                )
-                .with_ttl_config(
-                    TtlConfig::new()
-                        .with_default_ttl_secs(300) // 5分钟
-                        .with_max_ttl_secs(3600)    // 1小时
-                        .with_check_interval_secs(60) // 1分钟检查一次
-                );
-            
-            DatabaseConfig {
-                db_type: DatabaseType::SQLite,
-                connection: ConnectionConfig::SQLite {
-                    path: ":memory:".to_string(),
-                    create_if_missing: true,
-                },
-                pool: PoolConfig::default(),
-                alias: "cached_db".to_string(),
-                cache: Some(cache_config),
-                id_strategy: IdStrategy::Uuid,
-            }
-        }
+        let cache_config = CacheConfig::default()
+            .enabled(true)
+            .with_strategy(CacheStrategy::Lru)
+            .with_l1_config(
+                L1CacheConfig::new()
+                    .with_max_capacity(1000)
+                    .with_max_memory_mb(50)
+                    .enable_stats(true)
+            )
+            .with_ttl_config(
+                TtlConfig::new()
+                    .with_default_ttl_secs(300) // 5分钟
+                    .with_max_ttl_secs(3600)    // 1小时
+                    .with_check_interval_secs(60) // 1分钟检查一次
+            );
         
-        #[cfg(not(feature = "cache"))]
-        {
-            DatabaseConfig {
-                db_type: DatabaseType::SQLite,
-                connection: ConnectionConfig::SQLite {
-                    path: ":memory:".to_string(),
-                    create_if_missing: true,
-                },
-                pool: PoolConfig::default(),
-                alias: "cached_db".to_string(),
-                id_strategy: IdStrategy::Uuid,
-            }
+        DatabaseConfig {
+            db_type: DatabaseType::SQLite,
+            connection: ConnectionConfig::SQLite {
+                path: "./test_data/cache_performance_cached.db".to_string(),
+                create_if_missing: true,
+            },
+            pool: PoolConfig::default(),
+            alias: "cached_db".to_string(),
+            cache: Some(cache_config),
+            id_strategy: IdStrategy::Uuid,
         }
     }
     
@@ -170,12 +153,11 @@ impl CachePerformanceTest {
         DatabaseConfig {
             db_type: DatabaseType::SQLite,
             connection: ConnectionConfig::SQLite {
-                path: ":memory:".to_string(),
+                path: "./test_data/cache_performance_non_cached.db".to_string(),
                 create_if_missing: true,
             },
             pool: PoolConfig::default(),
             alias: "non_cached_db".to_string(),
-            #[cfg(feature = "cache")]
             cache: None, // 明确禁用缓存
             id_strategy: IdStrategy::Uuid,
         }
@@ -466,27 +448,38 @@ impl CachePerformanceTest {
         println!("   • 写操作（创建、更新）的性能提升相对有限");
         println!("   • 可根据实际业务场景调整缓存 TTL 和容量配置");
         
-        #[cfg(feature = "cache")]
-        {
-            println!("\n🔧 缓存配置信息:");
-            println!("   • 缓存策略: LRU");
-            println!("   • L1 缓存容量: 1000 条记录");
-            println!("   • L1 缓存内存限制: 50 MB");
-            println!("   • 默认 TTL: 5 分钟");
-            println!("   • 最大 TTL: 1 小时");
-        }
-        
-        #[cfg(not(feature = "cache"))]
-        {
-            println!("\n⚠️ 注意: 当前编译未启用 cache 特性，缓存功能可能不可用");
-            println!("   请使用 --features cache 重新编译以启用完整的缓存功能");
-        }
+        println!("\n🔧 缓存配置信息:");
+        println!("   • 缓存策略: LRU");
+        println!("   • L1 缓存容量: 1000 条记录");
+        println!("   • L1 缓存内存限制: 50 MB");
+        println!("   • 默认 TTL: 5 分钟");
+        println!("   • 最大 TTL: 1 小时");
     }
 }
 
 /// 清理测试文件
 async fn cleanup_test_files() {
-    // 使用内存数据库，无需清理文件
+    // 清理测试数据库文件
+    let test_files = [
+        "./test_data/cache_performance_cached.db",
+        "./test_data/cache_performance_non_cached.db",
+    ];
+    
+    for file_path in &test_files {
+        if std::path::Path::new(file_path).exists() {
+            if let Err(e) = tokio::fs::remove_file(file_path).await {
+                eprintln!("⚠️  清理文件 {} 失败: {}", file_path, e);
+            } else {
+                println!("🗑️  已清理文件: {}", file_path);
+            }
+        }
+    }
+    
+    // 尝试清理测试目录（如果为空）
+    if let Err(_) = tokio::fs::remove_dir("./test_data").await {
+        // 目录不为空或不存在，忽略错误
+    }
+    
     println!("🧹 清理测试文件完成");
 }
 

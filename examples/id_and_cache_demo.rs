@@ -14,13 +14,11 @@ use rat_quickdb::{
     QuickDbResult,
 };
 
-#[cfg(feature = "cache")]
 use rat_quickdb::types::{
     CacheConfig, CacheStrategy, L1CacheConfig, L2CacheConfig, TtlConfig,
     CompressionConfig, CompressionAlgorithm
 };
 
-#[cfg(feature = "cache")]
 use rat_quickdb::manager::{get_cache_manager, get_cache_stats, clear_cache};
 
 use serde::{Deserialize, Serialize};
@@ -177,7 +175,6 @@ async fn demonstrate_mongodb_auto_increment() -> QuickDbResult<()> {
 }
 
 /// 演示缓存功能
-#[cfg(feature = "cache")]
 async fn demonstrate_cache_functionality() -> QuickDbResult<()> {
     println!("\n--- 缓存功能演示 ---");
     
@@ -288,12 +285,5 @@ async fn demonstrate_cache_functionality() -> QuickDbResult<()> {
     clear_cache("cache_db").await?;
     println!("所有缓存已清理");
     
-    Ok(())
-}
-
-#[cfg(not(feature = "cache"))]
-async fn demonstrate_cache_functionality() -> QuickDbResult<()> {
-    println!("\n--- 缓存功能演示 ---");
-    println!("注意: cache 特性未启用，跳过缓存功能演示");
     Ok(())
 }

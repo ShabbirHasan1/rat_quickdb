@@ -15,8 +15,7 @@ use zerg_creep::{info, warn, error};
 pub struct IdGenerator {
     /// ID 生成策略
     strategy: IdStrategy,
-    /// 雪花算法生成器（如果启用）
-    #[cfg(feature = "snowflake-id")]
+    /// 雪花算法生成器
     snowflake_generator: Option<Arc<SnowflakeGenerator>>,
     /// 自增计数器（用于测试或简单场景）
     auto_increment_counter: Arc<AtomicU64>,
@@ -25,7 +24,6 @@ pub struct IdGenerator {
 impl IdGenerator {
     /// 创建新的 ID 生成器
     pub fn new(strategy: IdStrategy) -> Result<Self> {
-        #[cfg(feature = "snowflake-id")]
         let snowflake_generator = match &strategy {
             IdStrategy::Snowflake { machine_id, datacenter_id } => {
                 Some(Arc::new(SnowflakeGenerator::new(*machine_id, *datacenter_id)?))
@@ -35,7 +33,6 @@ impl IdGenerator {
 
         Ok(Self {
             strategy,
-            #[cfg(feature = "snowflake-id")]
             snowflake_generator,
             auto_increment_counter: Arc::new(AtomicU64::new(1)),
         })
@@ -52,7 +49,6 @@ impl IdGenerator {
                 let uuid = Uuid::new_v4();
                 Ok(IdType::String(uuid.to_string()))
             }
-            #[cfg(feature = "snowflake-id")]
             IdStrategy::Snowflake { .. } => {
                 if let Some(generator) = &self.snowflake_generator {
                     let id = generator.generate().await?;
@@ -96,7 +92,6 @@ impl IdGenerator {
         match (&self.strategy, id) {
             (IdStrategy::AutoIncrement, IdType::Number(n)) => *n > 0,
             (IdStrategy::Uuid, IdType::String(s)) => Uuid::parse_str(s).is_ok(),
-            #[cfg(feature = "snowflake-id")]
             (IdStrategy::Snowflake { .. }, IdType::String(s)) => {
                 s.parse::<u64>().is_ok()
             }
@@ -120,7 +115,7 @@ impl IdGenerator {
 }
 
 /// 雪花算法生成器
-#[cfg(feature = "snowflake-id")]
+#[derive(Debug)]
 struct SnowflakeGenerator {
     /// 机器 ID（10 位）
     machine_id: u16,
@@ -132,7 +127,6 @@ struct SnowflakeGenerator {
     last_timestamp: Arc<AtomicU64>,
 }
 
-#[cfg(feature = "snowflake-id")]
 impl SnowflakeGenerator {
     /// 创建新的雪花算法生成器
     fn new(machine_id: u16, datacenter_id: u8) -> Result<Self> {
@@ -285,7 +279,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "snowflake-id")]
     #[tokio::test]
     async fn test_snowflake_generator() {
         let generator = IdGenerator::new(IdStrategy::Snowflake {

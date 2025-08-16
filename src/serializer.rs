@@ -419,6 +419,7 @@ static DEFAULT_SERIALIZER: once_cell::sync::Lazy<DataSerializer> =
         DataSerializer::default()
     });
 
+#[cfg(feature = "python")]
 static PYO3_SERIALIZER: once_cell::sync::Lazy<DataSerializer> = 
     once_cell::sync::Lazy::new(|| {
         DataSerializer::new(SerializerConfig::for_pyo3())
@@ -442,12 +443,14 @@ pub fn serialize_records(records: Vec<HashMap<String, DataValue>>) -> QuickDbRes
 }
 
 /// 便捷函数：使用PyO3兼容配置序列化记录
+#[cfg(feature = "python")]
 pub fn serialize_record_for_pyo3(data: HashMap<String, DataValue>) -> QuickDbResult<String> {
     let result = PYO3_SERIALIZER.serialize_record(data)?;
     result.to_json_string()
 }
 
 /// 便捷函数：使用PyO3兼容配置序列化多个记录
+#[cfg(feature = "python")]
 pub fn serialize_records_for_pyo3(records: Vec<HashMap<String, DataValue>>) -> QuickDbResult<String> {
     let result = PYO3_SERIALIZER.serialize_records(records)?;
     result.to_json_string()
@@ -476,6 +479,7 @@ pub fn serialize_query_result(
 }
 
 /// 便捷函数：为PyO3序列化查询结果
+#[cfg(feature = "python")]
 pub fn serialize_query_result_for_pyo3(
     records: Vec<HashMap<String, DataValue>>,
     total_count: Option<u64>,

@@ -34,19 +34,22 @@ once_cell = "1.0"
 
 # 数据库驱动
 # SQLite
-sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite", "chrono", "uuid", "json"], optional = true }
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite", "mysql", "postgres", "chrono", "uuid", "json"] }
 # PostgreSQL
-tokio-postgres = { version = "0.7", optional = true }
+tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-serde_json-1", "with-uuid-1"] }
 # MySQL
-mysql_async = { version = "0.34", optional = true }
+mysql_async = { version = "0.34" }
 # MongoDB
-mongodb = { version = "2.8", optional = true }
+mongodb = { version = "2.8" }
 
 # 时间处理
 chrono = { version = "0.4", features = ["serde"] }
 
 # UUID 支持
 uuid = { version = "1.0", features = ["v4", "serde"] }
+
+# URL 编码（MongoDB URI 生成需要）
+urlencoding = "2.1"
 
 # 字符串处理
 regex = "1.0"
@@ -58,29 +61,15 @@ bytes = "1.0"
 pyo3 = { version = "0.22", features = ["extension-module"], optional = true }
 
 # 缓存支持
-rat_memcache = { path = "../rat_memcache", optional = true }
+rat_memcache = { path = "../rat_memcache" }
 # 雪花算法ID生成
-snowflake = { version = "1.3", optional = true }
+snowflake = { version = "1.3" }
 
 [features]
-default = ["sqlite"]
-# 数据库后端特性
-sqlite = ["dep:sqlx"]
-postgresql = ["dep:tokio-postgres"]
-mysql = ["dep:mysql_async"]
-mongodb = ["dep:mongodb"]
-# PyO3 绑定
+default = []
+# PyO3 绑定 (默认禁用)
 python = ["dep:pyo3"]
-# 缓存支持
-cache = ["dep:rat_memcache"]
-# 雪花算法ID支持
-snowflake-id = ["dep:snowflake"]
-# 全部数据库支持
-all-databases = ["sqlite", "postgresql", "mysql", "mongodb"]
-# 全部功能支持
-full = ["all-databases", "cache", "snowflake-id", "python"]
 
 [dev-dependencies]
 tokio-test = "0.4"
 tempfile = "3.8"
-env_logger = "0.10"

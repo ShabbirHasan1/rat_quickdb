@@ -17,7 +17,6 @@ pub mod task_queue;
 pub mod table;
 
 // 条件编译的模块
-#[cfg(feature = "cache")]
 pub mod cache;
 pub mod id_generator;
 
@@ -31,7 +30,6 @@ pub use manager::{
     get_id_generator, get_mongo_auto_increment_generator
 };
 
-#[cfg(feature = "cache")]
 pub use manager::{
     get_cache_manager, get_cache_stats, clear_cache, clear_all_caches
 };
@@ -52,7 +50,6 @@ pub use task_queue::{
 pub use table::{TableManager, TableSchema, ColumnDefinition, ColumnType, IndexType};
 
 // 条件导出缓存相关类型
-#[cfg(feature = "cache")]
 pub use cache::{CacheManager, CacheStats};
 
 // 导出ID生成器相关类型

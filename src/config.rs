@@ -96,7 +96,6 @@ pub struct DatabaseConfigBuilder {
     pool: Option<PoolConfig>,
     alias: Option<String>,
     /// 缓存配置（可选）
-    #[cfg(feature = "cache")]
     cache: Option<CacheConfig>,
     /// ID 生成策略
     id_strategy: Option<IdStrategy>,
@@ -165,7 +164,6 @@ impl DatabaseConfigBuilder {
             connection: None,
             pool: None,
             alias: None,
-            #[cfg(feature = "cache")]
             cache: None,
             id_strategy: None,
         }
@@ -226,7 +224,6 @@ impl DatabaseConfigBuilder {
     /// # 参数
     /// 
     /// * `cache` - 缓存配置
-    #[cfg(feature = "cache")]
     pub fn cache(mut self, cache: CacheConfig) -> Self {
         self.cache = Some(cache);
         self
@@ -268,7 +265,6 @@ impl DatabaseConfigBuilder {
             connection,
             pool,
             alias,
-            #[cfg(feature = "cache")]
             cache: self.cache,
             id_strategy,
         })
@@ -924,29 +920,57 @@ pub fn mysql_config<S: Into<String>>(
         .build()
 }
 
-/// 创建MongoDB数据库配置
+/// 创建MongoDB数据库配置（使用分离的连接参数）
 /// 
 /// # 参数
 /// 
 /// * `alias` - 数据库别名
-/// * `uri` - 连接字符串
+/// * `host` - 主机地址
+/// * `port` - 端口号
 /// * `database` - 数据库名
+/// * `username` - 用户名（可选）
+/// * `password` - 密码（可选）
 /// * `pool_config` - 连接池配置
 pub fn mongodb_config<S: Into<String>>(
     alias: S,
-    uri: S,
+    host: S,
+    port: u16,
     database: S,
+    username: Option<S>,
+    password: Option<S>,
+    pool_config: PoolConfig,
+) -> Result<DatabaseConfig, QuickDbError> {
+    let connection_config = MongoDbConnectionBuilder::new(host, port, database)
+        .with_auth(
+            username.map(|u| u.into()).unwrap_or_default(),
+            password.map(|p| p.into()).unwrap_or_default()
+        )
+        .build();
+        
+    DatabaseConfig::builder()
+        .db_type(DatabaseType::MongoDB)
+        .connection(connection_config)
+        .pool(pool_config)
+        .alias(alias)
+        .id_strategy(IdStrategy::ObjectId) // MongoDB默认使用ObjectId
+        .build()
+}
+
+/// 创建MongoDB数据库配置（使用构建器模式）
+/// 
+/// # 参数
+/// 
+/// * `alias` - 数据库别名
+/// * `builder` - MongoDB连接构建器
+/// * `pool_config` - 连接池配置
+pub fn mongodb_config_with_builder<S: Into<String>>(
+    alias: S,
+    builder: MongoDbConnectionBuilder,
     pool_config: PoolConfig,
 ) -> Result<DatabaseConfig, QuickDbError> {
     DatabaseConfig::builder()
         .db_type(DatabaseType::MongoDB)
-        .connection(ConnectionConfig::MongoDB {
-            uri: uri.into(),
-            database: database.into(),
-            auth_source: None,
-            tls_config: None,
-            zstd_config: None,
-        })
+        .connection(builder.build())
         .pool(pool_config)
         .alias(alias)
         .id_strategy(IdStrategy::ObjectId) // MongoDB默认使用ObjectId

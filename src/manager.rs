@@ -6,7 +6,6 @@ use crate::error::{QuickDbError, QuickDbResult};
 use crate::pool::{ConnectionPool, PooledConnection, ExtendedPoolConfig};
 use crate::types::{DatabaseConfig, DatabaseType, IdType};
 use crate::id_generator::{IdGenerator, MongoAutoIncrementGenerator};
-#[cfg(feature = "cache")]
 use crate::cache::{CacheManager, CacheStats};
 use dashmap::DashMap;
 use std::sync::Arc;
@@ -28,7 +27,6 @@ pub struct PoolManager {
     /// MongoDB自增ID生成器映射 (别名 -> 自增生成器)
     mongo_auto_increment_generators: Arc<DashMap<String, Arc<MongoAutoIncrementGenerator>>>,
     /// 缓存管理器映射 (别名 -> 缓存管理器)
-    #[cfg(feature = "cache")]
     cache_managers: Arc<DashMap<String, Arc<CacheManager>>>,
 }
 
@@ -43,7 +41,6 @@ impl PoolManager {
             cleanup_handle: Arc::new(RwLock::new(None)),
             id_generators: Arc::new(DashMap::new()),
             mongo_auto_increment_generators: Arc::new(DashMap::new()),
-            #[cfg(feature = "cache")]
             cache_managers: Arc::new(DashMap::new()),
         }
     }
@@ -68,7 +65,6 @@ impl PoolManager {
         })?;
         
         // 初始化缓存管理器（如果配置了缓存）
-        #[cfg(feature = "cache")]
         if let Some(cache_config) = &config.cache {
             match CacheManager::new(cache_config.clone()).await {
                 Ok(cache_manager) => {
@@ -132,7 +128,6 @@ impl PoolManager {
             self.mongo_auto_increment_generators.remove(alias);
             
             // 清理缓存管理器
-            #[cfg(feature = "cache")]
             if let Some((_, cache_manager)) = self.cache_managers.remove(alias) {
                 // 这里可以添加缓存清理逻辑
                 info!("清理数据库 {} 的缓存管理器", alias);
@@ -253,7 +248,6 @@ impl PoolManager {
     }
 
     /// 获取缓存管理器
-    #[cfg(feature = "cache")]
     pub fn get_cache_manager(&self, alias: &str) -> QuickDbResult<Arc<CacheManager>> {
         if let Some(cache_manager) = self.cache_managers.get(alias) {
             Ok(cache_manager.clone())
@@ -263,14 +257,12 @@ impl PoolManager {
     }
 
     /// 获取缓存统计信息
-    #[cfg(feature = "cache")]
     pub async fn get_cache_stats(&self, alias: &str) -> QuickDbResult<CacheStats> {
         let cache_manager = self.get_cache_manager(alias)?;
         Ok(cache_manager.get_stats().await?)
     }
 
     /// 清理指定数据库的缓存
-    #[cfg(feature = "cache")]
     pub async fn clear_cache(&self, alias: &str) -> QuickDbResult<()> {
         let cache_manager = self.get_cache_manager(alias)?;
         cache_manager.clear_all().await;
@@ -279,7 +271,6 @@ impl PoolManager {
     }
 
     /// 清理所有数据库的缓存
-    #[cfg(feature = "cache")]
     pub async fn clear_all_caches(&self) -> QuickDbResult<()> {
         for entry in self.cache_managers.iter() {
             let alias = entry.key();
@@ -354,7 +345,6 @@ impl PoolManager {
         self.mongo_auto_increment_generators.clear();
         
         // 清空缓存管理器
-        #[cfg(feature = "cache")]
         self.cache_managers.clear();
         
         // 清空默认别名
@@ -455,25 +445,21 @@ pub fn get_mongo_auto_increment_generator(alias: &str) -> QuickDbResult<Arc<Mong
 }
 
 /// 便捷函数 - 获取缓存管理器
-#[cfg(feature = "cache")]
 pub fn get_cache_manager(alias: &str) -> QuickDbResult<Arc<CacheManager>> {
     get_global_pool_manager().get_cache_manager(alias)
 }
 
 /// 便捷函数 - 获取缓存统计信息
-#[cfg(feature = "cache")]
 pub async fn get_cache_stats(alias: &str) -> QuickDbResult<CacheStats> {
     get_global_pool_manager().get_cache_stats(alias).await
 }
 
 /// 便捷函数 - 清理指定数据库的缓存
-#[cfg(feature = "cache")]
 pub async fn clear_cache(alias: &str) -> QuickDbResult<()> {
     get_global_pool_manager().clear_cache(alias).await
 }
 
 /// 便捷函数 - 清理所有数据库的缓存
-#[cfg(feature = "cache")]
 pub async fn clear_all_caches() -> QuickDbResult<()> {
     get_global_pool_manager().clear_all_caches().await
 }
@@ -495,7 +481,6 @@ pub async fn clear_all_caches() -> QuickDbResult<()> {
 /// # Ok(())
 /// # }
 /// ```
-#[cfg(feature = "cache")]
 pub async fn clear_cache_by_pattern(alias: &str, pattern: &str) -> QuickDbResult<usize> {
     let cache_manager = get_global_pool_manager().get_cache_manager(alias)?;
     cache_manager.clear_by_pattern(pattern).await
@@ -508,7 +493,6 @@ pub async fn clear_cache_by_pattern(alias: &str, pattern: &str) -> QuickDbResult
 /// * `alias` - 数据库别名
 /// * `table` - 表名
 /// * `ids` - 要清理的记录ID列表
-#[cfg(feature = "cache")]
 pub async fn clear_records_cache_batch(alias: &str, table: &str, ids: &[IdType]) -> QuickDbResult<usize> {
     let cache_manager = get_global_pool_manager().get_cache_manager(alias)?;
     cache_manager.clear_records_batch(table, ids).await
@@ -518,7 +502,6 @@ pub async fn clear_records_cache_batch(alias: &str, table: &str, ids: &[IdType])
 /// 便捷函数 - 强制清理过期缓存
 /// 
 /// 手动触发过期缓存的清理，通常用于内存紧张或需要立即释放空间的场景
-#[cfg(feature = "cache")]
 pub async fn force_cleanup_expired_cache(alias: &str) -> QuickDbResult<usize> {
     let cache_manager = get_global_pool_manager().get_cache_manager(alias)?;
     cache_manager.force_cleanup_expired().await
@@ -528,7 +511,6 @@ pub async fn force_cleanup_expired_cache(alias: &str) -> QuickDbResult<usize> {
 /// 便捷函数 - 获取所有缓存键列表（按表分组）
 /// 
 /// 用于调试和监控，可以查看当前缓存中有哪些键
-#[cfg(feature = "cache")]
 pub async fn list_cache_keys(alias: &str) -> QuickDbResult<std::collections::HashMap<String, Vec<String>>> {
     let cache_manager = get_global_pool_manager().get_cache_manager(alias)?;
     cache_manager.list_cache_keys().await
@@ -536,7 +518,6 @@ pub async fn list_cache_keys(alias: &str) -> QuickDbResult<std::collections::Has
 }
 
 /// 便捷函数 - 获取指定表的缓存键列表
-#[cfg(feature = "cache")]
 pub async fn list_table_cache_keys(alias: &str, table: &str) -> QuickDbResult<Vec<String>> {
     let cache_manager = get_global_pool_manager().get_cache_manager(alias)?;
     cache_manager.list_table_cache_keys(table).await
@@ -546,7 +527,6 @@ pub async fn list_table_cache_keys(alias: &str, table: &str) -> QuickDbResult<Ve
 /// 便捷函数 - 清理指定表的查询缓存
 /// 
 /// 只清理查询缓存，保留记录缓存
-#[cfg(feature = "cache")]
 pub async fn clear_table_query_cache(alias: &str, table: &str) -> QuickDbResult<usize> {
     let cache_manager = get_global_pool_manager().get_cache_manager(alias)?;
     cache_manager.clear_table_query_cache(table).await
@@ -556,7 +536,6 @@ pub async fn clear_table_query_cache(alias: &str, table: &str) -> QuickDbResult<
 /// 便捷函数 - 清理指定表的记录缓存
 /// 
 /// 只清理记录缓存，保留查询缓存
-#[cfg(feature = "cache")]
 pub async fn clear_table_record_cache(alias: &str, table: &str) -> QuickDbResult<usize> {
     let cache_manager = get_global_pool_manager().get_cache_manager(alias)?;
     cache_manager.clear_table_record_cache(table).await
@@ -564,7 +543,6 @@ pub async fn clear_table_record_cache(alias: &str, table: &str) -> QuickDbResult
 }
 
 /// 便捷函数 - 清理指定表的所有缓存（记录+查询）
-#[cfg(feature = "cache")]
 pub async fn clear_table_all_cache(alias: &str, table: &str) -> QuickDbResult<usize> {
     let cache_manager = get_global_pool_manager().get_cache_manager(alias)?;
     let record_count = cache_manager.clear_table_record_cache(table).await
@@ -594,7 +572,6 @@ mod tests {
             pool: PoolConfig::default(),
             alias: alias.to_string(),
             id_strategy: IdStrategy::AutoIncrement,
-            #[cfg(feature = "cache")]
             cache: None,
         }
     }
@@ -607,7 +584,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "sqlite")]
     async fn test_add_database() {
         let manager = PoolManager::new();
         let config = create_test_config("test_db");
@@ -624,7 +600,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "sqlite")]
     async fn test_get_connection() {
         let manager = PoolManager::new();
         let config = create_test_config("test_db");

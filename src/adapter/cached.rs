@@ -35,21 +35,21 @@ impl CachedDatabaseAdapter {
 
 #[async_trait]
 impl DatabaseAdapter for CachedDatabaseAdapter {
-    /// 创建记录 - 创建成功后清理相关缓存
+    /// 创建记录 - 创建成功后智能清理相关缓存
     async fn create(
         &self,
         connection: &DatabaseConnection,
         table: &str,
         data: &HashMap<String, DataValue>,
     ) -> QuickDbResult<Value> {
-        // 直接调用内部适配器创建记录
         let result = self.inner.create(connection, table, data).await;
         
-        // 创建成功后清理相关缓存
+        // 创建成功后只清理查询缓存，保留记录缓存
         if result.is_ok() {
-            if let Err(e) = self.cache_manager.invalidate_table(table).await {
-                warn!("清理表缓存失败: {}", e);
+            if let Err(e) = self.cache_manager.clear_table_query_cache(table).await {
+                warn!("清理表查询缓存失败: {}", e);
             }
+            debug!("已清理表查询缓存: table={}", table);
         }
         
         result
@@ -142,7 +142,7 @@ impl DatabaseAdapter for CachedDatabaseAdapter {
         result
     }
 
-    /// 更新记录 - 更新成功后清理相关缓存
+    /// 更新记录 - 更新成功后智能清理相关缓存
     async fn update(
         &self,
         connection: &DatabaseConnection,
@@ -153,17 +153,20 @@ impl DatabaseAdapter for CachedDatabaseAdapter {
         // 直接调用内部适配器更新记录
         let result = self.inner.update(connection, table, conditions, data).await;
         
-        // 更新成功后清理相关缓存
-        if result.is_ok() {
-            if let Err(e) = self.cache_manager.invalidate_table(table).await {
-                warn!("清理表缓存失败: {}", e);
+        // 更新成功后只清理查询缓存，避免过度清理
+        if let Ok(updated_count) = result {
+            if updated_count > 0 {
+                if let Err(e) = self.cache_manager.clear_table_query_cache(table).await {
+                    warn!("清理表查询缓存失败: {}", e);
+                }
+                debug!("已清理表查询缓存: table={}, updated_count={}", table, updated_count);
             }
         }
         
         result
     }
 
-    /// 根据ID更新记录 - 更新成功后清理相关缓存
+    /// 根据ID更新记录 - 更新成功后精确清理相关缓存
     async fn update_by_id(
         &self,
         connection: &DatabaseConnection,
@@ -174,7 +177,7 @@ impl DatabaseAdapter for CachedDatabaseAdapter {
         // 直接调用内部适配器更新记录
         let result = self.inner.update_by_id(connection, table, id, data).await;
         
-        // 更新成功后清理相关缓存
+        // 更新成功后精确清理相关缓存
         if let Ok(true) = result {
             // 清理特定记录的缓存
             let id_value = match id {
@@ -185,21 +188,24 @@ impl DatabaseAdapter for CachedDatabaseAdapter {
                     return result;
                 }
             };
-            {
-                if let Err(e) = self.cache_manager.invalidate_record(table, &id_value).await {
-                    warn!("清理记录缓存失败: {}", e);
-                }
+            
+            // 清理记录缓存
+            if let Err(e) = self.cache_manager.invalidate_record(table, &id_value).await {
+                warn!("清理记录缓存失败: {}", e);
             }
-            // 清理表级别的查询缓存
-            if let Err(e) = self.cache_manager.invalidate_table(table).await {
-                warn!("清理表缓存失败: {}", e);
+            
+            // 只清理查询缓存，不清理其他记录缓存
+            if let Err(e) = self.cache_manager.clear_table_query_cache(table).await {
+                warn!("清理表查询缓存失败: {}", e);
             }
+            
+            debug!("已清理记录和查询缓存: table={}, id={:?}", table, id);
         }
         
         result
     }
 
-    /// 删除记录 - 删除成功后清理相关缓存
+    /// 删除记录 - 删除成功后智能清理相关缓存
     async fn delete(
         &self,
         connection: &DatabaseConnection,
@@ -209,17 +215,24 @@ impl DatabaseAdapter for CachedDatabaseAdapter {
         // 直接调用内部适配器删除记录
         let result = self.inner.delete(connection, table, conditions).await;
         
-        // 删除成功后清理相关缓存
-        if result.is_ok() {
-            if let Err(e) = self.cache_manager.invalidate_table(table).await {
-                warn!("清理表缓存失败: {}", e);
+        // 删除成功后智能清理相关缓存
+        if let Ok(deleted_count) = result {
+            if deleted_count > 0 {
+                // 对于批量删除，清理整个表的缓存是合理的
+                if let Err(e) = self.cache_manager.clear_table_query_cache(table).await {
+                    warn!("清理表查询缓存失败: {}", e);
+                }
+                if let Err(e) = self.cache_manager.clear_table_record_cache(table).await {
+                    warn!("清理表记录缓存失败: {}", e);
+                }
+                debug!("已清理表缓存: table={}, deleted_count={}", table, deleted_count);
             }
         }
         
         result
     }
 
-    /// 根据ID删除记录 - 删除成功后清理相关缓存
+    /// 根据ID删除记录 - 删除成功后精确清理相关缓存
     async fn delete_by_id(
         &self,
         connection: &DatabaseConnection,
@@ -229,7 +242,7 @@ impl DatabaseAdapter for CachedDatabaseAdapter {
         // 直接调用内部适配器删除记录
         let result = self.inner.delete_by_id(connection, table, id).await;
         
-        // 删除成功后清理相关缓存
+        // 删除成功后精确清理相关缓存
         if let Ok(true) = result {
             // 清理特定记录的缓存
             let id_value = match id {
@@ -240,15 +253,18 @@ impl DatabaseAdapter for CachedDatabaseAdapter {
                     return result;
                 }
             };
-            {
-                if let Err(e) = self.cache_manager.invalidate_record(table, &id_value).await {
-                    warn!("清理记录缓存失败: {}", e);
-                }
+            
+            // 清理记录缓存
+            if let Err(e) = self.cache_manager.invalidate_record(table, &id_value).await {
+                warn!("清理记录缓存失败: {}", e);
             }
-            // 清理表级别的查询缓存
-            if let Err(e) = self.cache_manager.invalidate_table(table).await {
-                warn!("清理表缓存失败: {}", e);
+            
+            // 只清理查询缓存
+            if let Err(e) = self.cache_manager.clear_table_query_cache(table).await {
+                warn!("清理表查询缓存失败: {}", e);
             }
+            
+            debug!("已清理记录和查询缓存: table={}, id={:?}", table, id);
         }
         
         result

@@ -20,7 +20,7 @@ async fn main() -> QuickDbResult<()> {
     let sqlite_config = DatabaseConfig::builder()
         .db_type(DatabaseType::SQLite)
         .connection(ConnectionConfig::SQLite {
-            path: "./test.db".to_string(),
+            path: "/tmp/test_basic_usage.db".to_string(),
             create_if_missing: true,
         })
         .pool(PoolConfig::builder()
@@ -31,6 +31,7 @@ async fn main() -> QuickDbResult<()> {
             .max_lifetime(3600)
             .build()?)
         .alias("default".to_string())
+        .id_strategy(IdStrategy::AutoIncrement) // 添加ID生成策略
         .build()?;
     
     // 添加数据库到连接池管理器
@@ -249,20 +250,16 @@ async fn create_users_table(odm: &AsyncOdmManager) -> QuickDbResult<()> {
         regex: None,
     });
     
-    // 获取连接和适配器
+    // 通过连接池创建表
     let manager = get_global_pool_manager();
-    let connection = manager.get_connection(Some("default")).await?;
-    let db_type = manager.get_database_type("default")?;
-    let adapter = rat_quickdb::adapter::create_adapter(&db_type)?;
-    
-    // 创建表
-    // 注意：在新架构中，我们不能直接调用adapter.create_table
-    // 这个方法应该通过连接池的操作队列来处理
-    // 这里仅作为示例展示旧的调用方式
-    println!("注意：create_table应该通过连接池操作队列处理，而不是直接调用适配器");
-    
-    // 释放连接
-    manager.release_connection(&connection).await?;
+    let pools = manager.get_connection_pools();
+    if let Some(pool) = pools.get("default") {
+        pool.create_table("users", &fields).await?;
+    } else {
+        return Err(QuickDbError::ConfigError {
+            message: "无法获取默认连接池".to_string(),
+        });
+    }
     
     println!("users表创建成功（如果不存在）");
     Ok(())
@@ -329,7 +326,7 @@ async fn demonstrate_multiple_databases() -> QuickDbResult<()> {
     let cache_config = DatabaseConfig::builder()
         .db_type(DatabaseType::SQLite)
         .connection(ConnectionConfig::SQLite {
-            path: ":memory:".to_string(),
+            path: "/tmp/test_cache.db".to_string(),
             create_if_missing: true,
         })
         .pool(PoolConfig::builder()
@@ -340,6 +337,7 @@ async fn demonstrate_multiple_databases() -> QuickDbResult<()> {
             .max_lifetime(3600)
             .build()?)
         .alias("cache".to_string())
+        .id_strategy(IdStrategy::AutoIncrement)
         .build()?;
     
     add_database(cache_config).await?;

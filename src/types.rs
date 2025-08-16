@@ -55,7 +55,6 @@ pub struct DatabaseConfig {
     /// 数据库别名（默认为 "default"）
     pub alias: String,
     /// 缓存配置（可选）
-    #[cfg(feature = "cache")]
     pub cache: Option<CacheConfig>,
     /// ID 生成策略
     pub id_strategy: IdStrategy,
@@ -107,16 +106,26 @@ pub enum ConnectionConfig {
     },
     /// MongoDB 连接配置
     MongoDB {
-        /// 连接字符串
-        uri: String,
+        /// 主机地址（支持IP或域名）
+        host: String,
+        /// 端口号（默认27017）
+        port: u16,
         /// 数据库名
         database: String,
-        /// 认证数据库
+        /// 用户名（可选）
+        username: Option<String>,
+        /// 密码（可选）
+        password: Option<String>,
+        /// 认证源数据库（可选，默认为admin）
         auth_source: Option<String>,
+        /// 是否启用直连模式
+        direct_connection: bool,
         /// TLS 配置选项
         tls_config: Option<TlsConfig>,
         /// ZSTD 压缩配置
         zstd_config: Option<ZstdConfig>,
+        /// 其他连接选项
+        options: Option<HashMap<String, String>>,
     },
 }
 
@@ -500,7 +509,6 @@ impl QueryOptions {
 }
 
 /// 缓存配置
-#[cfg(feature = "cache")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheConfig {
     /// 是否启用缓存
@@ -518,7 +526,6 @@ pub struct CacheConfig {
 }
 
 /// 缓存策略
-#[cfg(feature = "cache")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CacheStrategy {
     /// LRU（最近最少使用）
@@ -532,7 +539,6 @@ pub enum CacheStrategy {
 }
 
 /// L1 缓存配置（内存缓存）
-#[cfg(feature = "cache")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct L1CacheConfig {
     /// 最大容量（条目数）
@@ -543,8 +549,7 @@ pub struct L1CacheConfig {
     pub enable_stats: bool,
 }
 
-/// L2 缓存配置（持久化缓存）
-#[cfg(feature = "cache")]
+/// L2 缓存配置（磁盘缓存）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct L2CacheConfig {
     /// 存储路径
@@ -558,7 +563,6 @@ pub struct L2CacheConfig {
 }
 
 /// TTL 配置
-#[cfg(feature = "cache")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TtlConfig {
     /// 默认 TTL（秒）
@@ -570,7 +574,6 @@ pub struct TtlConfig {
 }
 
 /// 压缩配置
-#[cfg(feature = "cache")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompressionConfig {
     /// 是否启用压缩
@@ -582,7 +585,6 @@ pub struct CompressionConfig {
 }
 
 /// 压缩算法
-#[cfg(feature = "cache")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CompressionAlgorithm {
     /// ZSTD 压缩
@@ -601,7 +603,6 @@ pub enum IdStrategy {
     /// UUID v4（字符串）
     Uuid,
     /// 雪花算法 ID（字符串）
-    #[cfg(feature = "snowflake-id")]
     Snowflake {
         /// 机器 ID（0-1023）
         machine_id: u16,
@@ -633,7 +634,6 @@ impl std::fmt::Display for IdType {
 }
 
 // 实现默认值和构建器方法
-#[cfg(feature = "cache")]
 impl Default for CacheConfig {
     fn default() -> Self {
         Self {
@@ -647,7 +647,6 @@ impl Default for CacheConfig {
     }
 }
 
-#[cfg(feature = "cache")]
 impl CacheConfig {
     /// 创建新的缓存配置
     pub fn new() -> Self {
@@ -691,7 +690,6 @@ impl CacheConfig {
     }
 }
 
-#[cfg(feature = "cache")]
 impl Default for L1CacheConfig {
     fn default() -> Self {
         Self {
@@ -702,7 +700,6 @@ impl Default for L1CacheConfig {
     }
 }
 
-#[cfg(feature = "cache")]
 impl L1CacheConfig {
     /// 创建新的 L1 缓存配置
     pub fn new() -> Self {
@@ -728,7 +725,6 @@ impl L1CacheConfig {
     }
 }
 
-#[cfg(feature = "cache")]
 impl L2CacheConfig {
     /// 创建新的 L2 缓存配置
     pub fn new(storage_path: String) -> Self {
@@ -759,7 +755,6 @@ impl L2CacheConfig {
     }
 }
 
-#[cfg(feature = "cache")]
 impl Default for TtlConfig {
     fn default() -> Self {
         Self {
@@ -770,7 +765,6 @@ impl Default for TtlConfig {
     }
 }
 
-#[cfg(feature = "cache")]
 impl TtlConfig {
     /// 创建新的 TTL 配置
     pub fn new() -> Self {
@@ -796,7 +790,6 @@ impl TtlConfig {
     }
 }
 
-#[cfg(feature = "cache")]
 impl Default for CompressionConfig {
     fn default() -> Self {
         Self {
@@ -807,7 +800,6 @@ impl Default for CompressionConfig {
     }
 }
 
-#[cfg(feature = "cache")]
 impl CompressionConfig {
     /// 创建新的压缩配置
     pub fn new() -> Self {
@@ -846,7 +838,6 @@ impl IdStrategy {
     }
 
     /// 创建雪花算法策略
-    #[cfg(feature = "snowflake-id")]
     pub fn snowflake(machine_id: u16, datacenter_id: u8) -> Self {
         Self::Snowflake {
             machine_id,
@@ -883,6 +874,154 @@ impl From<&str> for IdType {
     }
 }
 
+/// MongoDB连接配置构建器
+/// 用于自动生成MongoDB连接URI，避免手动URL编码
+#[derive(Debug, Clone)]
+pub struct MongoDbConnectionBuilder {
+    host: String,
+    port: u16,
+    database: String,
+    username: Option<String>,
+    password: Option<String>,
+    auth_source: Option<String>,
+    direct_connection: bool,
+    tls_config: Option<TlsConfig>,
+    zstd_config: Option<ZstdConfig>,
+    options: HashMap<String, String>,
+}
+
+impl MongoDbConnectionBuilder {
+    /// 创建新的MongoDB连接构建器
+    pub fn new<H: Into<String>, D: Into<String>>(host: H, port: u16, database: D) -> Self {
+        Self {
+            host: host.into(),
+            port,
+            database: database.into(),
+            username: None,
+            password: None,
+            auth_source: None,
+            direct_connection: false,
+            tls_config: None,
+            zstd_config: None,
+            options: HashMap::new(),
+        }
+    }
+
+    /// 设置用户名和密码
+    pub fn with_auth<U: Into<String>, P: Into<String>>(mut self, username: U, password: P) -> Self {
+        self.username = Some(username.into());
+        self.password = Some(password.into());
+        self
+    }
+
+    /// 设置认证数据库
+    pub fn with_auth_source<A: Into<String>>(mut self, auth_source: A) -> Self {
+        self.auth_source = Some(auth_source.into());
+        self
+    }
+
+    /// 启用直接连接
+    pub fn with_direct_connection(mut self, direct: bool) -> Self {
+        self.direct_connection = direct;
+        self
+    }
+
+    /// 设置TLS配置
+    pub fn with_tls_config(mut self, tls_config: TlsConfig) -> Self {
+        self.tls_config = Some(tls_config);
+        self
+    }
+
+    /// 设置ZSTD压缩配置
+    pub fn with_zstd_config(mut self, zstd_config: ZstdConfig) -> Self {
+        self.zstd_config = Some(zstd_config);
+        self
+    }
+
+    /// 添加自定义选项
+    pub fn with_option<K: Into<String>, V: Into<String>>(mut self, key: K, value: V) -> Self {
+        self.options.insert(key.into(), value.into());
+        self
+    }
+
+    /// 构建ConnectionConfig::MongoDB
+    pub fn build(self) -> ConnectionConfig {
+        ConnectionConfig::MongoDB {
+            host: self.host,
+            port: self.port,
+            database: self.database,
+            username: self.username,
+            password: self.password,
+            auth_source: self.auth_source,
+            direct_connection: self.direct_connection,
+            tls_config: self.tls_config,
+            zstd_config: self.zstd_config,
+            options: if self.options.is_empty() { None } else { Some(self.options) },
+        }
+    }
+
+    /// 生成MongoDB连接URI（用于内部使用）
+    #[doc(hidden)]
+    pub fn build_uri(&self) -> String {
+        let mut uri = String::from("mongodb://");
+        
+        // 添加认证信息
+        if let (Some(username), Some(password)) = (&self.username, &self.password) {
+            uri.push_str(&urlencoding::encode(username));
+            uri.push(':');
+            uri.push_str(&urlencoding::encode(password));
+            uri.push('@');
+        }
+        
+        // 添加主机和端口
+        uri.push_str(&self.host);
+        uri.push(':');
+        uri.push_str(&self.port.to_string());
+        
+        // 添加数据库
+        uri.push('/');
+        uri.push_str(&self.database);
+        
+        // 构建查询参数
+        let mut params = Vec::new();
+        
+        if let Some(auth_source) = &self.auth_source {
+            params.push(format!("authSource={}", urlencoding::encode(auth_source)));
+        }
+        
+        if self.direct_connection {
+            params.push("directConnection=true".to_string());
+        }
+        
+        if let Some(tls_config) = &self.tls_config {
+            if tls_config.enabled {
+                params.push("tls=true".to_string());
+            }
+        }
+        
+        if let Some(zstd_config) = &self.zstd_config {
+            if zstd_config.enabled {
+                params.push("compressors=zstd".to_string());
+            }
+        }
+        
+        // 添加自定义选项
+         for (key, value) in &self.options {
+             params.push(format!("{}={}", 
+                 urlencoding::encode(key), 
+                 urlencoding::encode(value)
+             ));
+         }
+        
+        if !params.is_empty() {
+            uri.push('?');
+            uri.push_str(&params.join("&"));
+        }
+        
+        uri
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -910,5 +1049,51 @@ mod tests {
         assert_eq!(DataValue::Null.type_name(), "null");
         assert_eq!(DataValue::Bool(true).type_name(), "bool");
         assert_eq!(DataValue::String("test".to_string()).type_name(), "string");
+    }
+    
+    #[test]
+    fn test_mongodb_connection_builder() {
+        let config = MongoDbConnectionBuilder::new("localhost", 27017, "testdb")
+            .with_auth("user", "pass@word#123")
+            .with_auth_source("testdb")
+            .with_direct_connection(true)
+            .with_tls_config(TlsConfig::enabled())
+            .with_zstd_config(ZstdConfig::enabled())
+            .build();
+            
+        match config {
+            ConnectionConfig::MongoDB { 
+                host, port, database, username, password, 
+                auth_source, direct_connection, .. 
+            } => {
+                assert_eq!(host, "localhost");
+                assert_eq!(port, 27017);
+                assert_eq!(database, "testdb");
+                assert_eq!(username, Some("user".to_string()));
+                assert_eq!(password, Some("pass@word#123".to_string()));
+                assert_eq!(auth_source, Some("testdb".to_string()));
+                assert_eq!(direct_connection, true);
+            }
+            _ => panic!("Expected MongoDB config"),
+        }
+    }
+    
+    #[test]
+    fn test_mongodb_uri_generation() {
+        let builder = MongoDbConnectionBuilder::new("localhost", 27017, "testdb")
+            .with_auth("user", "pass@word#123")
+            .with_auth_source("testdb")
+            .with_direct_connection(true)
+            .with_tls_config(TlsConfig::enabled())
+            .with_zstd_config(ZstdConfig::enabled());
+            
+        let uri = builder.build_uri();
+        assert!(uri.contains("mongodb://"));
+        assert!(uri.contains("user:pass%40word%23123@"));
+        assert!(uri.contains("localhost:27017/testdb"));
+        assert!(uri.contains("authSource=testdb"));
+        assert!(uri.contains("directConnection=true"));
+        assert!(uri.contains("tls=true"));
+        assert!(uri.contains("compressors=zstd"));
     }
 }

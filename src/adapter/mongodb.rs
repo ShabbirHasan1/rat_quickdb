@@ -15,7 +15,6 @@ use mongodb::{bson::{doc, Document, Bson}, Collection};
 use zerg_creep::{info, error, warn, debug};
 
 /// MongoDB适配器
-#[cfg(feature = "mongodb")]
 pub struct MongoAdapter;
 
 impl MongoAdapter {
@@ -26,7 +25,7 @@ impl MongoAdapter {
             DataValue::Int(i) => Bson::Int64(*i),
             DataValue::Float(f) => Bson::Double(*f),
             DataValue::Bool(b) => Bson::Boolean(*b),
-            DataValue::DateTime(dt) => Bson::DateTime(mongodb::bson::DateTime::from_chrono(dt.clone())),
+            DataValue::DateTime(dt) => Bson::DateTime(mongodb::bson::DateTime::from_system_time(dt.clone().into())),
             DataValue::Uuid(uuid) => Bson::String(uuid.to_string()),
             DataValue::Json(json) => {
                 // 尝试将JSON转换为BSON文档
@@ -51,6 +50,10 @@ impl MongoAdapter {
             },
             // Reference类型不存在，移除此行
             DataValue::Null => Bson::Null,
+            DataValue::Bytes(bytes) => Bson::Binary(mongodb::bson::Binary {
+                subtype: mongodb::bson::spec::BinarySubtype::Generic,
+                bytes: bytes.clone(),
+            }),
         }
     }
 
@@ -97,6 +100,42 @@ impl MongoAdapter {
                         query_doc.insert(field_name, doc! { "$in": [bson_value] });
                     }
                 },
+                QueryOperator::StartsWith => {
+                    if let Bson::String(s) = bson_value {
+                        query_doc.insert(field_name, doc! { "$regex": format!("^{}", regex::escape(&s)), "$options": "i" });
+                    }
+                },
+                QueryOperator::EndsWith => {
+                    if let Bson::String(s) = bson_value {
+                        query_doc.insert(field_name, doc! { "$regex": format!("{}$", regex::escape(&s)), "$options": "i" });
+                    }
+                },
+                QueryOperator::In => {
+                    if let Bson::Array(arr) = bson_value {
+                        query_doc.insert(field_name, doc! { "$in": arr });
+                    }
+                },
+                QueryOperator::NotIn => {
+                    if let Bson::Array(arr) = bson_value {
+                        query_doc.insert(field_name, doc! { "$nin": arr });
+                    }
+                },
+                QueryOperator::Regex => {
+                    if let Bson::String(s) = bson_value {
+                        query_doc.insert(field_name, doc! { "$regex": s, "$options": "i" });
+                    }
+                },
+                QueryOperator::Exists => {
+                    if let Bson::Boolean(exists) = bson_value {
+                        query_doc.insert(field_name, doc! { "$exists": exists });
+                    }
+                },
+                QueryOperator::IsNull => {
+                    query_doc.insert(field_name, Bson::Null);
+                },
+                QueryOperator::IsNotNull => {
+                    query_doc.insert(field_name, doc! { "$ne": Bson::Null });
+                },
             }
         }
         
@@ -135,7 +174,7 @@ impl DatabaseAdapter for MongoAdapter {
         table: &str,
         data: &HashMap<String, DataValue>,
     ) -> QuickDbResult<Value> {
-        if let DatabaseConnection::MongoDB(ref db) = connection {
+        if let DatabaseConnection::MongoDB(db) = connection {
             // 自动建表逻辑：检查集合是否存在，如果不存在则创建
             if !self.table_exists(connection, table).await? {
                 info!("集合 {} 不存在，正在自动创建", table);
@@ -178,8 +217,7 @@ impl DatabaseAdapter for MongoAdapter {
                 })?;
             
             Ok(serde_json::json!({
-                "_id": result.inserted_id.to_string(),
-                "acknowledged": result.acknowledged
+                "_id": result.inserted_id.to_string()
             }))
         } else {
             Err(QuickDbError::ConnectionError {
@@ -194,7 +232,7 @@ impl DatabaseAdapter for MongoAdapter {
         table: &str,
         id: &DataValue,
     ) -> QuickDbResult<Option<Value>> {
-        if let DatabaseConnection::MongoDB(ref db) = connection {
+        if let DatabaseConnection::MongoDB(db) = connection {
             let collection = self.get_collection(db, table);
             
             let query = match id {
@@ -209,7 +247,7 @@ impl DatabaseAdapter for MongoAdapter {
                 _ => doc! { "_id": self.data_value_to_bson(id) }
             };
             
-            log::debug!("执行MongoDB根据ID查询: {:?}", query);
+            debug!("执行MongoDB根据ID查询: {:?}", query);
             
             let result = collection.find_one(query, None)
                 .await
@@ -236,19 +274,19 @@ impl DatabaseAdapter for MongoAdapter {
         conditions: &[QueryCondition],
         options: &QueryOptions,
     ) -> QuickDbResult<Vec<Value>> {
-        if let DatabaseConnection::MongoDB(ref db) = connection {
+        if let DatabaseConnection::MongoDB(db) = connection {
             let collection = self.get_collection(db, table);
             
             let query = self.build_query_document(conditions)?;
             
-            log::debug!("执行MongoDB查询: {:?}", query);
+            debug!("执行MongoDB查询: {:?}", query);
             
             let mut find_options = mongodb::options::FindOptions::default();
             
             // 添加排序
-            if let Some(sort) = &options.sort {
+            if !options.sort.is_empty() {
                 let mut sort_doc = Document::new();
-                for sort_field in sort {
+                for sort_field in &options.sort {
                     let sort_value = match sort_field.direction {
                         SortDirection::Asc => 1,
                         SortDirection::Desc => -1,
@@ -261,7 +299,7 @@ impl DatabaseAdapter for MongoAdapter {
             // 添加分页
             if let Some(pagination) = &options.pagination {
                 find_options.limit = Some(pagination.limit as i64);
-                find_options.skip = Some(pagination.offset as u64);
+                find_options.skip = Some(pagination.skip);
             }
             
             let mut cursor = collection.find(query, find_options)
@@ -295,13 +333,13 @@ impl DatabaseAdapter for MongoAdapter {
         conditions: &[QueryCondition],
         data: &HashMap<String, DataValue>,
     ) -> QuickDbResult<u64> {
-        if let DatabaseConnection::MongoDB(ref db) = connection {
+        if let DatabaseConnection::MongoDB(db) = connection {
             let collection = self.get_collection(db, table);
             
             let query = self.build_query_document(conditions)?;
             let update = self.build_update_document(data);
             
-            log::debug!("执行MongoDB更新: 查询={:?}, 更新={:?}", query, update);
+            debug!("执行MongoDB更新: 查询={:?}, 更新={:?}", query, update);
             
             let result = collection.update_many(query, update, None)
                 .await
@@ -340,12 +378,12 @@ impl DatabaseAdapter for MongoAdapter {
         table: &str,
         conditions: &[QueryCondition],
     ) -> QuickDbResult<u64> {
-        if let DatabaseConnection::MongoDB(ref db) = connection {
+        if let DatabaseConnection::MongoDB(db) = connection {
             let collection = self.get_collection(db, table);
             
             let query = self.build_query_document(conditions)?;
             
-            log::debug!("执行MongoDB删除: {:?}", query);
+            debug!("执行MongoDB删除: {:?}", query);
             
             let result = collection.delete_many(query, None)
                 .await
@@ -383,12 +421,12 @@ impl DatabaseAdapter for MongoAdapter {
         table: &str,
         conditions: &[QueryCondition],
     ) -> QuickDbResult<u64> {
-        if let DatabaseConnection::MongoDB(ref db) = connection {
+        if let DatabaseConnection::MongoDB(db) = connection {
             let collection = self.get_collection(db, table);
             
             let query = self.build_query_document(conditions)?;
             
-            log::debug!("执行MongoDB计数: {:?}", query);
+            debug!("执行MongoDB计数: {:?}", query);
             
             let count = collection.count_documents(query, None)
                 .await
@@ -420,24 +458,24 @@ impl DatabaseAdapter for MongoAdapter {
         table: &str,
         _fields: &HashMap<String, FieldType>,
     ) -> QuickDbResult<()> {
-        if let DatabaseConnection::MongoDB(ref db) = connection {
+        if let DatabaseConnection::MongoDB(db) = connection {
             // MongoDB是无模式的，集合会在第一次插入时自动创建
             // 这里我们可以创建集合并设置一些选项
             let options = mongodb::options::CreateCollectionOptions::default();
             
-            log::debug!("创建MongoDB集合: {}", table);
+            debug!("创建MongoDB集合: {}", table);
             
-            db.create_collection(table, options)
-                .await
-                .map_err(|e| {
+            match db.create_collection(table, options).await {
+                Ok(_) => {},
+                Err(e) => {
                     // 如果集合已存在，忽略错误
-                    if e.to_string().contains("already exists") {
-                        return Ok(());
+                    if !e.to_string().contains("already exists") {
+                        return Err(QuickDbError::QueryError {
+                            message: format!("创建MongoDB集合失败: {}", e),
+                        });
                     }
-                    QuickDbError::QueryError {
-                        message: format!("创建MongoDB集合失败: {}", e),
-                    }
-                })?;
+                }
+            }
             
             Ok(())
         } else {
@@ -455,7 +493,7 @@ impl DatabaseAdapter for MongoAdapter {
         fields: &[String],
         unique: bool,
     ) -> QuickDbResult<()> {
-        if let DatabaseConnection::MongoDB(ref db) = connection {
+        if let DatabaseConnection::MongoDB(db) = connection {
             let collection = self.get_collection(db, table);
             
             let mut index_doc = Document::new();
@@ -472,7 +510,7 @@ impl DatabaseAdapter for MongoAdapter {
                 .options(index_options)
                 .build();
             
-            log::debug!("创建MongoDB索引: {} 在集合 {}", index_name, table);
+            debug!("创建MongoDB索引: {} 在集合 {}", index_name, table);
             
             collection.create_index(index_model, None)
                 .await
@@ -493,7 +531,7 @@ impl DatabaseAdapter for MongoAdapter {
         connection: &DatabaseConnection,
         table: &str,
     ) -> QuickDbResult<bool> {
-        if let DatabaseConnection::MongoDB(ref db) = connection {
+        if let DatabaseConnection::MongoDB(db) = connection {
             let collection_names = db.list_collection_names(None)
                 .await
                 .map_err(|e| QuickDbError::QueryError {

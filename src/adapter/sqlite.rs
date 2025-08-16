@@ -13,14 +13,11 @@ use serde_json::Value;
 use std::collections::HashMap;
 use zerg_creep::{info, error, warn, debug};
 
-#[cfg(feature = "sqlite")]
 use sqlx::{Row, sqlite::SqliteRow, Column};
 
 /// SQLite适配器
-#[cfg(feature = "sqlite")]
 pub struct SqliteAdapter;
 
-#[cfg(feature = "sqlite")]
 impl SqliteAdapter {
 
     /// 将sqlx的行转换为JSON值
@@ -67,7 +64,6 @@ impl SqliteAdapter {
     }
 }
 
-#[cfg(feature = "sqlite")]
 #[async_trait]
 impl DatabaseAdapter for SqliteAdapter {
     async fn create(
@@ -511,149 +507,5 @@ impl DatabaseAdapter for SqliteAdapter {
             
             Ok(row.is_some())
         }
-    }
-}
-
-// 当sqlite特性未启用时的空实现
-#[cfg(not(feature = "sqlite"))]
-pub struct SqliteAdapter;
-
-#[cfg(not(feature = "sqlite"))]
-#[async_trait]
-impl DatabaseAdapter for SqliteAdapter {
-    async fn create(
-        &self,
-        _connection: &DatabaseConnection,
-        _table: &str,
-        _data: &HashMap<String, DataValue>,
-    ) -> QuickDbResult<Value> {
-        Err(QuickDbError::ConfigError {
-            message: "SQLite feature not enabled".to_string(),
-        })
-    }
-
-    async fn find_by_id(
-        &self,
-        _connection: &DatabaseConnection,
-        _table: &str,
-        _id: &DataValue,
-    ) -> QuickDbResult<Option<Value>> {
-        Err(QuickDbError::ConfigError {
-            message: "SQLite feature not enabled".to_string(),
-        })
-    }
-
-    async fn find(
-        &self,
-        _connection: &DatabaseConnection,
-        _table: &str,
-        _conditions: &[QueryCondition],
-        _options: &QueryOptions,
-    ) -> QuickDbResult<Vec<Value>> {
-        Err(QuickDbError::ConfigError {
-            message: "SQLite feature not enabled".to_string(),
-        })
-    }
-
-    async fn update(
-        &self,
-        _connection: &DatabaseConnection,
-        _table: &str,
-        _conditions: &[QueryCondition],
-        _data: &HashMap<String, DataValue>,
-    ) -> QuickDbResult<u64> {
-        Err(QuickDbError::ConfigError {
-            message: "SQLite feature not enabled".to_string(),
-        })
-    }
-
-    async fn update_by_id(
-        &self,
-        _connection: &DatabaseConnection,
-        _table: &str,
-        _id: &DataValue,
-        _data: &HashMap<String, DataValue>,
-    ) -> QuickDbResult<bool> {
-        Err(QuickDbError::ConfigError {
-            message: "SQLite feature not enabled".to_string(),
-        })
-    }
-
-    async fn delete(
-        &self,
-        _connection: &DatabaseConnection,
-        _table: &str,
-        _conditions: &[QueryCondition],
-    ) -> QuickDbResult<u64> {
-        Err(QuickDbError::ConfigError {
-            message: "SQLite feature not enabled".to_string(),
-        })
-    }
-
-    async fn delete_by_id(
-        &self,
-        _connection: &DatabaseConnection,
-        _table: &str,
-        _id: &DataValue,
-    ) -> QuickDbResult<bool> {
-        Err(QuickDbError::ConfigError {
-            message: "SQLite feature not enabled".to_string(),
-        })
-    }
-
-    async fn count(
-        &self,
-        _connection: &DatabaseConnection,
-        _table: &str,
-        _conditions: &[QueryCondition],
-    ) -> QuickDbResult<u64> {
-        Err(QuickDbError::ConfigError {
-            message: "SQLite feature not enabled".to_string(),
-        })
-    }
-
-    async fn exists(
-        &self,
-        _connection: &DatabaseConnection,
-        _table: &str,
-        _conditions: &[QueryCondition],
-    ) -> QuickDbResult<bool> {
-        Err(QuickDbError::ConfigError {
-            message: "SQLite feature not enabled".to_string(),
-        })
-    }
-
-    async fn create_table(
-        &self,
-        _connection: &DatabaseConnection,
-        _table: &str,
-        _fields: &HashMap<String, FieldType>,
-    ) -> QuickDbResult<()> {
-        Err(QuickDbError::ConfigError {
-            message: "SQLite feature not enabled".to_string(),
-        })
-    }
-
-    async fn create_index(
-        &self,
-        _connection: &DatabaseConnection,
-        _table: &str,
-        _index_name: &str,
-        _fields: &[String],
-        _unique: bool,
-    ) -> QuickDbResult<()> {
-        Err(QuickDbError::ConfigError {
-            message: "SQLite feature not enabled".to_string(),
-        })
-    }
-
-    async fn table_exists(
-        &self,
-        _connection: &DatabaseConnection,
-        _table: &str,
-    ) -> QuickDbResult<bool> {
-        Err(QuickDbError::ConfigError {
-            message: "SQLite feature not enabled".to_string(),
-        })
     }
 }

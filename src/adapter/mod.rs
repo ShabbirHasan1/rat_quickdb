@@ -11,28 +11,18 @@ use serde_json::Value;
 use std::collections::HashMap;
 
 // 导入各个数据库适配器
-#[cfg(feature = "sqlite")]
 mod sqlite;
-#[cfg(feature = "postgresql")]
 mod postgres;
-#[cfg(feature = "mysql")]
 mod mysql;
-#[cfg(feature = "mongodb")]
 mod mongodb;
 mod query_builder;
-#[cfg(feature = "cache")]
 mod cached;
 
-#[cfg(feature = "sqlite")]
 pub use sqlite::SqliteAdapter;
-#[cfg(feature = "postgresql")]
 pub use postgres::PostgresAdapter;
-#[cfg(feature = "mysql")]
 pub use mysql::MysqlAdapter;
-#[cfg(feature = "mongodb")]
 pub use mongodb::MongoAdapter;
 pub use query_builder::*;
-#[cfg(feature = "cache")]
 pub use cached::CachedDatabaseAdapter;
 
 /// 数据库适配器trait，定义统一的数据库操作接口
@@ -142,18 +132,10 @@ pub trait DatabaseAdapter: Send + Sync {
 /// 根据数据库类型创建适配器
 pub fn create_adapter(db_type: &DatabaseType) -> QuickDbResult<Box<dyn DatabaseAdapter>> {
     match db_type {
-        #[cfg(feature = "sqlite")]
         DatabaseType::SQLite => Ok(Box::new(SqliteAdapter)),
-        
-        #[cfg(feature = "mysql")]
         DatabaseType::MySQL => Ok(Box::new(MysqlAdapter::new())),
-        
-        #[cfg(feature = "postgresql")]
         DatabaseType::PostgreSQL => Ok(Box::new(PostgresAdapter)),
-        
-        #[cfg(feature = "mongodb")]
         DatabaseType::MongoDB => Ok(Box::new(MongoAdapter)),
-        
         _ => Err(QuickDbError::UnsupportedDatabase {
             db_type: format!("{:?}", db_type),
         }),
@@ -161,7 +143,6 @@ pub fn create_adapter(db_type: &DatabaseType) -> QuickDbResult<Box<dyn DatabaseA
 }
 
 /// 根据数据库类型和缓存管理器创建带缓存的适配器
-#[cfg(feature = "cache")]
 pub fn create_adapter_with_cache(
     db_type: &DatabaseType,
     cache_manager: std::sync::Arc<crate::cache::CacheManager>,

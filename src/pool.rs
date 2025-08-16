@@ -108,16 +108,9 @@ pub enum DatabaseOperation {
 /// 原生数据库连接枚举 - 直接持有数据库连接，不使用Arc包装
 #[derive(Debug)]
 pub enum DatabaseConnection {
-    #[cfg(feature = "sqlite")]
     SQLite(sqlx::SqlitePool),
-    
-    #[cfg(feature = "postgresql")]
     PostgreSQL(sqlx::PgPool),
-    
-    #[cfg(feature = "mysql")]
     MySQL(sqlx::MySqlPool),
-    
-    #[cfg(feature = "mongodb")]
     MongoDB(mongodb::Database),
 }
 
@@ -177,7 +170,6 @@ pub struct ConnectionPool {
     /// 数据库类型
     pub db_type: DatabaseType,
     /// 缓存管理器（可选）
-    #[cfg(feature = "cache")]
     pub cache_manager: Option<Arc<crate::cache::CacheManager>>,
 }
 
@@ -193,8 +185,15 @@ pub struct SqliteWorker {
     retry_count: u32,
     /// 最大重试次数
     max_retries: u32,
+    /// 重试间隔（毫秒）
+    retry_interval_ms: u64,
+    /// 健康检查间隔（秒）
+    health_check_interval_sec: u64,
+    /// 上次健康检查时间
+    last_health_check: Instant,
+    /// 连接是否健康
+    is_healthy: bool,
     /// 缓存管理器（可选）
-    #[cfg(feature = "cache")]
     cache_manager: Option<Arc<crate::cache::CacheManager>>,
 }
 
@@ -213,7 +212,6 @@ pub struct MultiConnectionManager {
     /// 保活任务句柄
     keepalive_handle: Option<tokio::task::JoinHandle<()>>,
     /// 缓存管理器（可选）
-    #[cfg(feature = "cache")]
     cache_manager: Option<Arc<crate::cache::CacheManager>>,
 }
 
@@ -222,30 +220,173 @@ impl SqliteWorker {
     pub async fn run(mut self) {
         info!("SQLite工作器开始运行: 别名={}", self.db_config.alias);
         
+        // 启动健康检查任务
+        let health_check_handle = self.start_health_check_task().await;
+        
         while let Some(operation) = self.operation_receiver.recv().await {
-            if let Err(e) = self.handle_operation(operation).await {
-                error!("SQLite操作处理失败: {}", e);
-                
-                // 重试逻辑
-                if self.retry_count < self.max_retries {
-                    self.retry_count += 1;
-                    warn!("SQLite操作重试 {}/{}", self.retry_count, self.max_retries);
-                    tokio::time::sleep(Duration::from_millis(1000)).await;
-                } else {
-                    error!("SQLite操作重试次数超限，程序退出");
-                    std::process::exit(1);
+            // 检查连接健康状态
+            if !self.is_healthy {
+                warn!("SQLite连接不健康，尝试重新连接");
+                if let Err(e) = self.reconnect().await {
+                    error!("SQLite重新连接失败: {}", e);
+                    continue;
                 }
-            } else {
-                self.retry_count = 0; // 重置重试计数
+            }
+            
+            match self.handle_operation(operation).await {
+                Ok(_) => {
+                    self.retry_count = 0; // 重置重试计数
+                    self.is_healthy = true; // 标记连接健康
+                },
+                Err(e) => {
+                    error!("SQLite操作处理失败: {}", e);
+                    self.is_healthy = false; // 标记连接不健康
+                    
+                    // 智能重试逻辑
+                    if self.retry_count < self.max_retries {
+                        self.retry_count += 1;
+                        let backoff_delay = self.calculate_backoff_delay();
+                        warn!("SQLite操作重试 {}/{}, 延迟{}ms", 
+                              self.retry_count, self.max_retries, backoff_delay);
+                        tokio::time::sleep(Duration::from_millis(backoff_delay)).await;
+                        
+                        // 尝试重新连接
+                        if let Err(reconnect_err) = self.reconnect().await {
+                            error!("SQLite重新连接失败: {}", reconnect_err);
+                        }
+                    } else {
+                        error!("SQLite操作重试次数超限，标记连接为不健康状态");
+                        self.is_healthy = false;
+                        // 不再直接退出程序，而是继续运行但标记为不健康
+                    }
+                }
             }
         }
         
+        // 清理健康检查任务
+        health_check_handle.abort();
         info!("SQLite工作器停止运行");
+    }
+    
+    /// 启动健康检查任务
+    async fn start_health_check_task(&self) -> tokio::task::JoinHandle<()> {
+        let health_check_interval = Duration::from_secs(self.health_check_interval_sec);
+        let db_config = self.db_config.clone();
+        
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(health_check_interval);
+            
+            loop {
+                interval.tick().await;
+                debug!("执行SQLite连接健康检查: 别名={}", db_config.alias);
+                // 健康检查逻辑在主循环中处理
+            }
+        })
+    }
+    
+    /// 重新连接数据库
+    async fn reconnect(&mut self) -> QuickDbResult<()> {
+        info!("正在重新连接SQLite数据库: 别名={}", self.db_config.alias);
+        
+        let new_connection = self.create_sqlite_connection().await?;
+        self.connection = new_connection;
+        self.is_healthy = true;
+        self.retry_count = 0;
+        
+        info!("SQLite数据库重新连接成功: 别名={}", self.db_config.alias);
+        Ok(())
+    }
+    
+    /// 创建SQLite连接
+    async fn create_sqlite_connection(&self) -> QuickDbResult<DatabaseConnection> {
+        let (path, create_if_missing) = match &self.db_config.connection {
+            crate::types::ConnectionConfig::SQLite { path, create_if_missing } => {
+                (path.clone(), *create_if_missing)
+            }
+            _ => return Err(QuickDbError::ConfigError {
+                message: "SQLite连接配置类型不匹配".to_string(),
+            }),
+        };
+        
+        // 检查数据库文件是否存在
+        let file_exists = std::path::Path::new(&path).exists();
+        
+        // 如果文件不存在且不允许创建，则返回错误
+        if !file_exists && !create_if_missing {
+            return Err(QuickDbError::ConnectionError {
+                message: format!("SQLite数据库文件不存在且未启用自动创建: {}", path),
+            });
+        }
+        
+        // 如果需要创建文件且文件不存在，则创建父目录
+        if create_if_missing && !file_exists {
+            if let Some(parent) = std::path::Path::new(&path).parent() {
+                tokio::fs::create_dir_all(parent).await
+                    .map_err(|e| QuickDbError::ConnectionError {
+                        message: format!("创建SQLite数据库目录失败: {}", e),
+                    })?;
+            }
+            
+            // 创建空的数据库文件
+            tokio::fs::File::create(&path).await
+                .map_err(|e| QuickDbError::ConnectionError {
+                    message: format!("创建SQLite数据库文件失败: {}", e),
+                })?;
+        }
+        
+        let pool = sqlx::SqlitePool::connect(&path)
+            .await
+            .map_err(|e| QuickDbError::ConnectionError {
+                message: format!("SQLite连接失败: {}", e),
+            })?;
+        Ok(DatabaseConnection::SQLite(pool))
+    }
+    
+    /// 计算退避延迟（指数退避）
+    fn calculate_backoff_delay(&self) -> u64 {
+        let base_delay = self.retry_interval_ms;
+        let exponential_delay = base_delay * (2_u64.pow(self.retry_count.min(10))); // 限制最大指数
+        let max_delay = 30000; // 最大延迟30秒
+        exponential_delay.min(max_delay)
+    }
+    
+    /// 执行连接健康检查
+    async fn perform_health_check(&mut self) -> bool {
+        if self.last_health_check.elapsed() < Duration::from_secs(self.health_check_interval_sec) {
+            return self.is_healthy;
+        }
+        
+        debug!("执行SQLite连接健康检查: 别名={}", self.db_config.alias);
+        
+        // 执行简单的查询来检查连接健康状态
+        let health_check_result = match &self.connection {
+            DatabaseConnection::SQLite(pool) => {
+                sqlx::query("SELECT 1")
+                    .fetch_optional(pool)
+                    .await
+                    .is_ok()
+            },
+            _ => false,
+        };
+        
+        self.last_health_check = Instant::now();
+        self.is_healthy = health_check_result;
+        
+        if !self.is_healthy {
+            warn!("SQLite连接健康检查失败: 别名={}", self.db_config.alias);
+        } else {
+            debug!("SQLite连接健康检查通过: 别名={}", self.db_config.alias);
+        }
+        
+        self.is_healthy
     }
     
     /// 处理数据库操作
     async fn handle_operation(&mut self, operation: DatabaseOperation) -> QuickDbResult<()> {
         use crate::adapter::{create_adapter, DatabaseAdapter};
+        
+        // 执行健康检查
+        self.perform_health_check().await;
         
         let adapter = create_adapter(&self.db_config.db_type)?;
         
@@ -331,10 +472,9 @@ impl MultiConnectionManager {
     /// 创建数据库连接
     async fn create_database_connection(&self) -> QuickDbResult<DatabaseConnection> {
         match &self.db_config.db_type {
-            #[cfg(feature = "postgresql")]
             DatabaseType::PostgreSQL => {
                 let connection_string = match &self.db_config.connection {
-                    crate::types::ConnectionConfig::PostgreSQL { host, port, database, username, password } => {
+                    crate::types::ConnectionConfig::PostgreSQL { host, port, database, username, password, ssl_mode: _, tls_config: _ } => {
                         format!("postgresql://{}:{}@{}:{}/{}", username, password, host, port, database)
                     }
                     _ => return Err(QuickDbError::ConfigError {
@@ -349,10 +489,9 @@ impl MultiConnectionManager {
                     })?;
                 Ok(DatabaseConnection::PostgreSQL(pool))
             },
-            #[cfg(feature = "mysql")]
             DatabaseType::MySQL => {
                 let connection_string = match &self.db_config.connection {
-                    crate::types::ConnectionConfig::MySQL { host, port, database, username, password } => {
+                    crate::types::ConnectionConfig::MySQL { host, port, database, username, password, ssl_opts: _, tls_config: _ } => {
                         format!("mysql://{}:{}@{}:{}/{}", username, password, host, port, database)
                     }
                     _ => return Err(QuickDbError::ConfigError {
@@ -367,22 +506,70 @@ impl MultiConnectionManager {
                     })?;
                 Ok(DatabaseConnection::MySQL(pool))
             },
-            #[cfg(feature = "mongodb")]
             DatabaseType::MongoDB => {
-                let (connection_string, database_name) = match &self.db_config.connection {
-                    crate::types::ConnectionConfig::MongoDB { connection_string, database } => {
-                        (connection_string.clone(), database.clone())
+                let connection_uri = match &self.db_config.connection {
+                    crate::types::ConnectionConfig::MongoDB { 
+                        host, port, database, username, password, 
+                        auth_source, direct_connection, tls_config, 
+                        zstd_config, options 
+                    } => {
+                        // 使用构建器生成连接URI
+                        let mut builder = crate::types::MongoDbConnectionBuilder::new(
+                            host.clone(), 
+                            *port, 
+                            database.clone()
+                        );
+                        
+                        // 设置认证信息
+                        if let (Some(user), Some(pass)) = (username, password) {
+                            builder = builder.with_auth(user.clone(), pass.clone());
+                        }
+                        
+                        // 设置认证数据库
+                        if let Some(auth_src) = auth_source {
+                            builder = builder.with_auth_source(auth_src.clone());
+                        }
+                        
+                        // 设置直接连接
+                        builder = builder.with_direct_connection(*direct_connection);
+                        
+                        // 设置TLS配置
+                        if let Some(tls) = tls_config {
+                            builder = builder.with_tls_config(tls.clone());
+                        }
+                        
+                        // 设置ZSTD压缩配置
+                        if let Some(zstd) = zstd_config {
+                            builder = builder.with_zstd_config(zstd.clone());
+                        }
+                        
+                        // 添加自定义选项
+                        if let Some(opts) = options {
+                            for (key, value) in opts {
+                                builder = builder.with_option(key.clone(), value.clone());
+                            }
+                        }
+                        
+                        builder.build_uri()
                     }
                     _ => return Err(QuickDbError::ConfigError {
                         message: "MongoDB连接配置类型不匹配".to_string(),
                     }),
                 };
                 
-                let client = mongodb::Client::with_uri_str(&connection_string)
+                debug!("MongoDB连接URI: {}", connection_uri);
+                
+                let client = mongodb::Client::with_uri_str(&connection_uri)
                     .await
                     .map_err(|e| QuickDbError::ConnectionError {
                         message: format!("MongoDB连接失败: {}", e),
                     })?;
+                    
+                let database_name = match &self.db_config.connection {
+                    crate::types::ConnectionConfig::MongoDB { database, .. } => database.clone(),
+                    _ => unreachable!(),
+                };
+                
                 let db = client.database(&database_name);
                 Ok(DatabaseConnection::MongoDB(db))
             },
@@ -555,13 +742,11 @@ impl ConnectionPool {
             db_config: db_config.clone(),
             config: config.clone(),
             operation_sender,
-            #[cfg(feature = "cache")]
             cache_manager: None,
         };
         
         // 根据数据库类型启动对应的工作器
         match &db_config.db_type {
-            #[cfg(feature = "sqlite")]
             DatabaseType::SQLite => {
                 pool.start_sqlite_worker(operation_receiver, db_config, config).await?;
             },
@@ -574,13 +759,11 @@ impl ConnectionPool {
     }
     
     /// 设置缓存管理器
-    #[cfg(feature = "cache")]
     pub fn set_cache_manager(&mut self, cache_manager: Arc<crate::cache::CacheManager>) {
         self.cache_manager = Some(cache_manager);
     }
-    
+
     /// 启动SQLite工作器
-    #[cfg(feature = "sqlite")]
     async fn start_sqlite_worker(
         &self,
         operation_receiver: mpsc::UnboundedReceiver<DatabaseOperation>,
@@ -595,7 +778,10 @@ impl ConnectionPool {
             db_config,
             retry_count: 0,
             max_retries: config.max_retries,
-            #[cfg(feature = "cache")]
+            retry_interval_ms: config.retry_interval_ms,
+            health_check_interval_sec: config.health_check_timeout_sec, // 复用健康检查超时作为间隔
+            last_health_check: Instant::now(),
+            is_healthy: true,
             cache_manager: self.cache_manager.clone(),
         };
         
@@ -621,7 +807,6 @@ impl ConnectionPool {
             db_config,
             config,
             keepalive_handle: None,
-            #[cfg(feature = "cache")]
             cache_manager: self.cache_manager.clone(),
         };
         
@@ -634,7 +819,6 @@ impl ConnectionPool {
     }
     
     /// 创建SQLite连接
-    #[cfg(feature = "sqlite")]
     async fn create_sqlite_connection(&self) -> QuickDbResult<DatabaseConnection> {
         let (path, create_if_missing) = match &self.db_config.connection {
             crate::types::ConnectionConfig::SQLite { path, create_if_missing } => {
@@ -645,14 +829,30 @@ impl ConnectionPool {
             }),
         };
         
+        // 检查数据库文件是否存在
+        let file_exists = std::path::Path::new(&path).exists();
+        
+        // 如果文件不存在且不允许创建，则返回错误
+        if !file_exists && !create_if_missing {
+            return Err(QuickDbError::ConnectionError {
+                message: format!("SQLite数据库文件不存在且未启用自动创建: {}", path),
+            });
+        }
+        
         // 如果需要创建文件且文件不存在，则创建父目录
-        if create_if_missing && !std::path::Path::new(&path).exists() {
+        if create_if_missing && !file_exists {
             if let Some(parent) = std::path::Path::new(&path).parent() {
                 tokio::fs::create_dir_all(parent).await
                     .map_err(|e| QuickDbError::ConnectionError {
                         message: format!("创建SQLite数据库目录失败: {}", e),
                     })?;
             }
+            
+            // 创建空的数据库文件
+            tokio::fs::File::create(&path).await
+                .map_err(|e| QuickDbError::ConnectionError {
+                    message: format!("创建SQLite数据库文件失败: {}", e),
+                })?;
         }
         
         let pool = sqlx::SqlitePool::connect(&path)

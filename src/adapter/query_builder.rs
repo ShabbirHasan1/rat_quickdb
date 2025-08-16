@@ -19,6 +19,7 @@ pub struct SqlQueryBuilder {
     limit: Option<u64>,
     offset: Option<u64>,
     values: HashMap<String, DataValue>,
+    returning_fields: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -65,6 +66,7 @@ impl SqlQueryBuilder {
             limit: None,
             offset: None,
             values: HashMap::new(),
+            returning_fields: Vec::new(),
         }
     }
 
@@ -153,6 +155,12 @@ impl SqlQueryBuilder {
     /// 设置OFFSET
     pub fn offset(mut self, offset: u64) -> Self {
         self.offset = Some(offset);
+        self
+    }
+
+    /// 设置RETURNING子句（用于INSERT/UPDATE/DELETE）
+    pub fn returning(mut self, fields: &[&str]) -> Self {
+        self.returning_fields = fields.iter().map(|s| s.to_string()).collect();
         self
     }
 
@@ -257,12 +265,17 @@ impl SqlQueryBuilder {
         let placeholders: Vec<String> = (0..columns.len()).map(|_| "?".to_string()).collect();
         let params: Vec<DataValue> = columns.iter().map(|k| self.values[k].clone()).collect();
 
-        let sql = format!(
+        let mut sql = format!(
             "INSERT INTO {} ({}) VALUES ({})",
             self.table,
             columns.join(", "),
             placeholders.join(", ")
         );
+
+        // 添加RETURNING子句
+        if !self.returning_fields.is_empty() {
+            sql.push_str(&format!(" RETURNING {}", self.returning_fields.join(", ")));
+        }
 
         Ok((sql, params))
     }
@@ -293,6 +306,11 @@ impl SqlQueryBuilder {
             params.extend(where_params);
         }
 
+        // 添加RETURNING子句
+        if !self.returning_fields.is_empty() {
+            sql.push_str(&format!(" RETURNING {}", self.returning_fields.join(", ")));
+        }
+
         Ok((sql, params))
     }
 
@@ -312,6 +330,11 @@ impl SqlQueryBuilder {
             let (where_clause, where_params) = self.build_where_clause(&self.conditions)?;
             sql.push_str(&format!(" WHERE {}", where_clause));
             params.extend(where_params);
+        }
+
+        // 添加RETURNING子句
+        if !self.returning_fields.is_empty() {
+            sql.push_str(&format!(" RETURNING {}", self.returning_fields.join(", ")));
         }
 
         Ok((sql, params))
