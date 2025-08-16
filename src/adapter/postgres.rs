@@ -224,6 +224,7 @@ impl DatabaseAdapter for PostgresAdapter {
             }
             
             let (sql, params) = SqlQueryBuilder::new()
+                .database_type(super::query_builder::DatabaseType::PostgreSQL)
                 .insert(data.clone())
                 .from(table)
                 .returning(&["id"])
@@ -261,6 +262,7 @@ impl DatabaseAdapter for PostgresAdapter {
             };
             
             let (sql, params) = SqlQueryBuilder::new()
+                .database_type(super::query_builder::DatabaseType::PostgreSQL)
                 .select(&["*"])
                 .from(table)
                 .where_condition(condition)
@@ -287,6 +289,7 @@ impl DatabaseAdapter for PostgresAdapter {
     ) -> QuickDbResult<Vec<Value>> {
         if let DatabaseConnection::PostgreSQL(pool) = connection {
             let mut builder = SqlQueryBuilder::new()
+                .database_type(super::query_builder::DatabaseType::PostgreSQL)
                 .select(&["*"])
                 .from(table)
                 .where_conditions(conditions);
@@ -324,6 +327,7 @@ impl DatabaseAdapter for PostgresAdapter {
     ) -> QuickDbResult<u64> {
         if let DatabaseConnection::PostgreSQL(pool) = connection {
             let (sql, params) = SqlQueryBuilder::new()
+                .database_type(super::query_builder::DatabaseType::PostgreSQL)
                 .update(data.clone())
                 .from(table)
                 .where_conditions(conditions)
@@ -364,6 +368,7 @@ impl DatabaseAdapter for PostgresAdapter {
     ) -> QuickDbResult<u64> {
         if let DatabaseConnection::PostgreSQL(pool) = connection {
             let (sql, params) = SqlQueryBuilder::new()
+                .database_type(super::query_builder::DatabaseType::PostgreSQL)
                 .delete()
                 .from(table)
                 .where_conditions(conditions)
@@ -403,6 +408,7 @@ impl DatabaseAdapter for PostgresAdapter {
     ) -> QuickDbResult<u64> {
         if let DatabaseConnection::PostgreSQL(pool) = connection {
             let (sql, params) = SqlQueryBuilder::new()
+                .database_type(super::query_builder::DatabaseType::PostgreSQL)
                 .select(&["COUNT(*) as count"])
                 .from(table)
                 .where_conditions(conditions)

@@ -6,6 +6,14 @@ use crate::error::{QuickDbError, QuickDbResult};
 use crate::types::*;
 use std::collections::HashMap;
 
+/// 数据库类型枚举，用于生成正确的占位符
+#[derive(Debug, Clone, Copy)]
+pub enum DatabaseType {
+    PostgreSQL,
+    MySQL,
+    SQLite,
+}
+
 /// SQL查询构建器
 pub struct SqlQueryBuilder {
     query_type: QueryType,
@@ -20,6 +28,7 @@ pub struct SqlQueryBuilder {
     offset: Option<u64>,
     values: HashMap<String, DataValue>,
     returning_fields: Vec<String>,
+    db_type: DatabaseType,
 }
 
 #[derive(Debug, Clone)]
@@ -67,7 +76,14 @@ impl SqlQueryBuilder {
             offset: None,
             values: HashMap::new(),
             returning_fields: Vec::new(),
+            db_type: DatabaseType::SQLite, // 默认为 SQLite
         }
+    }
+
+    /// 设置数据库类型
+    pub fn database_type(mut self, db_type: DatabaseType) -> Self {
+        self.db_type = db_type;
+        self
     }
 
     /// 设置查询类型为SELECT
@@ -262,7 +278,7 @@ impl SqlQueryBuilder {
         }
 
         let columns: Vec<String> = self.values.keys().cloned().collect();
-        let placeholders: Vec<String> = (0..columns.len()).map(|_| "?".to_string()).collect();
+        let placeholders: Vec<String> = self.generate_placeholders(columns.len());
         let params: Vec<DataValue> = columns.iter().map(|k| self.values[k].clone()).collect();
 
         let mut sql = format!(
@@ -294,14 +310,19 @@ impl SqlQueryBuilder {
             });
         }
 
-        let set_clauses: Vec<String> = self.values.keys().map(|k| format!("{} = ?", k)).collect();
+        let mut param_index = 1;
+        let set_clauses: Vec<String> = self.values.keys().map(|k| {
+            let placeholder = self.get_placeholder(param_index);
+            param_index += 1;
+            format!("{} = {}", k, placeholder)
+        }).collect();
         let mut params: Vec<DataValue> = self.values.values().cloned().collect();
 
         let mut sql = format!("UPDATE {} SET {}", self.table, set_clauses.join(", "));
 
         // 添加WHERE条件
         if !self.conditions.is_empty() {
-            let (where_clause, where_params) = self.build_where_clause(&self.conditions)?;
+            let (where_clause, where_params) = self.build_where_clause_with_offset(&self.conditions, param_index)?;
             sql.push_str(&format!(" WHERE {}", where_clause));
             params.extend(where_params);
         }
@@ -342,67 +363,88 @@ impl SqlQueryBuilder {
 
     /// 构建WHERE子句
     fn build_where_clause(&self, conditions: &[QueryCondition]) -> QuickDbResult<(String, Vec<DataValue>)> {
+        self.build_where_clause_with_offset(conditions, 1)
+    }
+
+    /// 构建WHERE子句，从指定的参数索引开始
+    fn build_where_clause_with_offset(&self, conditions: &[QueryCondition], start_index: usize) -> QuickDbResult<(String, Vec<DataValue>)> {
         if conditions.is_empty() {
             return Ok((String::new(), Vec::new()));
         }
 
         let mut clauses = Vec::new();
         let mut params = Vec::new();
+        let mut param_index = start_index;
 
         for condition in conditions {
+            let placeholder = self.get_placeholder(param_index);
+            
             match condition.operator {
                 QueryOperator::Eq => {
-                    clauses.push(format!("{} = ?", condition.field));
+                    clauses.push(format!("{} = {}", condition.field, placeholder));
                     params.push(condition.value.clone());
+                    param_index += 1;
                 }
                 QueryOperator::Ne => {
-                    clauses.push(format!("{} != ?", condition.field));
+                    clauses.push(format!("{} != {}", condition.field, placeholder));
                     params.push(condition.value.clone());
+                    param_index += 1;
                 }
                 QueryOperator::Gt => {
-                    clauses.push(format!("{} > ?", condition.field));
+                    clauses.push(format!("{} > {}", condition.field, placeholder));
                     params.push(condition.value.clone());
+                    param_index += 1;
                 }
                 QueryOperator::Gte => {
-                    clauses.push(format!("{} >= ?", condition.field));
+                    clauses.push(format!("{} >= {}", condition.field, placeholder));
                     params.push(condition.value.clone());
+                    param_index += 1;
                 }
                 QueryOperator::Lt => {
-                    clauses.push(format!("{} < ?", condition.field));
+                    clauses.push(format!("{} < {}", condition.field, placeholder));
                     params.push(condition.value.clone());
+                    param_index += 1;
                 }
                 QueryOperator::Lte => {
-                    clauses.push(format!("{} <= ?", condition.field));
+                    clauses.push(format!("{} <= {}", condition.field, placeholder));
                     params.push(condition.value.clone());
+                    param_index += 1;
                 }
                 QueryOperator::Contains => {
-                    clauses.push(format!("{} LIKE ?", condition.field));
+                    clauses.push(format!("{} LIKE {}", condition.field, placeholder));
                     if let DataValue::String(s) = &condition.value {
                         params.push(DataValue::String(format!("%{}%", s)));
                     } else {
                         params.push(condition.value.clone());
                     }
+                    param_index += 1;
                 }
                 QueryOperator::StartsWith => {
-                    clauses.push(format!("{} LIKE ?", condition.field));
+                    clauses.push(format!("{} LIKE {}", condition.field, placeholder));
                     if let DataValue::String(s) = &condition.value {
                         params.push(DataValue::String(format!("{}%", s)));
                     } else {
                         params.push(condition.value.clone());
                     }
+                    param_index += 1;
                 }
                 QueryOperator::EndsWith => {
-                    clauses.push(format!("{} LIKE ?", condition.field));
+                    clauses.push(format!("{} LIKE {}", condition.field, placeholder));
                     if let DataValue::String(s) = &condition.value {
                         params.push(DataValue::String(format!("%{}", s)));
                     } else {
                         params.push(condition.value.clone());
                     }
+                    param_index += 1;
                 }
                 QueryOperator::In => {
                     if let DataValue::Array(values) = &condition.value {
-                        let placeholders = vec!["?"; values.len()].join(", ");
-                        clauses.push(format!("{} IN ({})", condition.field, placeholders));
+                        let mut placeholders = Vec::new();
+                        for _ in 0..values.len() {
+                            placeholders.push(self.get_placeholder(param_index));
+                            param_index += 1;
+                        }
+                        clauses.push(format!("{} IN ({})", condition.field, placeholders.join(", ")));
                         params.extend(values.clone());
                     } else {
                         return Err(QuickDbError::QueryError {
@@ -412,8 +454,12 @@ impl SqlQueryBuilder {
                 }
                 QueryOperator::NotIn => {
                     if let DataValue::Array(values) = &condition.value {
-                        let placeholders = vec!["?"; values.len()].join(", ");
-                        clauses.push(format!("{} NOT IN ({})", condition.field, placeholders));
+                        let mut placeholders = Vec::new();
+                        for _ in 0..values.len() {
+                            placeholders.push(self.get_placeholder(param_index));
+                            param_index += 1;
+                        }
+                        clauses.push(format!("{} NOT IN ({})", condition.field, placeholders.join(", ")));
                         params.extend(values.clone());
                     } else {
                         return Err(QuickDbError::QueryError {
@@ -423,8 +469,9 @@ impl SqlQueryBuilder {
                 }
                 QueryOperator::Regex => {
                     // 不同数据库的正则表达式语法不同，这里使用通用的LIKE
-                    clauses.push(format!("{} REGEXP ?", condition.field));
+                    clauses.push(format!("{} REGEXP {}", condition.field, placeholder));
                     params.push(condition.value.clone());
+                    param_index += 1;
                 }
                 QueryOperator::Exists => {
                     // 检查字段是否存在（主要用于NoSQL数据库）
@@ -443,6 +490,26 @@ impl SqlQueryBuilder {
         }
 
         Ok((clauses.join(" AND "), params))
+    }
+
+    /// 生成占位符
+    fn generate_placeholders(&self, count: usize) -> Vec<String> {
+        match self.db_type {
+            DatabaseType::PostgreSQL => {
+                (1..=count).map(|i| format!("${}", i)).collect()
+            }
+            DatabaseType::MySQL | DatabaseType::SQLite => {
+                (0..count).map(|_| "?".to_string()).collect()
+            }
+        }
+    }
+
+    /// 获取单个占位符
+    fn get_placeholder(&self, index: usize) -> String {
+        match self.db_type {
+            DatabaseType::PostgreSQL => format!("${}", index),
+            DatabaseType::MySQL | DatabaseType::SQLite => "?".to_string(),
+        }
     }
 }
 

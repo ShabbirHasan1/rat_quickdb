@@ -482,7 +482,9 @@ impl MultiConnectionManager {
             DatabaseType::PostgreSQL => {
                 let connection_string = match &self.db_config.connection {
                     crate::types::ConnectionConfig::PostgreSQL { host, port, database, username, password, ssl_mode: _, tls_config: _ } => {
-                        format!("postgresql://{}:{}@{}:{}/{}", username, password, host, port, database)
+                        // 对密码进行 URL 编码以处理特殊字符
+                        let encoded_password = urlencoding::encode(password);
+                        format!("postgresql://{}:{}@{}:{}/{}", username, encoded_password, host, port, database)
                     }
                     _ => return Err(QuickDbError::ConfigError {
                         message: "PostgreSQL连接配置类型不匹配".to_string(),
@@ -499,7 +501,9 @@ impl MultiConnectionManager {
             DatabaseType::MySQL => {
                 let connection_string = match &self.db_config.connection {
                     crate::types::ConnectionConfig::MySQL { host, port, database, username, password, ssl_opts: _, tls_config: _ } => {
-                        format!("mysql://{}:{}@{}:{}/{}", username, password, host, port, database)
+                        // 对密码进行 URL 编码以处理特殊字符
+                        let encoded_password = urlencoding::encode(password);
+                        format!("mysql://{}:{}@{}:{}/{}", username, encoded_password, host, port, database)
                     }
                     _ => return Err(QuickDbError::ConfigError {
                         message: "MySQL连接配置类型不匹配".to_string(),
