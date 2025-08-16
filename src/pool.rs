@@ -176,6 +176,9 @@ pub struct ConnectionPool {
     pub operation_sender: mpsc::UnboundedSender<DatabaseOperation>,
     /// 数据库类型
     pub db_type: DatabaseType,
+    /// 缓存管理器（可选）
+    #[cfg(feature = "cache")]
+    pub cache_manager: Option<Arc<crate::cache::CacheManager>>,
 }
 
 /// SQLite 单线程工作器
@@ -190,6 +193,9 @@ pub struct SqliteWorker {
     retry_count: u32,
     /// 最大重试次数
     max_retries: u32,
+    /// 缓存管理器（可选）
+    #[cfg(feature = "cache")]
+    cache_manager: Option<Arc<crate::cache::CacheManager>>,
 }
 
 /// 多连接工作器管理器（用于MySQL/PostgreSQL/MongoDB）
@@ -206,6 +212,9 @@ pub struct MultiConnectionManager {
     config: ExtendedPoolConfig,
     /// 保活任务句柄
     keepalive_handle: Option<tokio::task::JoinHandle<()>>,
+    /// 缓存管理器（可选）
+    #[cfg(feature = "cache")]
+    cache_manager: Option<Arc<crate::cache::CacheManager>>,
 }
 
 impl SqliteWorker {
@@ -546,6 +555,8 @@ impl ConnectionPool {
             db_config: db_config.clone(),
             config: config.clone(),
             operation_sender,
+            #[cfg(feature = "cache")]
+            cache_manager: None,
         };
         
         // 根据数据库类型启动对应的工作器
@@ -560,6 +571,12 @@ impl ConnectionPool {
         }
         
         Ok(pool)
+    }
+    
+    /// 设置缓存管理器
+    #[cfg(feature = "cache")]
+    pub fn set_cache_manager(&mut self, cache_manager: Arc<crate::cache::CacheManager>) {
+        self.cache_manager = Some(cache_manager);
     }
     
     /// 启动SQLite工作器
@@ -578,6 +595,8 @@ impl ConnectionPool {
             db_config,
             retry_count: 0,
             max_retries: config.max_retries,
+            #[cfg(feature = "cache")]
+            cache_manager: self.cache_manager.clone(),
         };
         
         // 启动工作器
@@ -602,6 +621,8 @@ impl ConnectionPool {
             db_config,
             config,
             keepalive_handle: None,
+            #[cfg(feature = "cache")]
+            cache_manager: self.cache_manager.clone(),
         };
         
         // 启动管理器
@@ -615,16 +636,26 @@ impl ConnectionPool {
     /// 创建SQLite连接
     #[cfg(feature = "sqlite")]
     async fn create_sqlite_connection(&self) -> QuickDbResult<DatabaseConnection> {
-        let connection_string = match &self.db_config.connection {
-            crate::types::ConnectionConfig::SQLite { path, .. } => {
-                format!("sqlite:{}", path)
+        let (path, create_if_missing) = match &self.db_config.connection {
+            crate::types::ConnectionConfig::SQLite { path, create_if_missing } => {
+                (path.clone(), *create_if_missing)
             }
             _ => return Err(QuickDbError::ConfigError {
                 message: "SQLite连接配置类型不匹配".to_string(),
             }),
         };
         
-        let pool = sqlx::SqlitePool::connect(&connection_string)
+        // 如果需要创建文件且文件不存在，则创建父目录
+        if create_if_missing && !std::path::Path::new(&path).exists() {
+            if let Some(parent) = std::path::Path::new(&path).parent() {
+                tokio::fs::create_dir_all(parent).await
+                    .map_err(|e| QuickDbError::ConnectionError {
+                        message: format!("创建SQLite数据库目录失败: {}", e),
+                    })?;
+            }
+        }
+        
+        let pool = sqlx::SqlitePool::connect(&path)
             .await
             .map_err(|e| QuickDbError::ConnectionError {
                 message: format!("SQLite连接失败: {}", e),

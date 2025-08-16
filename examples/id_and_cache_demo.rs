@@ -8,7 +8,8 @@
 use rat_quickdb::{
     manager::{add_database, get_connection, get_id_generator, get_mongo_auto_increment_generator},
     types::{
-        DatabaseConfig, ConnectionConfig, IdStrategy, IdType,
+        DatabaseConfig, ConnectionConfig, IdStrategy, IdType, DataValue, QueryOptions, PaginationConfig,
+        QueryCondition, QueryOperator,
     },
     QuickDbResult,
 };
@@ -181,20 +182,26 @@ async fn demonstrate_cache_functionality() -> QuickDbResult<()> {
     println!("\n--- 缓存功能演示 ---");
     
     // 配置带缓存的数据库
-    let cache_config = CacheConfig::builder()
-        .strategy(CacheStrategy::L1Only)
-        .l1_cache(L1CacheConfig::builder()
-            .max_size(1000)
-            .ttl(TtlConfig::builder()
-                .default_ttl(std::time::Duration::from_secs(300))
-                .max_ttl(std::time::Duration::from_secs(3600))
-                .build()?)
-            .build()?)
-        .compression(CompressionConfig::builder()
-            .algorithm(CompressionAlgorithm::Lz4)
-            .threshold(1024)
-            .build()?)
-        .build()?;
+    let cache_config = CacheConfig {
+        enabled: true,
+        strategy: CacheStrategy::Lru,
+        l1_config: L1CacheConfig {
+            max_capacity: 1000,
+            max_memory_mb: 100,
+            enable_stats: true,
+        },
+        l2_config: None,
+        ttl_config: TtlConfig {
+            default_ttl_secs: 3600,
+            max_ttl_secs: 86400,
+            check_interval_secs: 300,
+        },
+        compression_config: CompressionConfig {
+            enabled: true,
+            algorithm: CompressionAlgorithm::Lz4,
+            threshold_bytes: 1024,
+        },
+    };
     
     let config = DatabaseConfig::builder()
         .connection(ConnectionConfig::SQLite {
@@ -219,28 +226,45 @@ async fn demonstrate_cache_functionality() -> QuickDbResult<()> {
     };
     
     // 存储用户到缓存
-    let user_json = serde_json::to_string(&user)?;
-    cache_manager.set_record("users", &user.id, &user_json, None).await;
+    let user_data = DataValue::Object({
+        let mut map = std::collections::HashMap::new();
+        map.insert("id".to_string(), DataValue::String(user.id.clone()));
+        map.insert("name".to_string(), DataValue::String(user.name.clone()));
+        map.insert("email".to_string(), DataValue::String(user.email.clone()));
+        map.insert("age".to_string(), DataValue::Int(user.age as i64));
+        map
+    });
+    let user_id = IdType::String(user.id.clone());
+    cache_manager.cache_record("users", &user_id, &user_data).await?;
     println!("用户已存储到缓存: {}", user.name);
     
     // 从缓存获取用户
-    if let Some(cached_user_json) = cache_manager.get_record("users", &user.id).await {
-        let cached_user: User = serde_json::from_str(&cached_user_json)?;
-        println!("从缓存获取用户: {}", cached_user.name);
+    if let Some(cached_user_data) = cache_manager.get_cached_record("users", &user_id).await? {
+        if let DataValue::Object(ref map) = cached_user_data {
+            if let Some(DataValue::String(name)) = map.get("name") {
+                println!("从缓存获取用户: {}", name);
+            }
+        }
     }
     
     // 演示查询结果缓存
-    let query = "SELECT * FROM users WHERE age > 20";
-    let query_params = vec!["20".to_string()];
-    let query_result = vec![user_json.clone()];
-    let result_json = serde_json::to_string(&query_result)?;
+    let query_options = QueryOptions {
+        conditions: vec![QueryCondition {
+            field: "age".to_string(),
+            operator: QueryOperator::Gt,
+            value: DataValue::Int(20),
+        }],
+        sort: vec![],
+        pagination: None,
+        fields: vec![],
+    };
+    let query_result = vec![user_data.clone()];
     
-    cache_manager.set_query_result(query, &query_params, &result_json, None).await;
+    cache_manager.cache_query_result("users", &query_options, &query_result).await?;
     println!("查询结果已缓存");
     
-    if let Some(cached_result) = cache_manager.get_query_result(query, &query_params).await {
-        let cached_users: Vec<String> = serde_json::from_str(&cached_result)?;
-        println!("从缓存获取查询结果，用户数量: {}", cached_users.len());
+    if let Some(cached_result) = cache_manager.get_cached_query_result("users", &query_options).await? {
+        println!("从缓存获取查询结果，用户数量: {}", cached_result.len());
     }
     
     // 获取缓存统计信息
@@ -248,15 +272,15 @@ async fn demonstrate_cache_functionality() -> QuickDbResult<()> {
     println!("缓存统计信息:");
     println!("  命中次数: {}", stats.hits);
     println!("  未命中次数: {}", stats.misses);
-    println!("  命中率: {:.2}%", stats.hit_rate() * 100.0);
-    println!("  缓存大小: {}", stats.size);
+    println!("  命中率: {:.2}%", (stats.hits as f64 / (stats.hits + stats.misses) as f64) * 100.0);
+    println!("  缓存大小: {}", stats.entries);
     
     // 演示缓存失效
-    cache_manager.invalidate_record("users", &user.id).await;
+    cache_manager.invalidate_record("users", &user_id).await?;
     println!("用户缓存已失效");
     
     // 验证缓存已失效
-    if cache_manager.get_record("users", &user.id).await.is_none() {
+    if cache_manager.get_cached_record("users", &user_id).await?.is_none() {
         println!("✓ 确认用户缓存已被清除");
     }
     

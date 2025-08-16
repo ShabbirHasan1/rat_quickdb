@@ -20,6 +20,8 @@ mod mysql;
 #[cfg(feature = "mongodb")]
 mod mongodb;
 mod query_builder;
+#[cfg(feature = "cache")]
+mod cached;
 
 #[cfg(feature = "sqlite")]
 pub use sqlite::SqliteAdapter;
@@ -30,6 +32,8 @@ pub use mysql::MysqlAdapter;
 #[cfg(feature = "mongodb")]
 pub use mongodb::MongoAdapter;
 pub use query_builder::*;
+#[cfg(feature = "cache")]
+pub use cached::CachedDatabaseAdapter;
 
 /// 数据库适配器trait，定义统一的数据库操作接口
 #[async_trait]
@@ -135,32 +139,33 @@ pub trait DatabaseAdapter: Send + Sync {
     ) -> QuickDbResult<bool>;
 }
 
-/// 适配器工厂，根据数据库类型创建对应的适配器
+/// 根据数据库类型创建适配器
 pub fn create_adapter(db_type: &DatabaseType) -> QuickDbResult<Box<dyn DatabaseAdapter>> {
     match db_type {
         #[cfg(feature = "sqlite")]
         DatabaseType::SQLite => Ok(Box::new(SqliteAdapter)),
+        
+        #[cfg(feature = "mysql")]
+        DatabaseType::MySQL => Ok(Box::new(MysqlAdapter::new())),
+        
         #[cfg(feature = "postgresql")]
         DatabaseType::PostgreSQL => Ok(Box::new(PostgresAdapter)),
-        #[cfg(feature = "mysql")]
-        DatabaseType::MySQL => Ok(Box::new(MysqlAdapter)),
+        
         #[cfg(feature = "mongodb")]
         DatabaseType::MongoDB => Ok(Box::new(MongoAdapter)),
-        #[cfg(not(feature = "sqlite"))]
-        DatabaseType::SQLite => Err(QuickDbError::ConfigError {
-            message: "SQLite feature not enabled".to_string(),
-        }),
-        #[cfg(not(feature = "postgresql"))]
-        DatabaseType::PostgreSQL => Err(QuickDbError::ConfigError {
-            message: "PostgreSQL feature not enabled".to_string(),
-        }),
-        #[cfg(not(feature = "mysql"))]
-        DatabaseType::MySQL => Err(QuickDbError::ConfigError {
-            message: "MySQL feature not enabled".to_string(),
-        }),
-        #[cfg(not(feature = "mongodb"))]
-        DatabaseType::MongoDB => Err(QuickDbError::ConfigError {
-            message: "MongoDB feature not enabled".to_string(),
+        
+        _ => Err(QuickDbError::UnsupportedDatabase {
+            db_type: format!("{:?}", db_type),
         }),
     }
+}
+
+/// 根据数据库类型和缓存管理器创建带缓存的适配器
+#[cfg(feature = "cache")]
+pub fn create_adapter_with_cache(
+    db_type: &DatabaseType,
+    cache_manager: std::sync::Arc<crate::cache::CacheManager>,
+) -> QuickDbResult<Box<dyn DatabaseAdapter>> {
+    let base_adapter = create_adapter(db_type)?;
+    Ok(Box::new(CachedDatabaseAdapter::new(base_adapter, cache_manager)))
 }

@@ -44,6 +44,7 @@ async fn main() -> QuickDbResult<()> {
         },
         pool: pool_config,
         id_strategy: rat_quickdb::types::IdStrategy::AutoIncrement,
+        cache: None,
     };
     
     // 添加数据库配置到管理器

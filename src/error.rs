@@ -47,6 +47,10 @@ pub enum QuickDbError {
     #[error("任务执行失败: {0}")]
     TaskExecutionError(String),
 
+    /// 缓存操作错误
+    #[error("缓存操作失败: {message}")]
+    CacheError { message: String },
+
     /// IO 错误
     #[error("IO 操作失败: {0}")]
     IoError(#[from] std::io::Error),
@@ -126,6 +130,13 @@ impl ErrorBuilder {
             db_type: db_type.into(),
         }
     }
+
+    /// 创建缓存错误
+    pub fn cache_error(message: impl Into<String>) -> QuickDbError {
+        QuickDbError::CacheError {
+            message: message.into(),
+        }
+    }
 }
 
 /// 便捷宏 - 快速创建错误
@@ -154,6 +165,9 @@ macro_rules! quick_error {
     };
     (unsupported_db, $db_type:expr) => {
         $crate::error::ErrorBuilder::unsupported_database($db_type)
+    };
+    (cache, $msg:expr) => {
+        $crate::error::ErrorBuilder::cache_error($msg)
     };
 }
 

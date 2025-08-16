@@ -8,12 +8,17 @@ use crate::types::{
     CacheConfig, CacheStrategy, CompressionAlgorithm, DataValue, IdType, QueryOptions,
 };
 #[cfg(feature = "cache")]
+use rat_memcache::RatMemCacheBuilder;
+#[cfg(feature = "cache")]
+use rat_memcache::config::{L1Config, TtlConfig, CompressionConfig};
+#[cfg(feature = "cache")]
+use rat_memcache::types::EvictionStrategy;
+#[cfg(feature = "cache")]
 use anyhow::{anyhow, Result};
 #[cfg(feature = "cache")]
-use rat_memcache::{
-    cache::{RatMemCache, RatMemCacheBuilder},
-    config::{CacheOptions, CompressionType, EvictionPolicy},
-};
+use rat_memcache::{RatMemCache, CacheOptions};
+#[cfg(feature = "cache")]
+use bytes::Bytes;
 #[cfg(feature = "cache")]
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "cache")]
@@ -21,11 +26,12 @@ use std::{
     collections::HashMap,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
+    path::PathBuf,
 };
 #[cfg(feature = "cache")]
 use tokio::sync::RwLock;
 #[cfg(feature = "cache")]
-use zerg_creep::prelude::*;
+use zerg_creep::{info, debug, warn};
 
 /// 缓存键前缀
 #[cfg(feature = "cache")]
@@ -33,7 +39,7 @@ const CACHE_KEY_PREFIX: &str = "rat_quickdb";
 
 /// 缓存管理器
 #[cfg(feature = "cache")]
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct CacheManager {
     /// 内部缓存实例
     cache: Arc<RatMemCache>,
@@ -49,52 +55,12 @@ impl CacheManager {
     pub async fn new(config: CacheConfig) -> Result<Self> {
         let mut builder = RatMemCacheBuilder::new();
 
-        // 配置 L1 缓存
-        builder = builder
-            .l1_capacity(config.l1_config.max_capacity)
-            .l1_memory_limit_mb(config.l1_config.max_memory_mb)
-            .enable_l1_stats(config.l1_config.enable_stats);
-
-        // 配置 L2 缓存（如果启用）
-        if let Some(l2_config) = &config.l2_config {
-            builder = builder
-                .enable_l2(&l2_config.storage_path)
-                .l2_disk_limit_mb(l2_config.max_disk_mb)
-                .l2_compression_level(l2_config.compression_level)
-                .l2_enable_wal(l2_config.enable_wal);
-        }
-
-        // 配置驱逐策略
-        let eviction_policy = match config.strategy {
-            CacheStrategy::Lru => EvictionPolicy::Lru,
-            CacheStrategy::Lfu => EvictionPolicy::Lfu,
-            CacheStrategy::Fifo => EvictionPolicy::Fifo,
-            CacheStrategy::Custom(_) => EvictionPolicy::Lru, // 默认使用 LRU
-        };
-        builder = builder.eviction_policy(eviction_policy);
-
-        // 配置 TTL
-        builder = builder
-            .default_ttl(Duration::from_secs(config.ttl_config.default_ttl_secs))
-            .max_ttl(Duration::from_secs(config.ttl_config.max_ttl_secs))
-            .ttl_check_interval(Duration::from_secs(config.ttl_config.check_interval_secs));
-
-        // 配置压缩
-        if config.compression_config.enabled {
-            let compression_type = match config.compression_config.algorithm {
-                CompressionAlgorithm::Zstd => CompressionType::Zstd,
-                CompressionAlgorithm::Lz4 => CompressionType::Lz4,
-                CompressionAlgorithm::Gzip => CompressionType::Gzip,
-            };
-            builder = builder
-                .enable_compression(compression_type)
-                .compression_threshold(config.compression_config.threshold_bytes);
-        }
-
-        // 构建缓存实例
-        let cache = builder.build().await.map_err(|e| {
-            anyhow!("Failed to create cache instance: {}", e)
-        })?;
+        let cache = rat_memcache::RatMemCacheBuilder::new()
+            .development_preset()
+            .map_err(|e| anyhow!("Failed to create development preset: {}", e))?
+            .build()
+            .await
+            .map_err(|e| anyhow!("Failed to create cache: {}", e))?;
 
         info!("缓存管理器初始化成功");
 
@@ -150,10 +116,12 @@ impl CacheManager {
         let serialized = serde_json::to_vec(data)
             .map_err(|e| anyhow!("Failed to serialize data: {}", e))?;
 
-        let options = CacheOptions::new()
-            .with_ttl(Duration::from_secs(self.config.ttl_config.default_ttl_secs));
+        let options = CacheOptions {
+            ttl_seconds: Some(self.config.ttl_config.default_ttl_secs),
+            ..Default::default()
+        };
 
-        self.cache.set_with_options(&key, serialized, options).await
+        self.cache.set_with_options(key.clone(), Bytes::from(serialized), &options).await
             .map_err(|e| anyhow!("Failed to cache record: {}", e))?;
 
         // 记录缓存键
@@ -208,10 +176,12 @@ impl CacheManager {
         let serialized = serde_json::to_vec(results)
             .map_err(|e| anyhow!("Failed to serialize query results: {}", e))?;
 
-        let cache_options = CacheOptions::new()
-            .with_ttl(Duration::from_secs(self.config.ttl_config.default_ttl_secs));
+        let cache_options = CacheOptions {
+            ttl_seconds: Some(self.config.ttl_config.default_ttl_secs),
+            ..Default::default()
+        };
 
-        self.cache.set_with_options(&key, serialized, cache_options).await
+        self.cache.set_with_options(key.clone(), Bytes::from(serialized), &cache_options).await
             .map_err(|e| anyhow!("Failed to cache query results: {}", e))?;
 
         // 记录缓存键
@@ -303,6 +273,227 @@ impl CacheManager {
 
         info!("已清理所有缓存");
         Ok(())
+    }
+
+    /// 按模式清理缓存（支持通配符匹配）
+    /// 
+    /// # 参数
+    /// * `pattern` - 缓存键模式，支持通配符 * 和 ?
+    /// 
+    /// # 示例
+    /// ```no_run
+    /// # use rat_quickdb::cache::CacheManager;
+    /// # async fn example(cache_manager: &CacheManager) -> rat_quickdb::QuickDbResult<()> {
+    /// // 清理所有用户表相关的缓存
+    /// cache_manager.clear_by_pattern("rat_quickdb:users:*").await?;
+    /// // 清理所有查询缓存
+    /// cache_manager.clear_by_pattern("*:query:*").await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn clear_by_pattern(&self, pattern: &str) -> Result<usize> {
+        if !self.config.enabled {
+            return Ok(0);
+        }
+
+        let mut cleared_count = 0;
+        let table_keys = self.table_keys.read().await;
+        
+        // 遍历所有跟踪的缓存键
+        for (table_name, keys) in table_keys.iter() {
+            let mut keys_to_remove = Vec::new();
+            
+            for key in keys {
+                if self.matches_pattern(key, pattern) {
+                    if let Err(e) = self.cache.delete(key).await {
+                        warn!("删除匹配模式的缓存键失败: key={}, pattern={}, error={}", key, pattern, e);
+                    } else {
+                        keys_to_remove.push(key.clone());
+                        cleared_count += 1;
+                        debug!("已删除匹配模式的缓存键: key={}, pattern={}", key, pattern);
+                    }
+                }
+            }
+        }
+
+        info!("按模式清理缓存完成: pattern={}, cleared_count={}", pattern, cleared_count);
+        Ok(cleared_count)
+    }
+
+    /// 批量清理记录缓存
+    /// 
+    /// # 参数
+    /// * `table` - 表名
+    /// * `ids` - 要清理的记录ID列表
+    pub async fn clear_records_batch(&self, table: &str, ids: &[IdType]) -> Result<usize> {
+        if !self.config.enabled {
+            return Ok(0);
+        }
+
+        let mut cleared_count = 0;
+        
+        for id in ids {
+            let key = self.generate_cache_key(table, id, "record");
+            
+            if let Err(e) = self.cache.delete(&key).await {
+                warn!("批量删除缓存记录失败: table={}, id={:?}, error={}", table, id, e);
+            } else {
+                cleared_count += 1;
+                debug!("已删除缓存记录: table={}, id={:?}", table, id);
+            }
+        }
+
+        info!("批量清理记录缓存完成: table={}, total={}, cleared={}", table, ids.len(), cleared_count);
+        Ok(cleared_count)
+    }
+
+    /// 强制清理过期缓存
+    /// 
+    /// 手动触发过期缓存的清理，通常用于内存紧张或需要立即释放空间的场景
+    pub async fn force_cleanup_expired(&self) -> Result<usize> {
+        if !self.config.enabled {
+            return Ok(0);
+        }
+
+        // 由于 rat_memcache 内部处理过期清理，这里我们通过重新验证所有跟踪的键来实现
+        let mut expired_count = 0;
+        let mut table_keys = self.table_keys.write().await;
+        
+        for (table_name, keys) in table_keys.iter_mut() {
+            let mut valid_keys = Vec::new();
+            
+            for key in keys.iter() {
+                // 尝试获取缓存，如果不存在则认为已过期
+                match self.cache.get(key).await {
+                    Ok(Some(_)) => {
+                        valid_keys.push(key.clone());
+                    }
+                    Ok(None) => {
+                        expired_count += 1;
+                        debug!("发现过期缓存键: key={}", key);
+                    }
+                    Err(e) => {
+                        warn!("检查缓存键时出错: key={}, error={}", key, e);
+                        // 出错的键也从跟踪中移除
+                        expired_count += 1;
+                    }
+                }
+            }
+            
+            *keys = valid_keys;
+        }
+
+        info!("强制清理过期缓存完成: expired_count={}", expired_count);
+        Ok(expired_count)
+    }
+
+    /// 获取所有缓存键列表（按表分组）
+    /// 
+    /// 用于调试和监控，可以查看当前缓存中有哪些键
+    pub async fn list_cache_keys(&self) -> Result<HashMap<String, Vec<String>>> {
+        if !self.config.enabled {
+            return Ok(HashMap::new());
+        }
+
+        let table_keys = self.table_keys.read().await;
+        let result = table_keys.clone();
+        
+        info!("获取缓存键列表: 表数量={}, 总键数量={}", 
+              result.len(), 
+              result.values().map(|v| v.len()).sum::<usize>());
+        
+        Ok(result)
+    }
+
+    /// 获取指定表的缓存键列表
+    pub async fn list_table_cache_keys(&self, table: &str) -> Result<Vec<String>> {
+        if !self.config.enabled {
+            return Ok(Vec::new());
+        }
+
+        let table_keys = self.table_keys.read().await;
+        let keys = table_keys.get(table).cloned().unwrap_or_default();
+        
+        debug!("获取表缓存键列表: table={}, 键数量={}", table, keys.len());
+        Ok(keys)
+    }
+
+    /// 清理指定表的查询缓存
+    /// 
+    /// 只清理查询缓存，保留记录缓存
+    pub async fn clear_table_query_cache(&self, table: &str) -> Result<usize> {
+        if !self.config.enabled {
+            return Ok(0);
+        }
+
+        let pattern = format!("{}:{}:query:*", CACHE_KEY_PREFIX, table);
+        let cleared_count = self.clear_by_pattern(&pattern).await?;
+        
+        info!("清理表查询缓存完成: table={}, cleared_count={}", table, cleared_count);
+        Ok(cleared_count)
+    }
+
+    /// 清理指定表的记录缓存
+    /// 
+    /// 只清理记录缓存，保留查询缓存
+    pub async fn clear_table_record_cache(&self, table: &str) -> Result<usize> {
+        if !self.config.enabled {
+            return Ok(0);
+        }
+
+        let pattern = format!("{}:{}:record:*", CACHE_KEY_PREFIX, table);
+        let cleared_count = self.clear_by_pattern(&pattern).await?;
+        
+        info!("清理表记录缓存完成: table={}, cleared_count={}", table, cleared_count);
+        Ok(cleared_count)
+    }
+
+    /// 检查缓存键是否匹配模式
+    /// 
+    /// 支持简单的通配符匹配：* 匹配任意字符序列，? 匹配单个字符
+    fn matches_pattern(&self, key: &str, pattern: &str) -> bool {
+        // 简单的通配符匹配实现
+        let pattern_chars: Vec<char> = pattern.chars().collect();
+        let key_chars: Vec<char> = key.chars().collect();
+        
+        self.match_recursive(&key_chars, 0, &pattern_chars, 0)
+    }
+
+    /// 递归匹配算法
+    fn match_recursive(&self, key: &[char], key_idx: usize, pattern: &[char], pattern_idx: usize) -> bool {
+        // 如果模式已经匹配完
+        if pattern_idx >= pattern.len() {
+            return key_idx >= key.len();
+        }
+        
+        // 如果键已经匹配完但模式还有非*字符
+        if key_idx >= key.len() {
+            return pattern[pattern_idx..].iter().all(|&c| c == '*');
+        }
+        
+        match pattern[pattern_idx] {
+            '*' => {
+                // * 可以匹配0个或多个字符
+                // 尝试匹配0个字符（跳过*）
+                if self.match_recursive(key, key_idx, pattern, pattern_idx + 1) {
+                    return true;
+                }
+                // 尝试匹配1个或多个字符
+                self.match_recursive(key, key_idx + 1, pattern, pattern_idx)
+            }
+            '?' => {
+                // ? 匹配任意单个字符
+                self.match_recursive(key, key_idx + 1, pattern, pattern_idx + 1)
+            }
+            c => {
+                // 普通字符必须完全匹配
+                if key[key_idx] == c {
+                    self.match_recursive(key, key_idx + 1, pattern, pattern_idx + 1)
+                } else {
+                    false
+                }
+            }
+        }
     }
 
     /// 获取缓存统计信息
@@ -397,6 +588,35 @@ impl CacheManager {
 
     pub async fn clear_all(&self) -> anyhow::Result<()> {
         Ok(())
+    }
+
+    // 新增的手动清理方法的空实现
+    pub async fn clear_by_pattern(&self, _pattern: &str) -> anyhow::Result<usize> {
+        Ok(0)
+    }
+
+    pub async fn clear_records_batch(&self, _table: &str, _ids: &[crate::types::IdType]) -> anyhow::Result<usize> {
+        Ok(0)
+    }
+
+    pub async fn force_cleanup_expired(&self) -> anyhow::Result<usize> {
+        Ok(0)
+    }
+
+    pub async fn list_cache_keys(&self) -> anyhow::Result<std::collections::HashMap<String, Vec<String>>> {
+        Ok(std::collections::HashMap::new())
+    }
+
+    pub async fn list_table_cache_keys(&self, _table: &str) -> anyhow::Result<Vec<String>> {
+        Ok(Vec::new())
+    }
+
+    pub async fn clear_table_query_cache(&self, _table: &str) -> anyhow::Result<usize> {
+        Ok(0)
+    }
+
+    pub async fn clear_table_record_cache(&self, _table: &str) -> anyhow::Result<usize> {
+        Ok(0)
     }
 
     pub fn is_enabled(&self) -> bool {
