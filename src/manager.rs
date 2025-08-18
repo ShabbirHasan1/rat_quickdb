@@ -59,19 +59,15 @@ impl PoolManager {
         
         // 初始化缓存管理器（如果配置了缓存）
         let cache_manager_arc = if let Some(cache_config) = &config.cache {
-            match CacheManager::new(cache_config.clone()).await {
-                Ok(cache_manager) => {
-                    let cache_manager_arc = Arc::new(cache_manager);
-                    // 保存到管理器中
-                    self.cache_managers.insert(alias.clone(), cache_manager_arc.clone());
-                    info!("为数据库 {} 创建缓存管理器", alias);
-                    Some(cache_manager_arc)
-                }
-                Err(e) => {
-                    warn!("为数据库 {} 创建缓存管理器失败: {}", alias, e);
-                    None
-                }
-            }
+            let cache_manager = CacheManager::new(cache_config.clone()).await.map_err(|e| {
+                error!("为数据库 {} 创建缓存管理器失败: {}", alias, e);
+                e
+            })?;
+            let cache_manager_arc = Arc::new(cache_manager);
+            // 保存到管理器中
+            self.cache_managers.insert(alias.clone(), cache_manager_arc.clone());
+            info!("为数据库 {} 创建缓存管理器", alias);
+            Some(cache_manager_arc)
         } else {
             None
         };

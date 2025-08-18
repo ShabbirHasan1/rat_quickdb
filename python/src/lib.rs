@@ -9,6 +9,7 @@ use rat_quickdb::types::{
     QueryCondition, QueryOperator, QueryOptions, SortConfig, SortDirection,
     QueryConditionGroup, LogicalOperator,
     CacheConfig, CacheStrategy, L1CacheConfig, L2CacheConfig, TtlConfig, CompressionConfig, CompressionAlgorithm,
+    TlsConfig, ZstdConfig,
 };
 use rat_quickdb::{QuickDbError, QuickDbResult};
 use serde_json::{Map as JsonMap, Value as JsonValue};
@@ -170,6 +171,40 @@ pub struct PyCompressionConfig {
     pub threshold_bytes: usize,
 }
 
+/// TLS配置
+#[pyclass]
+#[derive(Clone, Debug)]
+pub struct PyTlsConfig {
+    #[pyo3(get, set)]
+    pub enabled: bool,
+    #[pyo3(get, set)]
+    pub ca_cert_path: Option<String>,
+    #[pyo3(get, set)]
+    pub client_cert_path: Option<String>,
+    #[pyo3(get, set)]
+    pub client_key_path: Option<String>,
+    #[pyo3(get, set)]
+    pub verify_server_cert: bool,
+    #[pyo3(get, set)]
+    pub verify_hostname: bool,
+    #[pyo3(get, set)]
+    pub min_tls_version: Option<String>,
+    #[pyo3(get, set)]
+    pub cipher_suites: Option<Vec<String>>,
+}
+
+/// ZSTD压缩配置
+#[pyclass]
+#[derive(Clone, Debug)]
+pub struct PyZstdConfig {
+    #[pyo3(get, set)]
+    pub enabled: bool,
+    #[pyo3(get, set)]
+    pub compression_level: Option<i32>,
+    #[pyo3(get, set)]
+    pub compression_threshold: Option<usize>,
+}
+
 #[pymethods]
 impl PyCacheConfig {
     #[new]
@@ -209,8 +244,35 @@ impl PyL1CacheConfig {
     }
 }
 
+impl PyTlsConfig {
+    /// 转换为Rust的TlsConfig
+    pub fn to_rust_config(&self) -> TlsConfig {
+        TlsConfig {
+            enabled: self.enabled,
+            ca_cert_path: self.ca_cert_path.clone(),
+            client_cert_path: self.client_cert_path.clone(),
+            client_key_path: self.client_key_path.clone(),
+            verify_server_cert: self.verify_server_cert,
+            verify_hostname: self.verify_hostname,
+            min_tls_version: self.min_tls_version.clone(),
+            cipher_suites: self.cipher_suites.clone(),
+        }
+    }
+}
+
+impl PyZstdConfig {
+    /// 转换为Rust的ZstdConfig
+    pub fn to_rust_config(&self) -> ZstdConfig {
+        ZstdConfig {
+            enabled: self.enabled,
+            compression_level: self.compression_level,
+            compression_threshold: self.compression_threshold,
+        }
+    }
+}
+
 impl PyCacheConfig {
-    /// 转换为Rust CacheConfig
+    /// 转换为Rust的CacheConfig
     pub fn to_rust_config(&self) -> CacheConfig {
         let mut config = CacheConfig::default();
         config.enabled = self.enabled;
@@ -319,10 +381,59 @@ impl PyCompressionConfig {
     #[new]
     pub fn new(algorithm: String) -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             algorithm,
             threshold_bytes: 1024,
         }
+    }
+}
+
+#[pymethods]
+impl PyTlsConfig {
+    #[new]
+    pub fn new() -> Self {
+        Self {
+            enabled: false,
+            ca_cert_path: None,
+            client_cert_path: None,
+            client_key_path: None,
+            verify_server_cert: true,
+            verify_hostname: true,
+            min_tls_version: Some("1.2".to_string()),
+            cipher_suites: None,
+        }
+    }
+    
+    /// 启用TLS
+    pub fn enable(&mut self) {
+        self.enabled = true;
+    }
+    
+    /// 禁用TLS
+    pub fn disable(&mut self) {
+        self.enabled = false;
+    }
+}
+
+#[pymethods]
+impl PyZstdConfig {
+    #[new]
+    pub fn new() -> Self {
+        Self {
+            enabled: false,
+            compression_level: Some(3),
+            compression_threshold: Some(1024),
+        }
+    }
+    
+    /// 启用ZSTD压缩
+    pub fn enable(&mut self) {
+        self.enabled = true;
+    }
+    
+    /// 禁用ZSTD压缩
+    pub fn disable(&mut self) {
+        self.enabled = false;
     }
 }
 
@@ -331,12 +442,14 @@ impl PyCompressionConfig {
 pub struct PyDbQueueBridge {
     /// 请求发送器
     request_sender: Arc<std::sync::Mutex<Option<mpsc::UnboundedSender<PyDbRequest>>>>,
-    /// 默认别名
+    /// 默认数据库别名
     default_alias: Arc<std::sync::Mutex<Option<String>>>,
     /// 任务句柄
     _task_handle: Arc<std::sync::Mutex<Option<std::thread::JoinHandle<()>>>>,
     /// 初始化状态
     initialized: Arc<std::sync::Mutex<bool>>,
+    /// 共享的Tokio运行时，避免每次查询都创建新的Runtime
+    runtime: Arc<Runtime>,
 }
 
 #[pymethods]
@@ -346,6 +459,11 @@ impl PyDbQueueBridge {
     pub fn new() -> PyResult<Self> {
         info!("创建新的数据库队列桥接器");
         let (request_sender, request_receiver) = mpsc::unbounded_channel::<PyDbRequest>();
+
+        // 创建共享的Tokio运行时
+        let runtime = Arc::new(Runtime::new().map_err(|e| {
+            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("创建运行时失败: {}", e))
+        })?);
 
         // 启动后台守护任务线程
         info!("启动后台守护任务线程");
@@ -368,6 +486,7 @@ impl PyDbQueueBridge {
             default_alias: Arc::new(std::sync::Mutex::new(None)),
             _task_handle: Arc::new(std::sync::Mutex::new(Some(task_handle))),
             initialized: Arc::new(std::sync::Mutex::new(true)),
+            runtime,
         };
 
         info!("数据库队列桥接器创建完成");
@@ -491,6 +610,131 @@ impl PyDbQueueBridge {
         self.wait_for_response(response_receiver)
     }
 
+    /// 删除记录
+    pub fn delete(
+        &self,
+        table: String,
+        conditions_json: String,
+        alias: Option<String>,
+    ) -> PyResult<String> {
+        self.check_initialized()?;
+        
+        let conditions = self.parse_conditions_json(&conditions_json)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("解析查询条件失败: {}", e)))?;
+        
+        let (response_sender, response_receiver) = oneshot::channel();
+        let request = PyDbRequest {
+            request_id: Uuid::new_v4().to_string(),
+            operation: "delete".to_string(),
+            collection: table,
+            data: None,
+            conditions: Some(conditions),
+            condition_groups: None,
+            options: None,
+            updates: None,
+            id: None,
+            alias,
+            database_config: None,
+            response_sender,
+        };
+        
+        self.send_request(request)?;
+        self.wait_for_response(response_receiver)
+    }
+
+    /// 根据ID删除记录
+    pub fn delete_by_id(&self, table: String, id: String, alias: Option<String>) -> PyResult<String> {
+        self.check_initialized()?;
+        
+        let (response_sender, response_receiver) = oneshot::channel();
+        let request = PyDbRequest {
+            request_id: Uuid::new_v4().to_string(),
+            operation: "delete_by_id".to_string(),
+            collection: table,
+            data: None,
+            conditions: None,
+            condition_groups: None,
+            options: None,
+            updates: None,
+            id: Some(id),
+            alias,
+            database_config: None,
+            response_sender,
+        };
+        
+        self.send_request(request)?;
+        self.wait_for_response(response_receiver)
+    }
+
+    /// 更新记录
+    pub fn update(
+        &self,
+        table: String,
+        conditions_json: String,
+        updates_json: String,
+        alias: Option<String>,
+    ) -> PyResult<String> {
+        self.check_initialized()?;
+        
+        let conditions = self.parse_conditions_json(&conditions_json)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("解析查询条件失败: {}", e)))?;
+        
+        let updates = self.parse_json_to_data_map(&updates_json)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("解析更新数据失败: {}", e)))?;
+        
+        let (response_sender, response_receiver) = oneshot::channel();
+        let request = PyDbRequest {
+            request_id: Uuid::new_v4().to_string(),
+            operation: "update".to_string(),
+            collection: table,
+            data: None,
+            conditions: Some(conditions),
+            condition_groups: None,
+            options: None,
+            updates: Some(updates),
+            id: None,
+            alias,
+            database_config: None,
+            response_sender,
+        };
+        
+        self.send_request(request)?;
+        self.wait_for_response(response_receiver)
+    }
+
+    /// 按ID更新记录
+    pub fn update_by_id(
+        &self,
+        table: String,
+        id: String,
+        updates_json: String,
+        alias: Option<String>,
+    ) -> PyResult<String> {
+        self.check_initialized()?;
+        
+        let updates = self.parse_json_to_data_map(&updates_json)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("解析更新数据失败: {}", e)))?;
+        
+        let (response_sender, response_receiver) = oneshot::channel();
+        let request = PyDbRequest {
+            request_id: Uuid::new_v4().to_string(),
+            operation: "update_by_id".to_string(),
+            collection: table,
+            data: None,
+            conditions: None,
+            condition_groups: None,
+            options: None,
+            updates: Some(updates),
+            id: Some(id),
+            alias,
+            database_config: None,
+            response_sender,
+        };
+        
+        self.send_request(request)?;
+        self.wait_for_response(response_receiver)
+    }
+
     /// 添加SQLite数据库
     pub fn add_sqlite_database(
         &self,
@@ -530,9 +774,12 @@ impl PyDbQueueBridge {
             .alias(alias.clone())
             .id_strategy(IdStrategy::Uuid);
         
-        // 添加缓存配置
+        // 添加缓存配置（只有当缓存启用时才添加）
         if let Some(cache_config) = cache_config {
-            db_config_builder = db_config_builder.cache(cache_config.to_rust_config());
+            if cache_config.enabled {
+                db_config_builder = db_config_builder.cache(cache_config.to_rust_config());
+            }
+            // 如果 enabled=false，则不添加缓存配置，相当于 cache=None
         }
         
         let db_config = match db_config_builder.build() {
@@ -782,6 +1029,9 @@ impl PyDbQueueBridge {
         connection_timeout: Option<u64>,
         idle_timeout: Option<u64>,
         max_lifetime: Option<u64>,
+        cache_config: Option<PyCacheConfig>,
+        tls_config: Option<PyTlsConfig>,
+        zstd_config: Option<PyZstdConfig>,
     ) -> PyResult<String> {
         info!("添加MongoDB数据库: alias={}, host={}, port={}, database={}", alias, host, port, database);
         
@@ -800,7 +1050,7 @@ impl PyDbQueueBridge {
                 }
             };
         
-        let db_config = match DatabaseConfigBuilder::new()
+        let mut db_config_builder = DatabaseConfigBuilder::new()
             .db_type(DatabaseType::MongoDB)
             .connection(ConnectionConfig::MongoDB { 
                 host: host.clone(),
@@ -810,14 +1060,23 @@ impl PyDbQueueBridge {
                 password,
                 auth_source,
                 direct_connection: direct_connection.unwrap_or(false),
-                tls_config: None,
-                zstd_config: None,
+                tls_config: tls_config.map(|config| config.to_rust_config()),
+                zstd_config: zstd_config.map(|config| config.to_rust_config()),
                 options: None,
             })
             .pool(pool_config)
             .alias(alias.clone())
-            .id_strategy(IdStrategy::Uuid)
-            .build() {
+            .id_strategy(IdStrategy::Uuid);
+        
+        // 添加缓存配置（只有当缓存启用时才添加）
+        if let Some(cache_config) = cache_config {
+            if cache_config.enabled {
+                db_config_builder = db_config_builder.cache(cache_config.to_rust_config());
+            }
+            // 如果 enabled=false，则不添加缓存配置，相当于 cache=None
+        }
+        
+        let db_config = match db_config_builder.build() {
                 Ok(config) => config,
                 Err(e) => {
                     return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
@@ -1025,6 +1284,106 @@ impl PyDbQueueBridgeAsync {
                     }
                 }
             }
+            "delete" => {
+                if let Some(conditions) = &request.conditions {
+                    match Self::handle_delete_direct(&request.collection, conditions.clone(), request.alias.clone()).await {
+                        Ok(result) => PyDbResponse {
+                            request_id,
+                            success: true,
+                            data: result.to_string(),
+                            error: None,
+                        },
+                        Err(e) => PyDbResponse {
+                            request_id,
+                            success: false,
+                            data: String::new(),
+                            error: Some(format!("删除失败: {}", e)),
+                        },
+                    }
+                } else {
+                    PyDbResponse {
+                        request_id,
+                        success: false,
+                        data: String::new(),
+                        error: Some("缺少删除条件".to_string()),
+                    }
+                }
+            }
+            "delete_by_id" => {
+                if let Some(id) = &request.id {
+                    match Self::handle_delete_by_id_direct(&request.collection, id, request.alias.clone()).await {
+                        Ok(result) => PyDbResponse {
+                            request_id,
+                            success: true,
+                            data: result.to_string(),
+                            error: None,
+                        },
+                        Err(e) => PyDbResponse {
+                            request_id,
+                            success: false,
+                            data: String::new(),
+                            error: Some(format!("按ID删除失败: {}", e)),
+                        },
+                    }
+                } else {
+                    PyDbResponse {
+                        request_id,
+                        success: false,
+                        data: String::new(),
+                        error: Some("缺少ID".to_string()),
+                    }
+                }
+            }
+            "update" => {
+                if let (Some(conditions), Some(updates)) = (&request.conditions, &request.updates) {
+                    match Self::handle_update_direct(&request.collection, conditions.clone(), updates.clone(), request.alias.clone()).await {
+                        Ok(result) => PyDbResponse {
+                            request_id,
+                            success: true,
+                            data: result.to_string(),
+                            error: None,
+                        },
+                        Err(e) => PyDbResponse {
+                            request_id,
+                            success: false,
+                            data: String::new(),
+                            error: Some(format!("更新失败: {}", e)),
+                        },
+                    }
+                } else {
+                    PyDbResponse {
+                        request_id,
+                        success: false,
+                        data: String::new(),
+                        error: Some("缺少更新条件或数据".to_string()),
+                    }
+                }
+            }
+            "update_by_id" => {
+                if let (Some(id), Some(updates)) = (&request.id, &request.updates) {
+                    match Self::handle_update_by_id_direct(&request.collection, id, updates.clone(), request.alias.clone()).await {
+                        Ok(result) => PyDbResponse {
+                            request_id,
+                            success: true,
+                            data: result.to_string(),
+                            error: None,
+                        },
+                        Err(e) => PyDbResponse {
+                            request_id,
+                            success: false,
+                            data: String::new(),
+                            error: Some(format!("按ID更新失败: {}", e)),
+                        },
+                    }
+                } else {
+                    PyDbResponse {
+                        request_id,
+                        success: false,
+                        data: String::new(),
+                        error: Some("缺少ID或更新数据".to_string()),
+                    }
+                }
+            }
             _ => PyDbResponse {
                 request_id,
                 success: false,
@@ -1217,6 +1576,182 @@ impl PyDbQueueBridgeAsync {
         serde_json::to_string(&result)
             .map_err(|e| QuickDbError::SerializationError { message: format!("序列化失败: {}", e) })
     }
+
+    /// 直接使用连接池处理删除请求
+    async fn handle_delete_direct(
+        collection: &str,
+        conditions: Vec<QueryCondition>,
+        alias: Option<String>,
+    ) -> QuickDbResult<u64> {
+        use rat_quickdb::pool::DatabaseOperation;
+        use tokio::sync::oneshot;
+        
+        let actual_alias = alias.unwrap_or_else(|| "default".to_string());
+        debug!("直接处理删除请求: collection={}, alias={}", collection, actual_alias);
+        
+        let manager = get_global_pool_manager();
+        let connection_pools = manager.get_connection_pools();
+        let connection_pool = connection_pools.get(&actual_alias)
+            .ok_or_else(|| QuickDbError::AliasNotFound {
+                alias: actual_alias.clone(),
+            })?;
+        
+        // 创建oneshot通道用于接收响应
+        let (response_tx, response_rx) = oneshot::channel();
+        
+        // 发送DatabaseOperation::Delete请求到连接池
+        let operation = DatabaseOperation::Delete {
+            table: collection.to_string(),
+            conditions,
+            response: response_tx,
+        };
+        
+        connection_pool.operation_sender.send(operation)
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "连接池操作通道已关闭".to_string(),
+            })?;
+        
+        // 等待响应
+        let result = response_rx.await
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "等待连接池响应超时".to_string(),
+            })??;
+        
+        Ok(result)
+    }
+
+    /// 直接使用连接池处理按ID删除请求
+    async fn handle_delete_by_id_direct(
+        collection: &str,
+        id: &str,
+        alias: Option<String>,
+    ) -> QuickDbResult<bool> {
+        use rat_quickdb::pool::DatabaseOperation;
+        use tokio::sync::oneshot;
+        
+        let actual_alias = alias.unwrap_or_else(|| "default".to_string());
+        debug!("直接处理按ID删除请求: collection={}, id={}, alias={}", collection, id, actual_alias);
+        
+        let manager = get_global_pool_manager();
+        let connection_pools = manager.get_connection_pools();
+        let connection_pool = connection_pools.get(&actual_alias)
+            .ok_or_else(|| QuickDbError::AliasNotFound {
+                alias: actual_alias.clone(),
+            })?;
+        
+        // 创建oneshot通道用于接收响应
+        let (response_tx, response_rx) = oneshot::channel();
+        
+        // 发送DatabaseOperation::DeleteById请求到连接池
+        let operation = DatabaseOperation::DeleteById {
+            table: collection.to_string(),
+            id: DataValue::String(id.to_string()),
+            response: response_tx,
+        };
+        
+        connection_pool.operation_sender.send(operation)
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "连接池操作通道已关闭".to_string(),
+            })?;
+        
+        // 等待响应
+        let result = response_rx.await
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "等待连接池响应超时".to_string(),
+            })??;
+        
+        Ok(result)
+    }
+
+    /// 处理更新操作
+    async fn handle_update_direct(
+        collection: &str,
+        conditions: Vec<QueryCondition>,
+        updates: HashMap<String, DataValue>,
+        alias: Option<String>,
+    ) -> QuickDbResult<u64> {
+        use rat_quickdb::pool::DatabaseOperation;
+        use tokio::sync::oneshot;
+        
+        let actual_alias = alias.unwrap_or_else(|| "default".to_string());
+        debug!("直接处理更新请求: collection={}, conditions={:?}, updates={:?}, alias={}", collection, conditions, updates, actual_alias);
+        
+        let manager = get_global_pool_manager();
+        let connection_pools = manager.get_connection_pools();
+        let connection_pool = connection_pools.get(&actual_alias)
+            .ok_or_else(|| QuickDbError::AliasNotFound {
+                alias: actual_alias.clone(),
+            })?;
+        
+        // 创建oneshot通道用于接收响应
+        let (response_tx, response_rx) = oneshot::channel();
+        
+        // 发送DatabaseOperation::Update请求到连接池
+        let operation = DatabaseOperation::Update {
+            table: collection.to_string(),
+            conditions,
+            data: updates,
+            response: response_tx,
+        };
+        
+        connection_pool.operation_sender.send(operation)
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "连接池操作通道已关闭".to_string(),
+            })?;
+        
+        // 等待响应
+        let result = response_rx.await
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "等待连接池响应超时".to_string(),
+            })??;
+        
+        Ok(result)
+    }
+
+    /// 处理按ID更新操作
+    async fn handle_update_by_id_direct(
+        collection: &str,
+        id: &str,
+        updates: HashMap<String, DataValue>,
+        alias: Option<String>,
+    ) -> QuickDbResult<bool> {
+        use rat_quickdb::pool::DatabaseOperation;
+        use tokio::sync::oneshot;
+        
+        let actual_alias = alias.unwrap_or_else(|| "default".to_string());
+        debug!("直接处理按ID更新请求: collection={}, id={}, updates={:?}, alias={}", collection, id, updates, actual_alias);
+        
+        let manager = get_global_pool_manager();
+        let connection_pools = manager.get_connection_pools();
+        let connection_pool = connection_pools.get(&actual_alias)
+            .ok_or_else(|| QuickDbError::AliasNotFound {
+                alias: actual_alias.clone(),
+            })?;
+        
+        // 创建oneshot通道用于接收响应
+        let (response_tx, response_rx) = oneshot::channel();
+        
+        // 发送DatabaseOperation::UpdateById请求到连接池
+        let operation = DatabaseOperation::UpdateById {
+            table: collection.to_string(),
+            id: DataValue::String(id.to_string()),
+            data: updates,
+            response: response_tx,
+        };
+        
+        connection_pool.operation_sender.send(operation)
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "连接池操作通道已关闭".to_string(),
+            })?;
+        
+        // 等待响应
+        let result = response_rx.await
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "等待连接池响应超时".to_string(),
+            })??;
+        
+        Ok(result)
+    }
 }
 
 /// PyDbQueueBridge的辅助方法实现
@@ -1238,11 +1773,7 @@ impl PyDbQueueBridge {
         &self,
         response_receiver: oneshot::Receiver<PyDbResponse>,
     ) -> PyResult<String> {
-        let rt = Runtime::new().map_err(|e| {
-            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("创建运行时失败: {}", e))
-        })?;
-        
-        let response = rt.block_on(response_receiver).map_err(|e| {
+        let response = self.runtime.block_on(response_receiver).map_err(|e| {
             PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("等待响应失败: {}", e))
         })?;
         
@@ -1291,21 +1822,7 @@ impl PyDbQueueBridge {
         if let JsonValue::Object(map) = json_value {
             let mut data_map = HashMap::new();
             for (key, value) in map {
-                let data_value = match value {
-                    JsonValue::String(s) => DataValue::String(s),
-                    JsonValue::Number(n) => {
-                        if let Some(i) = n.as_i64() {
-                            DataValue::Int(i)
-                        } else if let Some(f) = n.as_f64() {
-                            DataValue::Float(f)
-                        } else {
-                            return Err(format!("不支持的数字类型: {}", n));
-                        }
-                    }
-                    JsonValue::Bool(b) => DataValue::Bool(b),
-                    JsonValue::Null => DataValue::Null,
-                    _ => return Err(format!("不支持的数据类型: {:?}", value)),
-                };
+                let data_value = self.parse_data_value(&value)?;
                 data_map.insert(key, data_value);
             }
             Ok(data_map)
@@ -1561,6 +2078,10 @@ pub fn create_db_queue_bridge() -> PyResult<PyDbQueueBridge> {
 /// Python模块定义
 #[pymodule]
 fn rat_quickdb_py(_py: Python, m: &PyModule) -> PyResult<()> {
+    // 初始化日志系统
+    rat_quickdb::init();
+    info!("Python绑定模块已初始化，日志系统已启动");
+    
     // 基础函数
     m.add_function(wrap_pyfunction!(get_version, m)?)?;
     m.add_function(wrap_pyfunction!(get_info, m)?)?;
@@ -1576,6 +2097,10 @@ fn rat_quickdb_py(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<PyL2CacheConfig>()?;
     m.add_class::<PyTtlConfig>()?;
     m.add_class::<PyCompressionConfig>()?;
+    
+    // TLS和ZSTD配置类
+    m.add_class::<PyTlsConfig>()?;
+    m.add_class::<PyZstdConfig>()?;
     
     // ODM 模型系统类
     m.add_class::<PyFieldType>()?;

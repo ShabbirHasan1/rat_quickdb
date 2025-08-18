@@ -122,10 +122,9 @@ pub enum DatabaseConnection {
 }
 
 /// 连接工作器 - 持有单个数据库连接并处理操作
-#[derive(Debug)]
 pub struct ConnectionWorker {
     /// 工作器ID
-    pub id: String,
+    pub id: String, 
     /// 数据库连接
     pub connection: DatabaseConnection,
     /// 连接创建时间
@@ -136,6 +135,22 @@ pub struct ConnectionWorker {
     pub retry_count: u32,
     /// 数据库类型
     pub db_type: DatabaseType,
+    /// 数据库适配器（持久化，避免重复创建）
+    pub adapter: Box<dyn crate::adapter::DatabaseAdapter + Send + Sync>,
+}
+
+impl std::fmt::Debug for ConnectionWorker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConnectionWorker")
+            .field("id", &self.id)
+            .field("connection", &self.connection)
+            .field("created_at", &self.created_at)
+            .field("last_used", &self.last_used)
+            .field("retry_count", &self.retry_count)
+            .field("db_type", &self.db_type)
+            .field("adapter", &"<DatabaseAdapter>")
+            .finish()
+    }
 }
 
 /// 连接池配置扩展
@@ -202,6 +217,25 @@ pub struct SqliteWorker {
     is_healthy: bool,
     /// 缓存管理器（可选）
     cache_manager: Option<Arc<crate::cache::CacheManager>>,
+    /// 数据库适配器（持久化，避免重复创建）
+    adapter: Box<dyn crate::adapter::DatabaseAdapter + Send + Sync>,
+}
+
+impl std::fmt::Debug for SqliteWorker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SqliteWorker")
+            .field("connection", &self.connection)
+            .field("db_config", &self.db_config)
+            .field("retry_count", &self.retry_count)
+            .field("max_retries", &self.max_retries)
+            .field("retry_interval_ms", &self.retry_interval_ms)
+            .field("health_check_interval_sec", &self.health_check_interval_sec)
+            .field("last_health_check", &self.last_health_check)
+            .field("is_healthy", &self.is_healthy)
+            .field("cache_manager", &self.cache_manager)
+            .field("adapter", &"<DatabaseAdapter>")
+            .finish()
+    }
 }
 
 /// 多连接工作器管理器（用于MySQL/PostgreSQL/MongoDB）
@@ -390,67 +424,56 @@ impl SqliteWorker {
     
     /// 处理数据库操作
     async fn handle_operation(&mut self, operation: DatabaseOperation) -> QuickDbResult<()> {
-        use crate::adapter::{create_adapter, create_adapter_with_cache, DatabaseAdapter};
-        
         // 执行健康检查
         self.perform_health_check().await;
         
-        // 根据是否有缓存管理器选择适配器
-        let adapter = if let Some(cache_manager) = &self.cache_manager {
-            debug!("SQLite工作器使用缓存适配器");
-            create_adapter_with_cache(&self.db_config.db_type, cache_manager.clone())?
-        } else {
-            debug!("SQLite工作器使用普通适配器");
-            create_adapter(&self.db_config.db_type)?
-        };
-        
         match operation {
             DatabaseOperation::Create { table, data, response } => {
-                let result = adapter.create(&self.connection, &table, &data).await;
+                let result = self.adapter.create(&self.connection, &table, &data).await;
                 let _ = response.send(result);
             },
             DatabaseOperation::FindById { table, id, response } => {
-                let result = adapter.find_by_id(&self.connection, &table, &id).await;
+                let result = self.adapter.find_by_id(&self.connection, &table, &id).await;
                 let _ = response.send(result);
             },
             DatabaseOperation::Find { table, conditions, options, response } => {
-                let result = adapter.find(&self.connection, &table, &conditions, &options).await;
+                let result = self.adapter.find(&self.connection, &table, &conditions, &options).await;
                 let _ = response.send(result);
             },
             DatabaseOperation::FindWithGroups { table, condition_groups, options, response } => {
-                let result = adapter.find_with_groups(&self.connection, &table, &condition_groups, &options).await;
+                let result = self.adapter.find_with_groups(&self.connection, &table, &condition_groups, &options).await;
                 let _ = response.send(result);
             },
             DatabaseOperation::Update { table, conditions, data, response } => {
-                let result = adapter.update(&self.connection, &table, &conditions, &data).await;
+                let result = self.adapter.update(&self.connection, &table, &conditions, &data).await;
                 let _ = response.send(result);
             },
             DatabaseOperation::UpdateById { table, id, data, response } => {
-                let result = adapter.update_by_id(&self.connection, &table, &id, &data).await;
+                let result = self.adapter.update_by_id(&self.connection, &table, &id, &data).await;
                 let _ = response.send(result);
             },
             DatabaseOperation::Delete { table, conditions, response } => {
-                let result = adapter.delete(&self.connection, &table, &conditions).await;
+                let result = self.adapter.delete(&self.connection, &table, &conditions).await;
                 let _ = response.send(result);
             },
             DatabaseOperation::DeleteById { table, id, response } => {
-                let result = adapter.delete_by_id(&self.connection, &table, &id).await;
+                let result = self.adapter.delete_by_id(&self.connection, &table, &id).await;
                 let _ = response.send(result);
             },
             DatabaseOperation::Count { table, conditions, response } => {
-                let result = adapter.count(&self.connection, &table, &conditions).await;
+                let result = self.adapter.count(&self.connection, &table, &conditions).await;
                 let _ = response.send(result);
             },
             DatabaseOperation::Exists { table, conditions, response } => {
-                let result = adapter.exists(&self.connection, &table, &conditions).await;
+                let result = self.adapter.exists(&self.connection, &table, &conditions).await;
                 let _ = response.send(result);
             },
             DatabaseOperation::CreateTable { table, fields, response } => {
-                let result = adapter.create_table(&self.connection, &table, &fields).await;
+                let result = self.adapter.create_table(&self.connection, &table, &fields).await;
                 let _ = response.send(result);
             },
             DatabaseOperation::CreateIndex { table, index_name, fields, unique, response } => {
-                let result = adapter.create_index(&self.connection, &table, &index_name, &fields, unique).await;
+                let result = self.adapter.create_index(&self.connection, &table, &index_name, &fields, unique).await;
                 let _ = response.send(result);
             },
         }
@@ -477,6 +500,21 @@ impl MultiConnectionManager {
     async fn create_connection_worker(&self, index: usize) -> QuickDbResult<ConnectionWorker> {
         let connection = self.create_database_connection().await?;
         
+        // 创建适配器
+        use crate::adapter::{create_adapter, create_adapter_with_cache};
+        let (adapter, adapter_type) = if let Some(cache_manager) = &self.cache_manager {
+            let adapter = create_adapter_with_cache(&self.db_config.db_type, cache_manager.clone())?;
+            (adapter, "缓存适配器")
+        } else {
+            let adapter = create_adapter(&self.db_config.db_type)?;
+            (adapter, "普通适配器")
+        };
+        
+        // 只在第一个工作器创建时输出适配器类型信息
+        if index == 0 {
+            info!("数据库 '{}' 使用 {}", self.db_config.alias, adapter_type);
+        }
+        
         Ok(ConnectionWorker {
             id: format!("{}-worker-{}", self.db_config.alias, index),
             connection,
@@ -484,6 +522,7 @@ impl MultiConnectionManager {
             last_used: Instant::now(),
             retry_count: 0,
             db_type: self.db_config.db_type.clone(),
+            adapter,
         })
     }
     
@@ -659,75 +698,65 @@ impl MultiConnectionManager {
         let worker = &mut self.workers[worker_index];
         worker.last_used = Instant::now();
         
-        // 创建适配器
-        use crate::adapter::{create_adapter, create_adapter_with_cache, DatabaseAdapter};
-        let adapter = if let Some(cache_manager) = &self.cache_manager {
-            debug!("多连接管理器使用缓存适配器");
-            create_adapter_with_cache(&worker.db_type, cache_manager.clone())?
-        } else {
-            debug!("多连接管理器使用普通适配器");
-            create_adapter(&worker.db_type)?
-        };
-        
         // 处理具体操作
         let result = match operation {
             DatabaseOperation::Create { table, data, response } => {
-                let result = adapter.create(&worker.connection, &table, &data).await;
+                let result = worker.adapter.create(&worker.connection, &table, &data).await;
                 let _ = response.send(result);
                 Ok(())
             },
             DatabaseOperation::FindById { table, id, response } => {
-                let result = adapter.find_by_id(&worker.connection, &table, &id).await;
+                let result = worker.adapter.find_by_id(&worker.connection, &table, &id).await;
                 let _ = response.send(result);
                 Ok(())
             },
             DatabaseOperation::Find { table, conditions, options, response } => {
-                let result = adapter.find(&worker.connection, &table, &conditions, &options).await;
+                let result = worker.adapter.find(&worker.connection, &table, &conditions, &options).await;
                 let _ = response.send(result);
                 Ok(())
             },
             DatabaseOperation::FindWithGroups { table, condition_groups, options, response } => {
-                let result = adapter.find_with_groups(&worker.connection, &table, &condition_groups, &options).await;
+                let result = worker.adapter.find_with_groups(&worker.connection, &table, &condition_groups, &options).await;
                 let _ = response.send(result);
                 Ok(())
             },
             DatabaseOperation::Update { table, conditions, data, response } => {
-                let result = adapter.update(&worker.connection, &table, &conditions, &data).await;
+                let result = worker.adapter.update(&worker.connection, &table, &conditions, &data).await;
                 let _ = response.send(result);
                 Ok(())
             },
             DatabaseOperation::UpdateById { table, id, data, response } => {
-                let result = adapter.update_by_id(&worker.connection, &table, &id, &data).await;
+                let result = worker.adapter.update_by_id(&worker.connection, &table, &id, &data).await;
                 let _ = response.send(result);
                 Ok(())
             },
             DatabaseOperation::Delete { table, conditions, response } => {
-                let result = adapter.delete(&worker.connection, &table, &conditions).await;
+                let result = worker.adapter.delete(&worker.connection, &table, &conditions).await;
                 let _ = response.send(result);
                 Ok(())
             },
             DatabaseOperation::DeleteById { table, id, response } => {
-                let result = adapter.delete_by_id(&worker.connection, &table, &id).await;
+                let result = worker.adapter.delete_by_id(&worker.connection, &table, &id).await;
                 let _ = response.send(result);
                 Ok(())
             },
             DatabaseOperation::Count { table, conditions, response } => {
-                let result = adapter.count(&worker.connection, &table, &conditions).await;
+                let result = worker.adapter.count(&worker.connection, &table, &conditions).await;
                 let _ = response.send(result);
                 Ok(())
             },
             DatabaseOperation::Exists { table, conditions, response } => {
-                let result = adapter.exists(&worker.connection, &table, &conditions).await;
+                let result = worker.adapter.exists(&worker.connection, &table, &conditions).await;
                 let _ = response.send(result);
                 Ok(())
             },
             DatabaseOperation::CreateTable { table, fields, response } => {
-                let result = adapter.create_table(&worker.connection, &table, &fields).await;
+                let result = worker.adapter.create_table(&worker.connection, &table, &fields).await;
                 let _ = response.send(result);
                 Ok(())
             },
             DatabaseOperation::CreateIndex { table, index_name, fields, unique, response } => {
-                let result = adapter.create_index(&worker.connection, &table, &index_name, &fields, unique).await;
+                let result = worker.adapter.create_index(&worker.connection, &table, &index_name, &fields, unique).await;
                 let _ = response.send(result);
                 Ok(())
             },
@@ -817,6 +846,18 @@ impl ConnectionPool {
         // 创建启动同步通道
         let (startup_tx, startup_rx) = oneshot::channel();
         
+        // 创建适配器
+        use crate::adapter::{create_adapter, create_adapter_with_cache};
+        let (adapter, adapter_type) = if let Some(cache_manager) = &self.cache_manager {
+            let adapter = create_adapter_with_cache(&db_config.db_type, cache_manager.clone())?;
+            (adapter, "缓存适配器")
+        } else {
+            let adapter = create_adapter(&db_config.db_type)?;
+            (adapter, "普通适配器")
+        };
+        
+        info!("数据库 '{}' 使用 {}", db_config.alias, adapter_type);
+        
         let worker = SqliteWorker {
             connection,
             operation_receiver,
@@ -828,6 +869,7 @@ impl ConnectionPool {
             last_health_check: Instant::now(),
             is_healthy: true,
             cache_manager: self.cache_manager.clone(),
+            adapter,
         };
         
         // 启动工作器
