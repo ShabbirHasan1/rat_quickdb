@@ -13,7 +13,7 @@ use uuid::Uuid;
 use crate::task_queue::{get_global_task_queue, TaskQueueManager};
 
 /// Python 请求消息
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyRequestMessage {
     /// 请求ID
     pub request_id: String,
@@ -170,22 +170,225 @@ impl PyQueueBridge {
     
     /// 处理单个请求
     fn process_request(request: PyRequestMessage) -> PyResponseMessage {
-        // 这里直接将请求转发给任务队列管理器
-        // 实际的数据库操作由任务队列异步处理
-        let task_queue = get_global_task_queue();
+        // 使用tokio运行时处理异步操作
+        let rt = match tokio::runtime::Runtime::new() {
+            Ok(rt) => rt,
+            Err(e) => {
+                return PyResponseMessage {
+                    request_id: request.request_id,
+                    success: false,
+                    data: String::new(),
+                    error: Some(format!("创建运行时失败: {}", e)),
+                };
+            }
+        };
         
-        // 将请求数据作为JSON字符串传递
-        let request_json = serde_json::json!({
-            "type": request.request_type,
-            "data": request.data
+        // 在异步上下文中处理请求
+        let result = rt.block_on(async {
+            Self::process_request_async(request.clone()).await
         });
         
-        // 这里应该调用任务队列的方法，但为了简化，我们直接返回成功响应
-        PyResponseMessage {
-            request_id: request.request_id,
-            success: true,
-            data: "Operation completed".to_string(),
-            error: None,
+        match result {
+            Ok(data) => PyResponseMessage {
+                request_id: request.request_id,
+                success: true,
+                data,
+                error: None,
+            },
+            Err(e) => PyResponseMessage {
+                request_id: request.request_id,
+                success: false,
+                data: String::new(),
+                error: Some(e.to_string()),
+            },
+        }
+    }
+    
+    /// 异步处理请求
+    async fn process_request_async(request: PyRequestMessage) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        use crate::manager::get_global_pool_manager;
+        use crate::pool::DatabaseOperation;
+        use crate::types::{DataValue, QueryCondition};
+        use tokio::sync::oneshot;
+        use std::collections::HashMap;
+        
+        // 解析请求数据
+        let request_data: serde_json::Value = serde_json::from_str(&request.data)
+            .map_err(|e| format!("解析请求数据失败: {}", e))?;
+        
+        match request.request_type.as_str() {
+            "create" => {
+                // 解析创建请求
+                let table = request_data["table"].as_str()
+                    .ok_or("缺少表名")?;
+                let data_obj = request_data["data"].as_object()
+                    .ok_or("缺少数据对象")?;
+                
+                // 转换数据格式
+                let mut data = HashMap::new();
+                for (key, value) in data_obj {
+                    let data_value = match value {
+                        serde_json::Value::String(s) => DataValue::String(s.clone()),
+                        serde_json::Value::Number(n) => {
+                            if let Some(i) = n.as_i64() {
+                                DataValue::Integer(i)
+                            } else if let Some(f) = n.as_f64() {
+                                DataValue::Float(f)
+                            } else {
+                                DataValue::String(n.to_string())
+                            }
+                        },
+                        serde_json::Value::Bool(b) => DataValue::Boolean(*b),
+                        serde_json::Value::Null => DataValue::Null,
+                        _ => DataValue::String(value.to_string()),
+                    };
+                    data.insert(key.clone(), data_value);
+                }
+                
+                // 获取连接池
+                let manager = get_global_pool_manager();
+                let connection_pools = manager.get_connection_pools();
+                let connection_pool = connection_pools.get("default")
+                    .ok_or("默认连接池不存在")?;
+                
+                // 创建oneshot通道
+                let (response_tx, response_rx) = oneshot::channel();
+                
+                // 发送操作到连接池
+                let operation = DatabaseOperation::Create {
+                    table: table.to_string(),
+                    data,
+                    response: response_tx,
+                };
+                
+                connection_pool.operation_sender.send(operation)
+                    .map_err(|_| "连接池操作通道已关闭")?;
+                
+                // 等待响应
+                let result = response_rx.await
+                    .map_err(|_| "等待连接池响应超时")?
+                    .map_err(|e| format!("数据库操作失败: {}", e))?;
+                
+                Ok(serde_json::to_string(&result)
+                    .map_err(|e| format!("序列化结果失败: {}", e))?)
+            },
+            "find" => {
+                // 解析查询请求
+                let table = request_data["table"].as_str()
+                    .ok_or("缺少表名")?;
+                let conditions_array = request_data["conditions"].as_array()
+                    .unwrap_or(&vec![]);
+                
+                // 转换查询条件
+                let mut conditions = Vec::new();
+                for condition in conditions_array {
+                    if let (Some(field), Some(operator), Some(value)) = (
+                        condition["field"].as_str(),
+                        condition["operator"].as_str(),
+                        &condition["value"]
+                    ) {
+                        let data_value = match value {
+                            serde_json::Value::String(s) => DataValue::String(s.clone()),
+                            serde_json::Value::Number(n) => {
+                                if let Some(i) = n.as_i64() {
+                                    DataValue::Integer(i)
+                                } else if let Some(f) = n.as_f64() {
+                                    DataValue::Float(f)
+                                } else {
+                                    DataValue::String(n.to_string())
+                                }
+                            },
+                            serde_json::Value::Bool(b) => DataValue::Boolean(*b),
+                            serde_json::Value::Null => DataValue::Null,
+                            _ => DataValue::String(value.to_string()),
+                        };
+                        
+                        let query_operator = match operator {
+                            "eq" => crate::types::QueryOperator::Equal,
+                            "ne" => crate::types::QueryOperator::NotEqual,
+                            "gt" => crate::types::QueryOperator::GreaterThan,
+                            "gte" => crate::types::QueryOperator::GreaterThanOrEqual,
+                            "lt" => crate::types::QueryOperator::LessThan,
+                            "lte" => crate::types::QueryOperator::LessThanOrEqual,
+                            "like" => crate::types::QueryOperator::Like,
+                            "in" => crate::types::QueryOperator::In,
+                            "not_in" => crate::types::QueryOperator::NotIn,
+                            _ => crate::types::QueryOperator::Equal,
+                        };
+                        
+                        conditions.push(QueryCondition {
+                            field: field.to_string(),
+                            operator: query_operator,
+                            value: data_value,
+                        });
+                    }
+                }
+                
+                // 获取连接池
+                let manager = get_global_pool_manager();
+                let connection_pools = manager.get_connection_pools();
+                let connection_pool = connection_pools.get("default")
+                    .ok_or("默认连接池不存在")?;
+                
+                // 创建oneshot通道
+                let (response_tx, response_rx) = oneshot::channel();
+                
+                // 发送操作到连接池
+                let operation = DatabaseOperation::Find {
+                    table: table.to_string(),
+                    conditions,
+                    options: Default::default(),
+                    response: response_tx,
+                };
+                
+                connection_pool.operation_sender.send(operation)
+                    .map_err(|_| "连接池操作通道已关闭")?;
+                
+                // 等待响应
+                let result = response_rx.await
+                    .map_err(|_| "等待连接池响应超时")?
+                    .map_err(|e| format!("数据库操作失败: {}", e))?;
+                
+                Ok(serde_json::to_string(&result)
+                    .map_err(|e| format!("序列化结果失败: {}", e))?)
+            },
+            "find_by_id" => {
+                // 解析根据ID查询请求
+                let table = request_data["table"].as_str()
+                    .ok_or("缺少表名")?;
+                let id = request_data["id"].as_str()
+                    .ok_or("缺少ID")?;
+                
+                // 获取连接池
+                let manager = get_global_pool_manager();
+                let connection_pools = manager.get_connection_pools();
+                let connection_pool = connection_pools.get("default")
+                    .ok_or("默认连接池不存在")?;
+                
+                // 创建oneshot通道
+                let (response_tx, response_rx) = oneshot::channel();
+                
+                // 发送操作到连接池
+                let operation = DatabaseOperation::FindById {
+                    table: table.to_string(),
+                    id: DataValue::String(id.to_string()),
+                    response: response_tx,
+                };
+                
+                connection_pool.operation_sender.send(operation)
+                    .map_err(|_| "连接池操作通道已关闭")?;
+                
+                // 等待响应
+                let result = response_rx.await
+                    .map_err(|_| "等待连接池响应超时")?
+                    .map_err(|e| format!("数据库操作失败: {}", e))?;
+                
+                Ok(serde_json::to_string(&result)
+                    .map_err(|e| format!("序列化结果失败: {}", e))?)
+            },
+            _ => {
+                Err(format!("不支持的请求类型: {}", request.request_type).into())
+            }
         }
     }
 }

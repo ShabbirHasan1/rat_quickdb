@@ -902,13 +902,31 @@ impl PyDbQueueBridge {
             PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("等待响应失败: {}", e))
         })?;
         
-        if response.success {
-            Ok(response.data)
+        // 构建统一的响应格式，包含success字段
+        let unified_response = if response.success {
+            // 尝试解析data字段，如果是JSON字符串则解析，否则直接使用
+            let data_value = if response.data.starts_with('{') || response.data.starts_with('[') {
+                // 尝试解析为JSON值
+                serde_json::from_str::<serde_json::Value>(&response.data)
+                    .unwrap_or_else(|_| serde_json::Value::String(response.data.clone()))
+            } else {
+                serde_json::Value::String(response.data)
+            };
+            
+            serde_json::json!({
+                "success": true,
+                "data": data_value,
+                "error": null
+            })
         } else {
-            Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                response.error.unwrap_or_else(|| "未知错误".to_string())
-            ))
-        }
+            serde_json::json!({
+                "success": false,
+                "data": null,
+                "error": response.error.unwrap_or_else(|| "未知错误".to_string())
+            })
+        };
+        
+        Ok(unified_response.to_string())
     }
 
     /// 检查初始化状态
