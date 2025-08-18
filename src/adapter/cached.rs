@@ -142,6 +142,51 @@ impl DatabaseAdapter for CachedDatabaseAdapter {
         result
     }
 
+    /// 使用条件组合查找记录 - 先检查缓存，缓存未命中时查询数据库并缓存结果
+    async fn find_with_groups(
+        &self,
+        connection: &DatabaseConnection,
+        table: &str,
+        condition_groups: &[QueryConditionGroup],
+        options: &QueryOptions,
+    ) -> QuickDbResult<Vec<Value>> {
+        // 生成条件组合查询缓存键
+        let cache_key = self.cache_manager.generate_condition_groups_cache_key(table, condition_groups, options);
+        
+        // 先检查缓存
+        match self.cache_manager.get_cached_query_result(table, options).await {
+            Ok(Some(cached_result)) => {
+                debug!("条件组合查询缓存命中: 表={}, 键={}", table, cache_key);
+                // 将DataValue转换为JsonValue
+                let json_result: Vec<Value> = cached_result.into_iter()
+                    .map(|dv| dv.to_json())
+                    .collect();
+                return Ok(json_result);
+            }
+            Ok(None) => {
+                debug!("条件组合查询缓存未命中: 表={}, 键={}", table, cache_key);
+            }
+            Err(e) => {
+                warn!("获取条件组合查询缓存失败: {}", e);
+            }
+        }
+        
+        // 缓存未命中，查询数据库
+        let result = self.inner.find_with_groups(connection, table, condition_groups, options).await?;
+        
+        // 将JsonValue转换为DataValue并缓存查询结果
+        let data_values: Vec<DataValue> = result.iter()
+            .map(|jv| DataValue::from_json(jv.clone()))
+            .collect();
+        if let Err(e) = self.cache_manager.cache_query_result(table, options, &data_values).await {
+            warn!("缓存条件组合查询结果失败: {}", e);
+        } else {
+            debug!("已缓存条件组合查询结果: 表={}, 键={}, 结果数量={}", table, cache_key, result.len());
+        }
+        
+        Ok(result)
+    }
+
     /// 更新记录 - 更新成功后智能清理相关缓存
     async fn update(
         &self,

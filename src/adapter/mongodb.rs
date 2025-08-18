@@ -142,6 +142,79 @@ impl MongoAdapter {
         Ok(query_doc)
     }
 
+    /// 构建条件组合查询文档
+    fn build_condition_groups_document(&self, condition_groups: &[QueryConditionGroup]) -> QuickDbResult<Document> {
+        if condition_groups.is_empty() {
+            return Ok(Document::new());
+        }
+        
+        if condition_groups.len() == 1 {
+            // 单个条件组，直接构建
+            let group = &condition_groups[0];
+            return self.build_single_condition_group_document(group);
+        }
+        
+        // 多个条件组，使用 $and 连接
+        let mut group_docs = Vec::new();
+        for group in condition_groups {
+            let group_doc = self.build_single_condition_group_document(group)?;
+            if !group_doc.is_empty() {
+                group_docs.push(group_doc);
+            }
+        }
+        
+        if group_docs.is_empty() {
+            Ok(Document::new())
+        } else if group_docs.len() == 1 {
+            Ok(group_docs.into_iter().next().unwrap())
+        } else {
+            Ok(doc! { "$and": group_docs })
+        }
+    }
+    
+    /// 构建单个条件组文档
+    fn build_single_condition_group_document(&self, group: &QueryConditionGroup) -> QuickDbResult<Document> {
+        match group {
+            QueryConditionGroup::Single(condition) => {
+                 self.build_query_document(&[condition.clone()])
+             },
+            QueryConditionGroup::Group { conditions, operator } => {
+                if conditions.is_empty() {
+                    return Ok(Document::new());
+                }
+                
+                if conditions.len() == 1 {
+                     // 单个条件组，递归处理
+                     return self.build_single_condition_group_document(&conditions[0]);
+                 }
+                
+                // 多个条件组，根据逻辑操作符连接
+                 let condition_docs: Result<Vec<Document>, QuickDbError> = conditions
+                     .iter()
+                     .map(|condition_group| self.build_single_condition_group_document(condition_group))
+                     .collect();
+                
+                let condition_docs = condition_docs?;
+                let non_empty_docs: Vec<Document> = condition_docs.into_iter()
+                    .filter(|doc| !doc.is_empty())
+                    .collect();
+                
+                if non_empty_docs.is_empty() {
+                    return Ok(Document::new());
+                }
+                
+                if non_empty_docs.len() == 1 {
+                    return Ok(non_empty_docs.into_iter().next().unwrap());
+                }
+                
+                match operator {
+                    LogicalOperator::And => Ok(doc! { "$and": non_empty_docs }),
+                    LogicalOperator::Or => Ok(doc! { "$or": non_empty_docs }),
+                }
+            }
+        }
+    }
+
     /// 构建更新文档
     fn build_update_document(&self, data: &HashMap<String, DataValue>) -> Document {
         let mut update_doc = Document::new();
@@ -306,6 +379,65 @@ impl DatabaseAdapter for MongoAdapter {
                 .await
                 .map_err(|e| QuickDbError::QueryError {
                     message: format!("MongoDB查询失败: {}", e),
+                })?;
+            
+            let mut results = Vec::new();
+            while cursor.advance().await.map_err(|e| QuickDbError::QueryError {
+                message: format!("MongoDB游标遍历失败: {}", e),
+            })? {
+                let doc = cursor.deserialize_current().map_err(|e| QuickDbError::QueryError {
+                    message: format!("MongoDB文档反序列化失败: {}", e),
+                })?;
+                results.push(self.document_to_json(&doc)?);
+            }
+            
+            Ok(results)
+        } else {
+            Err(QuickDbError::ConnectionError {
+                message: "连接类型不匹配，期望MongoDB连接".to_string(),
+            })
+        }
+    }
+
+    async fn find_with_groups(
+        &self,
+        connection: &DatabaseConnection,
+        table: &str,
+        condition_groups: &[QueryConditionGroup],
+        options: &QueryOptions,
+    ) -> QuickDbResult<Vec<Value>> {
+        if let DatabaseConnection::MongoDB(db) = connection {
+            let collection = self.get_collection(db, table);
+            
+            let query = self.build_condition_groups_document(condition_groups)?;
+            
+            debug!("执行MongoDB条件组合查询: {:?}", query);
+            
+            let mut find_options = mongodb::options::FindOptions::default();
+            
+            // 添加排序
+            if !options.sort.is_empty() {
+                let mut sort_doc = Document::new();
+                for sort_field in &options.sort {
+                    let sort_value = match sort_field.direction {
+                        SortDirection::Asc => 1,
+                        SortDirection::Desc => -1,
+                    };
+                    sort_doc.insert(&sort_field.field, sort_value);
+                }
+                find_options.sort = Some(sort_doc);
+            }
+            
+            // 添加分页
+            if let Some(pagination) = &options.pagination {
+                find_options.limit = Some(pagination.limit as i64);
+                find_options.skip = Some(pagination.skip);
+            }
+            
+            let mut cursor = collection.find(query, find_options)
+                .await
+                .map_err(|e| QuickDbError::QueryError {
+                    message: format!("MongoDB条件组合查询失败: {}", e),
                 })?;
             
             let mut results = Vec::new();

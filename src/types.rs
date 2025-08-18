@@ -402,6 +402,29 @@ pub struct QueryCondition {
     pub value: DataValue,
 }
 
+/// 逻辑操作符
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum LogicalOperator {
+    /// AND 逻辑
+    And,
+    /// OR 逻辑
+    Or,
+}
+
+/// 查询条件组合
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum QueryConditionGroup {
+    /// 单个条件
+    Single(QueryCondition),
+    /// 条件组合
+    Group {
+        /// 逻辑操作符
+        operator: LogicalOperator,
+        /// 子条件列表
+        conditions: Vec<QueryConditionGroup>,
+    },
+}
+
 /// 查询操作符
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum QueryOperator {

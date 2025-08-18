@@ -5,7 +5,7 @@
 use crate::adapter::DatabaseAdapter;
 use crate::pool::DatabaseConnection;
 use crate::error::{QuickDbError, QuickDbResult};
-use crate::types::{DataValue, QueryCondition, QueryOperator, QueryOptions, SortDirection};
+use crate::types::{DataValue, QueryCondition, QueryConditionGroup, QueryOperator, QueryOptions, SortDirection};
 use crate::adapter::query_builder::SqlQueryBuilder;
 use crate::table::{TableManager, TableSchema, ColumnType};
 use crate::model::FieldType;
@@ -292,6 +292,41 @@ impl DatabaseAdapter for MysqlAdapter {
             }
             
             let (sql, params) = builder.build()?;
+            
+            self.execute_query(pool, &sql, &params).await
+        } else {
+            Err(QuickDbError::ConnectionError {
+                message: "连接类型不匹配，期望MySQL连接".to_string(),
+            })
+        }
+    }
+
+    async fn find_with_groups(
+        &self,
+        connection: &DatabaseConnection,
+        table: &str,
+        condition_groups: &[QueryConditionGroup],
+        options: &QueryOptions,
+    ) -> QuickDbResult<Vec<Value>> {
+        if let DatabaseConnection::MySQL(pool) = connection {
+            let mut builder = SqlQueryBuilder::new()
+                .select(&["*"])
+                .from(table)
+                .where_condition_groups(condition_groups);
+            
+            // 添加排序
+            for sort_field in &options.sort {
+                builder = builder.order_by(&sort_field.field, sort_field.direction.clone());
+            }
+            
+            // 添加分页
+            if let Some(pagination) = &options.pagination {
+                builder = builder.limit(pagination.limit).offset(pagination.skip);
+            }
+            
+            let (sql, params) = builder.build()?;
+            
+            debug!("执行MySQL条件组合查询: {}", sql);
             
             self.execute_query(pool, &sql, &params).await
         } else {

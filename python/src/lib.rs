@@ -7,6 +7,7 @@ use rat_quickdb::types::DatabaseConfig;
 use rat_quickdb::types::{
     ConnectionConfig, DataValue, DatabaseType, IdStrategy, PaginationConfig, PoolConfig,
     QueryCondition, QueryOperator, QueryOptions, SortConfig, SortDirection,
+    QueryConditionGroup, LogicalOperator,
     CacheConfig, CacheStrategy, L1CacheConfig, L2CacheConfig, TtlConfig, CompressionConfig, CompressionAlgorithm,
 };
 use rat_quickdb::{QuickDbError, QuickDbResult};
@@ -72,6 +73,8 @@ pub struct PyDbRequest {
     pub data: Option<HashMap<String, DataValue>>,
     /// 查询条件
     pub conditions: Option<Vec<QueryCondition>>,
+    /// 查询条件组合（支持OR逻辑）
+    pub condition_groups: Option<Vec<QueryConditionGroup>>,
     /// 查询选项
     pub options: Option<QueryOptions>,
     /// 更新数据
@@ -389,6 +392,7 @@ impl PyDbQueueBridge {
             collection: table,
             data: Some(data),
             conditions: None,
+            condition_groups: None,
             options: None,
             updates: None,
             id: None,
@@ -419,6 +423,38 @@ impl PyDbQueueBridge {
             collection: table,
             data: None,
             conditions: Some(conditions),
+            condition_groups: None,
+            options: None,
+            updates: None,
+            id: None,
+            alias,
+            database_config: None,
+            response_sender,
+        };
+        
+        self.send_request(request)?;
+        self.wait_for_response(response_receiver)
+    }
+
+    /// 使用条件组合查询数据（支持OR逻辑）
+    pub fn find_with_groups(
+        &self,
+        table: String,
+        query_groups_json: String,
+        alias: Option<String>,
+    ) -> PyResult<String> {
+        self.check_initialized()?;
+        let condition_groups = self.parse_condition_groups_json(&query_groups_json)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("解析查询条件组合失败: {}", e)))?;
+        
+        let (response_sender, response_receiver) = oneshot::channel();
+        let request = PyDbRequest {
+            request_id: Uuid::new_v4().to_string(),
+            operation: "find_with_groups".to_string(),
+            collection: table,
+            data: None,
+            conditions: None,
+            condition_groups: Some(condition_groups),
             options: None,
             updates: None,
             id: None,
@@ -442,6 +478,7 @@ impl PyDbQueueBridge {
             collection: table,
             data: None,
             conditions: None,
+            condition_groups: None,
             options: None,
             updates: None,
             id: Some(id),
@@ -517,6 +554,7 @@ impl PyDbQueueBridge {
             collection: "".to_string(), // 不需要集合名
             data: None,
             conditions: None,
+            condition_groups: None,
             options: None,
             updates: None,
             id: None,
@@ -611,6 +649,7 @@ impl PyDbQueueBridge {
             collection: "".to_string(),
             data: None,
             conditions: None,
+            condition_groups: None,
             options: None,
             updates: None,
             id: None,
@@ -701,6 +740,7 @@ impl PyDbQueueBridge {
             collection: "".to_string(),
             data: None,
             conditions: None,
+            condition_groups: None,
             options: None,
             updates: None,
             id: None,
@@ -796,6 +836,7 @@ impl PyDbQueueBridge {
             collection: "".to_string(),
             data: None,
             conditions: None,
+            condition_groups: None,
             options: None,
             updates: None,
             id: None,
@@ -959,6 +1000,31 @@ impl PyDbQueueBridgeAsync {
                     }
                 }
             }
+            "find_with_groups" => {
+                if let Some(condition_groups) = &request.condition_groups {
+                    match Self::handle_find_with_groups_direct(&request.collection, condition_groups.clone(), request.options.clone(), request.alias.clone()).await {
+                        Ok(result) => PyDbResponse {
+                            request_id,
+                            success: true,
+                            data: result,
+                            error: None,
+                        },
+                        Err(e) => PyDbResponse {
+                            request_id,
+                            success: false,
+                            data: String::new(),
+                            error: Some(format!("条件组合查询失败: {}", e)),
+                        },
+                    }
+                } else {
+                    PyDbResponse {
+                        request_id,
+                        success: false,
+                        data: String::new(),
+                        error: Some("缺少查询条件组合".to_string()),
+                    }
+                }
+            }
             _ => PyDbResponse {
                 request_id,
                 success: false,
@@ -1105,6 +1171,52 @@ impl PyDbQueueBridgeAsync {
         serde_json::to_string(&result)
             .map_err(|e| QuickDbError::SerializationError { message: format!("序列化失败: {}", e) })
     }
+
+    /// 处理支持OR逻辑的条件组合查询
+    async fn handle_find_with_groups_direct(
+        collection: &str,
+        condition_groups: Vec<QueryConditionGroup>,
+        options: Option<QueryOptions>,
+        alias: Option<String>,
+    ) -> QuickDbResult<String> {
+        use rat_quickdb::pool::DatabaseOperation;
+        use tokio::sync::oneshot;
+        
+        let actual_alias = alias.unwrap_or_else(|| "default".to_string());
+        debug!("直接处理条件组合查询请求: collection={}, alias={}", collection, actual_alias);
+        
+        let manager = get_global_pool_manager();
+        let connection_pools = manager.get_connection_pools();
+        let connection_pool = connection_pools.get(&actual_alias)
+            .ok_or_else(|| QuickDbError::AliasNotFound {
+                alias: actual_alias.clone(),
+            })?;
+        
+        // 创建oneshot通道用于接收响应
+        let (response_tx, response_rx) = oneshot::channel();
+        
+        // 发送DatabaseOperation::FindWithGroups请求到连接池
+        let operation = DatabaseOperation::FindWithGroups {
+            table: collection.to_string(),
+            condition_groups,
+            options: options.unwrap_or_default(),
+            response: response_tx,
+        };
+        
+        connection_pool.operation_sender.send(operation)
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "连接池操作通道已关闭".to_string(),
+            })?;
+        
+        // 等待响应
+        let result = response_rx.await
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "等待连接池响应超时".to_string(),
+            })??;
+        
+        serde_json::to_string(&result)
+            .map_err(|e| QuickDbError::SerializationError { message: format!("序列化失败: {}", e) })
+    }
 }
 
 /// PyDbQueueBridge的辅助方法实现
@@ -1203,37 +1315,239 @@ impl PyDbQueueBridge {
     }
 
     /// 解析查询条件JSON
+    /// 解析查询条件JSON字符串（支持条件组合）
+    fn parse_condition_groups_json(&self, json_str: &str) -> Result<Vec<QueryConditionGroup>, String> {
+        let json_value: JsonValue = serde_json::from_str(json_str)
+            .map_err(|e| format!("JSON解析失败: {}", e))?;
+
+        match json_value {
+            JsonValue::Array(arr) => {
+                let mut groups = Vec::new();
+                for item in arr {
+                    let group = self.parse_single_condition_group(&item)?;
+                    groups.push(group);
+                }
+                Ok(groups)
+            }
+            _ => {
+                let group = self.parse_single_condition_group(&json_value)?;
+                Ok(vec![group])
+            }
+        }
+    }
+
+    /// 解析单个条件组合
+    fn parse_single_condition_group(&self, json_value: &JsonValue) -> Result<QueryConditionGroup, String> {
+        if let JsonValue::Object(ref obj) = json_value {
+            // 检查是否是逻辑组合
+            if let (Some(operator), Some(conditions)) = (obj.get("operator"), obj.get("conditions")) {
+                let logical_op = match operator.as_str() {
+                    Some("and") | Some("AND") | Some("And") => LogicalOperator::And,
+                    Some("or") | Some("OR") | Some("Or") => LogicalOperator::Or,
+                    _ => return Err("不支持的逻辑操作符，支持: and, or".to_string())
+                };
+
+                if let JsonValue::Array(conditions_array) = conditions {
+                    let mut condition_groups = Vec::new();
+                    for condition_item in conditions_array {
+                        let group = self.parse_single_condition_group(condition_item)?;
+                        condition_groups.push(group);
+                    }
+                    return Ok(QueryConditionGroup::Group {
+                        operator: logical_op,
+                        conditions: condition_groups,
+                    });
+                }
+            }
+
+            // 解析为单个条件
+            let condition = self.parse_single_condition_from_object(obj)?;
+            Ok(QueryConditionGroup::Single(condition))
+        } else {
+            Err("查询条件必须是对象类型".to_string())
+        }
+    }
+
+    /// 从对象解析单个条件
+    fn parse_single_condition_from_object(&self, map: &serde_json::Map<String, JsonValue>) -> Result<QueryCondition, String> {
+        let field = map.get("field")
+            .and_then(|v| v.as_str())
+            .ok_or("field字段必须是字符串")?;
+        
+        let operator_str = map.get("operator")
+            .and_then(|v| v.as_str())
+            .ok_or("operator字段必须是字符串")?;
+        
+        let operator = match operator_str.to_lowercase().as_str() {
+            "eq" => QueryOperator::Eq,
+            "ne" => QueryOperator::Ne,
+            "gt" => QueryOperator::Gt,
+            "gte" => QueryOperator::Gte,
+            "lt" => QueryOperator::Lt,
+            "lte" => QueryOperator::Lte,
+            "contains" => QueryOperator::Contains,
+            "startswith" | "starts_with" => QueryOperator::StartsWith,
+            "endswith" | "ends_with" => QueryOperator::EndsWith,
+            "in" => QueryOperator::In,
+            "notin" | "not_in" => QueryOperator::NotIn,
+            "regex" => QueryOperator::Regex,
+            "exists" => QueryOperator::Exists,
+            "isnull" | "is_null" => QueryOperator::IsNull,
+            "isnotnull" | "is_not_null" => QueryOperator::IsNotNull,
+            _ => return Err(format!("不支持的操作符: {}", operator_str)),
+        };
+        
+        let value = self.parse_data_value(map.get("value").ok_or("缺少value字段")?)?;
+        
+        Ok(QueryCondition {
+            field: field.to_string(),
+            operator,
+            value,
+        })
+    }
+
     fn parse_conditions_json(&self, json_str: &str) -> Result<Vec<QueryCondition>, String> {
         let json_value: JsonValue = serde_json::from_str(json_str)
             .map_err(|e| format!("JSON解析失败: {}", e))?;
         
-        if let JsonValue::Object(map) = json_value {
-            let mut conditions = Vec::new();
-            for (field, value) in map {
-                let condition = QueryCondition {
-                    field,
-                    operator: QueryOperator::Eq,
-                    value: match value {
-                        JsonValue::String(s) => DataValue::String(s),
-                        JsonValue::Number(n) => {
-                            if let Some(i) = n.as_i64() {
-                                DataValue::Int(i)
-                            } else if let Some(f) = n.as_f64() {
-                                DataValue::Float(f)
-                            } else {
-                                return Err(format!("不支持的数字类型: {}", n));
-                            }
-                        }
-                        JsonValue::Bool(b) => DataValue::Bool(b),
-                        JsonValue::Null => DataValue::Null,
-                        _ => return Err(format!("不支持的数据类型: {:?}", value)),
-                    },
+        match json_value {
+            // 支持单个查询条件对象格式: {"field": "name", "operator": "Eq", "value": "张三"}
+            JsonValue::Object(ref map) if map.contains_key("field") && map.contains_key("operator") && map.contains_key("value") => {
+                let field = map.get("field")
+                    .and_then(|v| v.as_str())
+                    .ok_or("field字段必须是字符串")?;
+                
+                let operator_str = map.get("operator")
+                    .and_then(|v| v.as_str())
+                    .ok_or("operator字段必须是字符串")?;
+                
+                let operator = match operator_str.to_lowercase().as_str() {
+                    "eq" => QueryOperator::Eq,
+                    "ne" => QueryOperator::Ne,
+                    "gt" => QueryOperator::Gt,
+                    "gte" => QueryOperator::Gte,
+                    "lt" => QueryOperator::Lt,
+                    "lte" => QueryOperator::Lte,
+                    "contains" => QueryOperator::Contains,
+                    "startswith" | "starts_with" => QueryOperator::StartsWith,
+                    "endswith" | "ends_with" => QueryOperator::EndsWith,
+                    "in" => QueryOperator::In,
+                    "notin" | "not_in" => QueryOperator::NotIn,
+                    "regex" => QueryOperator::Regex,
+                    "exists" => QueryOperator::Exists,
+                    "isnull" | "is_null" => QueryOperator::IsNull,
+                    "isnotnull" | "is_not_null" => QueryOperator::IsNotNull,
+                    _ => return Err(format!("不支持的操作符: {}", operator_str)),
                 };
-                conditions.push(condition);
+                
+                let value = self.parse_data_value(map.get("value").unwrap())?;
+                
+                let condition = QueryCondition {
+                    field: field.to_string(),
+                    operator,
+                    value,
+                };
+                
+                Ok(vec![condition])
+            },
+            // 支持多个查询条件数组格式: [{"field": "name", "operator": "Eq", "value": "张三"}, {"field": "age", "operator": "Gt", "value": 20}]
+            JsonValue::Array(conditions_array) => {
+                let mut conditions = Vec::new();
+                
+                for condition_value in conditions_array {
+                    if let JsonValue::Object(ref condition_map) = condition_value {
+                        let field = condition_map.get("field")
+                            .and_then(|v| v.as_str())
+                            .ok_or("每个查询条件的field字段必须是字符串")?;
+                        
+                        let operator_str = condition_map.get("operator")
+                            .and_then(|v| v.as_str())
+                            .ok_or("每个查询条件的operator字段必须是字符串")?;
+                        
+                        let operator = match operator_str.to_lowercase().as_str() {
+                            "eq" => QueryOperator::Eq,
+                            "ne" => QueryOperator::Ne,
+                            "gt" => QueryOperator::Gt,
+                            "gte" => QueryOperator::Gte,
+                            "lt" => QueryOperator::Lt,
+                            "lte" => QueryOperator::Lte,
+                            "contains" => QueryOperator::Contains,
+                            "startswith" | "starts_with" => QueryOperator::StartsWith,
+                            "endswith" | "ends_with" => QueryOperator::EndsWith,
+                            "in" => QueryOperator::In,
+                            "notin" | "not_in" => QueryOperator::NotIn,
+                            "regex" => QueryOperator::Regex,
+                            "exists" => QueryOperator::Exists,
+                            "isnull" | "is_null" => QueryOperator::IsNull,
+                            "isnotnull" | "is_not_null" => QueryOperator::IsNotNull,
+                            _ => return Err(format!("不支持的操作符: {}", operator_str)),
+                        };
+                        
+                        let value = self.parse_data_value(
+                            condition_map.get("value")
+                                .ok_or("每个查询条件必须包含value字段")?
+                        )?;
+                        
+                        let condition = QueryCondition {
+                            field: field.to_string(),
+                            operator,
+                            value,
+                        };
+                        
+                        conditions.push(condition);
+                    } else {
+                        return Err("查询条件数组中的每个元素必须是对象".to_string());
+                    }
+                }
+                
+                Ok(conditions)
+            },
+            // 支持简化的键值对格式: {"name": "张三", "age": 20} (默认使用Eq操作符)
+            JsonValue::Object(map) => {
+                let mut conditions = Vec::new();
+                for (field, value) in map {
+                    let condition = QueryCondition {
+                        field,
+                        operator: QueryOperator::Eq,
+                        value: self.parse_data_value(&value)?,
+                    };
+                    conditions.push(condition);
+                }
+                Ok(conditions)
+            },
+            _ => Err("查询条件JSON必须是对象或数组类型".to_string()),
+        }
+    }
+    
+    /// 解析JSON值为DataValue
+    fn parse_data_value(&self, json_value: &JsonValue) -> Result<DataValue, String> {
+        match json_value {
+            JsonValue::String(s) => Ok(DataValue::String(s.clone())),
+            JsonValue::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    Ok(DataValue::Int(i))
+                } else if let Some(f) = n.as_f64() {
+                    Ok(DataValue::Float(f))
+                } else {
+                    Err(format!("不支持的数字类型: {}", n))
+                }
             }
-            Ok(conditions)
-        } else {
-            Err("查询条件JSON必须是对象类型".to_string())
+            JsonValue::Bool(b) => Ok(DataValue::Bool(*b)),
+            JsonValue::Null => Ok(DataValue::Null),
+            JsonValue::Array(arr) => {
+                let mut data_values = Vec::new();
+                for item in arr {
+                    data_values.push(self.parse_data_value(item)?);
+                }
+                Ok(DataValue::Array(data_values))
+            }
+            JsonValue::Object(obj) => {
+                let mut data_map = HashMap::new();
+                for (key, value) in obj {
+                    data_map.insert(key.clone(), self.parse_data_value(value)?);
+                }
+                Ok(DataValue::Object(data_map))
+            }
         }
     }
 }

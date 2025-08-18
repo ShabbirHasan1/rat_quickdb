@@ -20,6 +20,7 @@ pub struct SqlQueryBuilder {
     table: String,
     fields: Vec<String>,
     conditions: Vec<QueryCondition>,
+    condition_groups: Vec<QueryConditionGroup>,
     joins: Vec<JoinClause>,
     order_by: Vec<OrderClause>,
     group_by: Vec<String>,
@@ -68,6 +69,7 @@ impl SqlQueryBuilder {
             table: String::new(),
             fields: Vec::new(),
             conditions: Vec::new(),
+            condition_groups: Vec::new(),
             joins: Vec::new(),
             order_by: Vec::new(),
             group_by: Vec::new(),
@@ -128,6 +130,15 @@ impl SqlQueryBuilder {
     /// 添加多个WHERE条件
     pub fn where_conditions(mut self, conditions: &[QueryCondition]) -> Self {
         self.conditions.extend_from_slice(conditions);
+        self
+    }
+
+    /// 添加条件组合（支持OR逻辑）
+    pub fn where_condition_groups(mut self, groups: &[QueryConditionGroup]) -> Self {
+        // 存储条件组合
+        self.condition_groups.extend_from_slice(groups);
+        // 清空简单条件，因为条件组合会覆盖简单条件
+        self.conditions.clear();
         self
     }
 
@@ -218,8 +229,12 @@ impl SqlQueryBuilder {
             sql.push_str(&format!(" {} {} ON {}", join_type, join.table, join.on_condition));
         }
 
-        // 添加WHERE条件
-        if !self.conditions.is_empty() {
+        // 添加WHERE条件（优先使用条件组合）
+        if !self.condition_groups.is_empty() {
+            let (where_clause, where_params) = self.build_where_clause_from_groups(&self.condition_groups)?;
+            sql.push_str(&format!(" WHERE {}", where_clause));
+            params.extend(where_params);
+        } else if !self.conditions.is_empty() {
             let (where_clause, where_params) = self.build_where_clause(&self.conditions)?;
             sql.push_str(&format!(" WHERE {}", where_clause));
             params.extend(where_params);
@@ -364,6 +379,179 @@ impl SqlQueryBuilder {
     /// 构建WHERE子句
     fn build_where_clause(&self, conditions: &[QueryCondition]) -> QuickDbResult<(String, Vec<DataValue>)> {
         self.build_where_clause_with_offset(conditions, 1)
+    }
+
+    /// 构建WHERE子句（支持条件组合）
+    pub fn build_where_clause_from_groups(&self, groups: &[QueryConditionGroup]) -> QuickDbResult<(String, Vec<DataValue>)> {
+        self.build_where_clause_from_groups_with_offset(groups, 1)
+    }
+
+    /// 构建WHERE子句（支持条件组合），从指定的参数索引开始
+    fn build_where_clause_from_groups_with_offset(&self, groups: &[QueryConditionGroup], start_index: usize) -> QuickDbResult<(String, Vec<DataValue>)> {
+        if groups.is_empty() {
+            return Ok((String::new(), Vec::new()));
+        }
+
+        let mut clauses = Vec::new();
+        let mut params = Vec::new();
+        let mut param_index = start_index;
+
+        for group in groups {
+            let (clause, group_params, new_index) = self.build_condition_group_clause(group, param_index)?;
+            clauses.push(clause);
+            params.extend(group_params);
+            param_index = new_index;
+        }
+
+        Ok((clauses.join(" AND "), params))
+    }
+
+    /// 构建单个条件组合的子句
+    fn build_condition_group_clause(&self, group: &QueryConditionGroup, start_index: usize) -> QuickDbResult<(String, Vec<DataValue>, usize)> {
+        match group {
+            QueryConditionGroup::Single(condition) => {
+                let (clause, mut params, new_index) = self.build_single_condition_clause(condition, start_index)?;
+                Ok((clause, params, new_index))
+            }
+            QueryConditionGroup::Group { operator, conditions } => {
+                if conditions.is_empty() {
+                    return Ok((String::new(), Vec::new(), start_index));
+                }
+
+                let mut clauses = Vec::new();
+                let mut params = Vec::new();
+                let mut param_index = start_index;
+
+                for condition in conditions {
+                    let (clause, condition_params, new_index) = self.build_condition_group_clause(condition, param_index)?;
+                    if !clause.is_empty() {
+                        clauses.push(clause);
+                        params.extend(condition_params);
+                        param_index = new_index;
+                    }
+                }
+
+                if clauses.is_empty() {
+                    return Ok((String::new(), Vec::new(), param_index));
+                }
+
+                let logical_op = match operator {
+                    LogicalOperator::And => " AND ",
+                    LogicalOperator::Or => " OR ",
+                };
+
+                let combined_clause = if clauses.len() == 1 {
+                    clauses[0].clone()
+                } else {
+                    format!("({})", clauses.join(logical_op))
+                };
+
+                Ok((combined_clause, params, param_index))
+            }
+        }
+    }
+
+    /// 构建单个条件的子句
+    fn build_single_condition_clause(&self, condition: &QueryCondition, param_index: usize) -> QuickDbResult<(String, Vec<DataValue>, usize)> {
+        let placeholder = self.get_placeholder(param_index);
+        let mut new_index = param_index;
+        
+        let (clause, params) = match condition.operator {
+            QueryOperator::Eq => {
+                new_index += 1;
+                (format!("{} = {}", condition.field, placeholder), vec![condition.value.clone()])
+            }
+            QueryOperator::Ne => {
+                new_index += 1;
+                (format!("{} != {}", condition.field, placeholder), vec![condition.value.clone()])
+            }
+            QueryOperator::Gt => {
+                new_index += 1;
+                (format!("{} > {}", condition.field, placeholder), vec![condition.value.clone()])
+            }
+            QueryOperator::Gte => {
+                new_index += 1;
+                (format!("{} >= {}", condition.field, placeholder), vec![condition.value.clone()])
+            }
+            QueryOperator::Lt => {
+                new_index += 1;
+                (format!("{} < {}", condition.field, placeholder), vec![condition.value.clone()])
+            }
+            QueryOperator::Lte => {
+                new_index += 1;
+                (format!("{} <= {}", condition.field, placeholder), vec![condition.value.clone()])
+            }
+            QueryOperator::Contains => {
+                new_index += 1;
+                let value = if let DataValue::String(s) = &condition.value {
+                    DataValue::String(format!("%{}%", s))
+                } else {
+                    condition.value.clone()
+                };
+                (format!("{} LIKE {}", condition.field, placeholder), vec![value])
+            }
+            QueryOperator::StartsWith => {
+                new_index += 1;
+                let value = if let DataValue::String(s) = &condition.value {
+                    DataValue::String(format!("{}%", s))
+                } else {
+                    condition.value.clone()
+                };
+                (format!("{} LIKE {}", condition.field, placeholder), vec![value])
+            }
+            QueryOperator::EndsWith => {
+                new_index += 1;
+                let value = if let DataValue::String(s) = &condition.value {
+                    DataValue::String(format!("%{}", s))
+                } else {
+                    condition.value.clone()
+                };
+                (format!("{} LIKE {}", condition.field, placeholder), vec![value])
+            }
+            QueryOperator::In => {
+                if let DataValue::Array(values) = &condition.value {
+                    let mut placeholders = Vec::new();
+                    for _ in 0..values.len() {
+                        placeholders.push(self.get_placeholder(new_index));
+                        new_index += 1;
+                    }
+                    (format!("{} IN ({})", condition.field, placeholders.join(", ")), values.clone())
+                } else {
+                    return Err(QuickDbError::QueryError {
+                        message: "IN 操作符需要数组类型的值".to_string(),
+                    });
+                }
+            }
+            QueryOperator::NotIn => {
+                if let DataValue::Array(values) = &condition.value {
+                    let mut placeholders = Vec::new();
+                    for _ in 0..values.len() {
+                        placeholders.push(self.get_placeholder(new_index));
+                        new_index += 1;
+                    }
+                    (format!("{} NOT IN ({})", condition.field, placeholders.join(", ")), values.clone())
+                } else {
+                    return Err(QuickDbError::QueryError {
+                        message: "NOT IN 操作符需要数组类型的值".to_string(),
+                    });
+                }
+            }
+            QueryOperator::Regex => {
+                new_index += 1;
+                (format!("{} REGEXP {}", condition.field, placeholder), vec![condition.value.clone()])
+            }
+            QueryOperator::Exists => {
+                (format!("{} IS NOT NULL", condition.field), vec![])
+            }
+            QueryOperator::IsNull => {
+                (format!("{} IS NULL", condition.field), vec![])
+            }
+            QueryOperator::IsNotNull => {
+                (format!("{} IS NOT NULL", condition.field), vec![])
+            }
+        };
+
+        Ok((clause, params, new_index))
     }
 
     /// 构建WHERE子句，从指定的参数索引开始

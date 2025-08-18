@@ -53,6 +53,15 @@ pub trait DatabaseAdapter: Send + Sync {
         options: &QueryOptions,
     ) -> QuickDbResult<Vec<Value>>;
 
+    /// 使用条件组合查找记录（支持OR逻辑）
+    async fn find_with_groups(
+        &self,
+        connection: &DatabaseConnection,
+        table: &str,
+        condition_groups: &[QueryConditionGroup],
+        options: &QueryOptions,
+    ) -> QuickDbResult<Vec<Value>>;
+
     /// 更新记录
     async fn update(
         &self,

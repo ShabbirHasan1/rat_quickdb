@@ -226,6 +226,56 @@ impl DatabaseAdapter for SqliteAdapter {
         }
     }
 
+    async fn find_with_groups(
+        &self,
+        connection: &DatabaseConnection,
+        table: &str,
+        condition_groups: &[QueryConditionGroup],
+        options: &QueryOptions,
+    ) -> QuickDbResult<Vec<Value>> {
+        let pool = match connection {
+            DatabaseConnection::SQLite(pool) => pool,
+            _ => return Err(QuickDbError::ConnectionError {
+                message: "Invalid connection type for SQLite".to_string(),
+            }),
+        };
+        {
+            let (sql, params) = SqlQueryBuilder::new()
+                .select(&["*"])
+                .from(table)
+                .where_condition_groups(condition_groups)
+                .limit(options.pagination.as_ref().map(|p| p.limit).unwrap_or(1000))
+                .offset(options.pagination.as_ref().map(|p| p.skip).unwrap_or(0))
+                .build()?;
+            
+            debug!("执行SQLite条件组合查询: {}", sql);
+            
+            let mut query = sqlx::query(&sql);
+            for param in &params {
+                match param {
+                    DataValue::String(s) => { query = query.bind(s); },
+                    DataValue::Int(i) => { query = query.bind(i); },
+                    DataValue::Float(f) => { query = query.bind(f); },
+                    DataValue::Bool(b) => { query = query.bind(b); },
+                    DataValue::Null => { query = query.bind(Option::<String>::None); },
+                    _ => { query = query.bind(param.to_string()); },
+                }
+            }
+            
+            let rows = query.fetch_all(pool).await
+                .map_err(|e| QuickDbError::QueryError {
+                    message: format!("执行SQLite条件组合查询失败: {}", e),
+                })?;
+            
+            let mut results = Vec::new();
+            for row in rows {
+                results.push(self.row_to_json(&row)?);
+            }
+            
+            Ok(results)
+        }
+    }
+
     async fn update(
         &self,
         connection: &DatabaseConnection,

@@ -230,12 +230,13 @@ class CachePerformanceTest:
         print("\n🔥 缓存预热...")
         
         try:
-            # 预热查询
-            query_conditions = json.dumps({
-                "field": "age",
-                "operator": "Gt",
-                "value": 20
-            })
+            # 预热查询 - 查找年龄在25-35之间且姓名包含特定字符的用户
+            query_conditions = json.dumps([
+                {"field": "age", "operator": "Gte", "value": 25},
+                {"field": "age", "operator": "Lte", "value": 35},
+                {"field": "name", "operator": "Contains", "value": "用户"},
+                {"field": "email", "operator": "Contains", "value": "@example.com"}
+            ])
             
             # 预热查询
             self.bridge.find("users", query_conditions, "cached_db")
@@ -256,11 +257,13 @@ class CachePerformanceTest:
         print("\n🔍 测试查询操作性能...")
         
         try:
-            query_conditions = json.dumps({
-                "field": "name",
-                "operator": "Eq",
-                "value": "张三"
-            })
+            # 构建复杂查询条件 - 查找特定用户且年龄符合条件
+            query_conditions = json.dumps([
+                {"field": "name", "operator": "Eq", "value": "张三"},
+                {"field": "age", "operator": "Gte", "value": 20},
+                {"field": "age", "operator": "Lte", "value": 50},
+                {"field": "email", "operator": "Contains", "value": "@example.com"}
+            ])
             
             # 第一次查询（冷启动，从数据库读取）
             start_time = time.time()
@@ -294,11 +297,13 @@ class CachePerformanceTest:
         print("\n🔄 测试重复查询性能（缓存命中测试）...")
         
         try:
-            query_conditions = json.dumps({
-                "field": "age",
-                "operator": "Gt",
-                "value": 20
-            })
+            # 构建多条件查询 - 查找年龄大于20且姓名包含特定字符的活跃用户
+            query_conditions = json.dumps([
+                {"field": "age", "operator": "Gt", "value": 20},
+                {"field": "age", "operator": "Lt", "value": 40},
+                {"field": "name", "operator": "Contains", "value": "用户"},
+                {"field": "email", "operator": "Contains", "value": "batch"}
+            ])
             
             query_count = 10
             

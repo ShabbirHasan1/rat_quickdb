@@ -5,6 +5,7 @@
 
 use crate::types::{
     CacheConfig, CacheStrategy, CompressionAlgorithm, DataValue, IdType, QueryOptions, SortDirection,
+    QueryCondition, QueryConditionGroup,
 };
 use rat_memcache::RatMemCacheBuilder;
 use rat_memcache::config::{L1Config, L2Config, TtlConfig, CompressionConfig};
@@ -207,10 +208,20 @@ impl CacheManager {
     }
 
     /// 生成查询缓存键 - 优化版本，避免复杂序列化
-    fn generate_query_cache_key(&self, table: &str, options: &QueryOptions) -> String {
+    pub fn generate_query_cache_key(&self, table: &str, conditions: &[QueryCondition], options: &QueryOptions) -> String {
         let query_signature = self.build_query_signature(options);
-        let key = format!("{}:{}:query:{}", CACHE_KEY_PREFIX, table, query_signature);
+        let conditions_signature = self.build_conditions_signature(conditions);
+        let key = format!("{}:{}:query:{}:{}", CACHE_KEY_PREFIX, table, conditions_signature, query_signature);
         debug!("生成查询缓存键: table={}, key={}", table, key);
+        key
+    }
+
+    /// 生成条件组合查询缓存键
+    pub fn generate_condition_groups_cache_key(&self, table: &str, condition_groups: &[QueryConditionGroup], options: &QueryOptions) -> String {
+        let query_signature = self.build_query_signature(options);
+        let groups_signature = self.build_condition_groups_signature(condition_groups);
+        let key = format!("{}:{}:groups:{}:{}", CACHE_KEY_PREFIX, table, groups_signature, query_signature);
+        debug!("生成条件组合查询缓存键: table={}, key={}", table, key);
         key
     }
 
@@ -244,6 +255,65 @@ impl CacheManager {
         } else {
             parts.join("_")
         }
+    }
+
+    /// 构建条件签名
+    fn build_conditions_signature(&self, conditions: &[QueryCondition]) -> String {
+        if conditions.is_empty() {
+            return "no_cond".to_string();
+        }
+        
+        let mut signature = String::new();
+        for (i, condition) in conditions.iter().enumerate() {
+            if i > 0 {
+                signature.push('_');
+            }
+            signature.push_str(&format!("{}{:?}{}", 
+                condition.field, 
+                condition.operator, 
+                match &condition.value {
+                     DataValue::String(s) => s.chars().take(10).collect::<String>(),
+                     DataValue::Int(n) => n.to_string(),
+                     DataValue::Float(f) => f.to_string(),
+                     DataValue::Bool(b) => b.to_string(),
+                     _ => "val".to_string(),
+                 }
+            ));
+        }
+        signature
+    }
+
+    /// 构建条件组合签名
+    fn build_condition_groups_signature(&self, condition_groups: &[QueryConditionGroup]) -> String {
+        if condition_groups.is_empty() {
+            return "no_groups".to_string();
+        }
+        
+        let mut signature = String::new();
+        for (i, group) in condition_groups.iter().enumerate() {
+            if i > 0 {
+                signature.push('_');
+            }
+            match group {
+                QueryConditionGroup::Single(condition) => {
+                    signature.push_str(&format!("s{}{:?}{}", 
+                        condition.field, 
+                        condition.operator, 
+                        match &condition.value {
+                             DataValue::String(s) => s.chars().take(10).collect::<String>(),
+                             DataValue::Int(n) => n.to_string(),
+                             DataValue::Float(f) => f.to_string(),
+                             DataValue::Bool(b) => b.to_string(),
+                             _ => "val".to_string(),
+                         }
+                    ));
+                },
+                QueryConditionGroup::Group { conditions, operator } => {
+                    signature.push_str(&format!("g{:?}_{}", operator, conditions.len()));
+                }
+            }
+        }
+        signature
     }
 
     /// 缓存单个记录 - 优化版本
@@ -373,7 +443,7 @@ impl CacheManager {
         }
 
         let start_time = Instant::now();
-        let key = self.generate_query_cache_key(table, options);
+        let key = self.generate_query_cache_key(table, &options.conditions, options);
         
         debug!("尝试缓存查询结果: table={}, key={}, options={:?}, 结果数量={}", table, key, options, results.len());
 
@@ -433,7 +503,7 @@ impl CacheManager {
         }
 
         let start_time = Instant::now();
-        let key = self.generate_query_cache_key(table, options);
+        let key = self.generate_query_cache_key(table, &options.conditions, options);
         
         debug!("尝试获取查询缓存: table={}, key={}, options={:?}", table, key, options);
         

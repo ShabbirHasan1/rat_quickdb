@@ -318,6 +318,44 @@ impl DatabaseAdapter for PostgresAdapter {
         }
     }
 
+    async fn find_with_groups(
+        &self,
+        connection: &DatabaseConnection,
+        table: &str,
+        condition_groups: &[QueryConditionGroup],
+        options: &QueryOptions,
+    ) -> QuickDbResult<Vec<Value>> {
+        if let DatabaseConnection::PostgreSQL(pool) = connection {
+            let mut builder = SqlQueryBuilder::new()
+                .database_type(super::query_builder::DatabaseType::PostgreSQL)
+                .select(&["*"])
+                .from(table)
+                .where_condition_groups(condition_groups);
+            
+            // 添加排序
+            if !options.sort.is_empty() {
+                for sort_field in &options.sort {
+                    builder = builder.order_by(&sort_field.field, sort_field.direction.clone());
+                }
+            }
+            
+            // 添加分页
+            if let Some(pagination) = &options.pagination {
+                builder = builder.limit(pagination.limit).offset(pagination.skip);
+            }
+            
+            let (sql, params) = builder.build()?;
+            
+            debug!("执行PostgreSQL条件组查询: {}", sql);
+            
+            self.execute_query(pool, &sql, &params).await
+        } else {
+            Err(QuickDbError::ConnectionError {
+                message: "连接类型不匹配，期望PostgreSQL连接".to_string(),
+            })
+        }
+    }
+
     async fn update(
         &self,
         connection: &DatabaseConnection,

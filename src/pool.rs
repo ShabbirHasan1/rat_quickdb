@@ -51,6 +51,13 @@ pub enum DatabaseOperation {
         options: QueryOptions,
         response: oneshot::Sender<QuickDbResult<Vec<Value>>>,
     },
+    /// 使用条件组合查找记录（支持OR逻辑）
+    FindWithGroups {
+        table: String,
+        condition_groups: Vec<QueryConditionGroup>,
+        options: QueryOptions,
+        response: oneshot::Sender<QuickDbResult<Vec<Value>>>,
+    },
     /// 更新记录
     Update {
         table: String,
@@ -410,6 +417,10 @@ impl SqliteWorker {
                 let result = adapter.find(&self.connection, &table, &conditions, &options).await;
                 let _ = response.send(result);
             },
+            DatabaseOperation::FindWithGroups { table, condition_groups, options, response } => {
+                let result = adapter.find_with_groups(&self.connection, &table, &condition_groups, &options).await;
+                let _ = response.send(result);
+            },
             DatabaseOperation::Update { table, conditions, data, response } => {
                 let result = adapter.update(&self.connection, &table, &conditions, &data).await;
                 let _ = response.send(result);
@@ -672,6 +683,11 @@ impl MultiConnectionManager {
             },
             DatabaseOperation::Find { table, conditions, options, response } => {
                 let result = adapter.find(&worker.connection, &table, &conditions, &options).await;
+                let _ = response.send(result);
+                Ok(())
+            },
+            DatabaseOperation::FindWithGroups { table, condition_groups, options, response } => {
+                let result = adapter.find_with_groups(&worker.connection, &table, &condition_groups, &options).await;
                 let _ = response.send(result);
                 Ok(())
             },
