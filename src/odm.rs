@@ -163,6 +163,8 @@ pub struct AsyncOdmManager {
     request_sender: mpsc::UnboundedSender<OdmRequest>,
     /// 默认别名
     default_alias: String,
+    /// 后台任务句柄（用于优雅关闭）
+    _task_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl AsyncOdmManager {
@@ -171,13 +173,14 @@ impl AsyncOdmManager {
         let (sender, receiver) = mpsc::unbounded_channel();
         
         // 启动后台处理任务
-        tokio::spawn(Self::process_requests(receiver));
+        let task_handle = tokio::spawn(Self::process_requests(receiver));
         
         info!("创建异步ODM管理器");
         
         Self {
             request_sender: sender,
             default_alias: "default".to_string(),
+            _task_handle: Some(task_handle),
         }
     }
     
@@ -610,6 +613,29 @@ impl AsyncOdmManager {
             })??;
         
         Ok(result)
+    }
+}
+
+// 实现Drop trait以确保资源正确清理
+impl Drop for AsyncOdmManager {
+    fn drop(&mut self) {
+        info!("开始清理AsyncOdmManager资源");
+        
+        // 关闭请求发送器，这会导致后台任务自然退出
+        // 注意：这里不需要显式关闭sender，因为当所有sender被drop时，
+        // receiver会自动关闭，导致process_requests循环退出
+        
+        // 如果有任务句柄，尝试取消任务
+        if let Some(handle) = self._task_handle.take() {
+            if !handle.is_finished() {
+                warn!("ODM后台任务仍在运行，将被取消");
+                handle.abort();
+            } else {
+                info!("ODM后台任务已正常结束");
+            }
+        }
+        
+        info!("AsyncOdmManager资源清理完成");
     }
 }
 

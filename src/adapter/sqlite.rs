@@ -78,8 +78,8 @@ impl DatabaseAdapter for SqliteAdapter {
                 message: "Invalid connection type for SQLite".to_string(),
             }),
         };
-        {
-            // 自动建表逻辑：检查表是否存在，如果不存在则创建
+        
+        // 自动建表逻辑：检查表是否存在，如果不存在则创建
             if !self.table_exists(connection, table).await? {
                 info!("表 {} 不存在，正在自动创建", table);
                 let schema = TableSchema::infer_from_data(table.to_string(), data);
@@ -105,15 +105,15 @@ impl DatabaseAdapter for SqliteAdapter {
                 info!("自动创建SQLite表 '{}' 成功", table);
             }
             
-            let (sql, _params) = SqlQueryBuilder::new()
+            let (sql, params) = SqlQueryBuilder::new()
                 .insert(data.clone())
                 .from(table)
                 .build()?;
             
-            // 构建参数化查询
+            // 构建参数化查询，使用正确的参数顺序
             let mut query = sqlx::query(&sql);
-            for value in data.values() {
-                match value {
+            for param in &params {
+                match param {
                     DataValue::String(s) => { query = query.bind(s); },
                     DataValue::Int(i) => { query = query.bind(i); },
                     DataValue::Float(f) => { query = query.bind(f); },
@@ -143,7 +143,6 @@ impl DatabaseAdapter for SqliteAdapter {
                 "id": result.last_insert_rowid(),
                 "affected_rows": result.rows_affected()
             }))
-        }
     }
 
     async fn find_by_id(

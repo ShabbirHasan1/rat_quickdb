@@ -798,10 +798,13 @@ impl ConnectionPool {
     ) -> QuickDbResult<()> {
         let connection = self.create_sqlite_connection().await?;
         
+        // 创建启动同步通道
+        let (startup_tx, startup_rx) = oneshot::channel();
+        
         let worker = SqliteWorker {
             connection,
             operation_receiver,
-            db_config,
+            db_config: db_config.clone(),
             retry_count: 0,
             max_retries: config.max_retries,
             retry_interval_ms: config.retry_interval_ms,
@@ -813,9 +816,17 @@ impl ConnectionPool {
         
         // 启动工作器
         tokio::spawn(async move {
+            // 发送启动完成信号
+            let _ = startup_tx.send(());
             worker.run().await;
         });
         
+        // 等待工作器启动完成
+        startup_rx.await.map_err(|_| QuickDbError::ConnectionError {
+            message: format!("SQLite工作器启动失败: 别名={}", db_config.alias),
+        })?;
+        
+        info!("SQLite工作器启动完成: 别名={}", db_config.alias);
         Ok(())
     }
     

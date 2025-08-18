@@ -3,3 +3,7 @@
 /test_model.db
 /test.db
 /cache
+/python/target
+/python/Cargo.lock
+/**/*.db
+/**/*.so

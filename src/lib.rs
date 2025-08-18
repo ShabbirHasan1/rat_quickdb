@@ -20,6 +20,10 @@ pub mod table;
 pub mod cache;
 pub mod id_generator;
 
+// Python API 模块（仅在启用 python-bindings 特性时编译）
+#[cfg(feature = "python-bindings")]
+pub mod python_api;
+
 // 重新导出常用类型和函数
 pub use error::{QuickDbError, QuickDbResult};
 pub use types::*;
@@ -57,6 +61,9 @@ pub use id_generator::{IdGenerator, MongoAutoIncrementGenerator};
 
 // 重新导出便捷函数
 pub use odm::{create, find_by_id, find, update, update_by_id, delete, delete_by_id, count, exists};
+
+// Python API 导出（仅在启用 python-bindings 特性时）
+// 注意：Python绑定相关的导出已移至专门的Python绑定库中
 
 // 初始化日志
 use zerg_creep::{info, init_logger};
