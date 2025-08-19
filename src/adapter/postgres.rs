@@ -575,16 +575,29 @@ impl DatabaseAdapter for PostgresAdapter {
             
             for (name, field_type) in fields {
                 let sql_type = match field_type {
-                    FieldType::String { .. } => "TEXT",
-                    FieldType::Integer { .. } => "BIGINT",
-                    FieldType::Float { .. } => "DOUBLE PRECISION",
-                    FieldType::Boolean => "BOOLEAN",
-                    FieldType::DateTime => "TIMESTAMPTZ",
-                    FieldType::Uuid => "UUID",
-                    FieldType::Json => "JSONB",
-                    FieldType::Array { item_type: _, max_items: _, min_items: _ } => "JSONB",
-                    FieldType::Object { .. } => "JSONB",
-                    FieldType::Reference { target_collection: _ } => "TEXT",
+                    FieldType::String { max_length, .. } => {
+                        if let Some(max_len) = max_length {
+                            format!("VARCHAR({})", max_len)
+                        } else {
+                            "TEXT".to_string()
+                        }
+                    },
+                    FieldType::Integer { .. } => "INTEGER".to_string(),
+                    FieldType::BigInteger => "BIGINT".to_string(),
+                    FieldType::Float { .. } => "REAL".to_string(),
+                    FieldType::Double => "DOUBLE PRECISION".to_string(),
+                    FieldType::Text => "TEXT".to_string(),
+                    FieldType::Boolean => "BOOLEAN".to_string(),
+                    FieldType::DateTime => "TIMESTAMPTZ".to_string(),
+                    FieldType::Date => "DATE".to_string(),
+                    FieldType::Time => "TIME".to_string(),
+                    FieldType::Uuid => "UUID".to_string(),
+                    FieldType::Json => "JSONB".to_string(),
+                    FieldType::Binary => "BYTEA".to_string(),
+                    FieldType::Decimal { precision, scale } => format!("DECIMAL({},{})", precision, scale),
+                    FieldType::Array { item_type: _, max_items: _, min_items: _ } => "JSONB".to_string(),
+                    FieldType::Object { .. } => "JSONB".to_string(),
+                    FieldType::Reference { target_collection: _ } => "TEXT".to_string(),
                 };
                 
                 // 如果是id字段，检查是否需要自增
@@ -665,6 +678,32 @@ impl DatabaseAdapter for PostgresAdapter {
                 })?;
             
             Ok(!rows.is_empty())
+        } else {
+            Err(QuickDbError::ConnectionError {
+                message: "连接类型不匹配，期望PostgreSQL连接".to_string(),
+            })
+        }
+    }
+
+    async fn drop_table(
+        &self,
+        connection: &DatabaseConnection,
+        table: &str,
+    ) -> QuickDbResult<()> {
+        if let DatabaseConnection::PostgreSQL(pool) = connection {
+            let sql = format!("DROP TABLE IF EXISTS {} CASCADE", table);
+            
+            debug!("执行PostgreSQL删除表SQL: {}", sql);
+            
+            sqlx::query(&sql)
+                .execute(pool)
+                .await
+                .map_err(|e| QuickDbError::QueryError {
+                    message: format!("删除PostgreSQL表失败: {}", e),
+                })?;
+            
+            info!("成功删除PostgreSQL表: {}", table);
+            Ok(())
         } else {
             Err(QuickDbError::ConnectionError {
                 message: "连接类型不匹配，期望PostgreSQL连接".to_string(),

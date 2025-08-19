@@ -96,6 +96,23 @@ impl PyFieldType {
         }
     }
 
+    /// 创建对象字段类型
+    #[staticmethod]
+    pub fn object(fields: &PyDict) -> PyResult<Self> {
+        let mut field_map = HashMap::new();
+        
+        // 转换字段定义
+        for (key, value) in fields.iter() {
+            let field_name = key.extract::<String>()?;
+            let field_def = value.extract::<PyFieldDefinition>()?;
+            field_map.insert(field_name, field_def.inner);
+        }
+        
+        Ok(Self {
+            inner: FieldType::Object { fields: field_map },
+        })
+    }
+
     /// 创建引用字段类型
     #[staticmethod]
     pub fn reference(target_collection: String) -> Self {
@@ -563,4 +580,24 @@ pub fn list_field(
 ) -> PyFieldDefinition {
     // list_field 是 array_field 的别名，提供更直观的命名
     array_field(item_type, required, max_items, min_items, description)
+}
+
+/// 创建字典字段（基于Object类型）
+#[pyfunction]
+pub fn dict_field(
+    fields: &PyDict,
+    required: Option<bool>,
+    description: Option<String>,
+) -> PyResult<PyFieldDefinition> {
+    let field_type = PyFieldType::object(fields)?;
+    let mut field_def = PyFieldDefinition::new(&field_type);
+    
+    if required.unwrap_or(false) {
+        field_def = field_def.required();
+    }
+    if let Some(desc) = description {
+        field_def = field_def.set_description(desc);
+    }
+    
+    Ok(field_def)
 }

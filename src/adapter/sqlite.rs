@@ -481,16 +481,29 @@ impl DatabaseAdapter for SqliteAdapter {
                 }
                 
                 let sql_type = match field_type {
-                    FieldType::String { .. } => "TEXT",
-                    FieldType::Integer { .. } => "INTEGER",
-                    FieldType::Float { .. } => "REAL",
-                    FieldType::Boolean => "INTEGER",
-                    FieldType::DateTime => "TEXT",
-                    FieldType::Json => "TEXT",
-                    FieldType::Uuid => "TEXT",
-                    FieldType::Array { .. } => "TEXT", // 存储为JSON
-                    FieldType::Object { .. } => "TEXT", // 存储为JSON
-                    FieldType::Reference { .. } => "TEXT", // 存储引用ID
+                    FieldType::String { max_length, .. } => {
+                        if let Some(max_len) = max_length {
+                            format!("VARCHAR({})", max_len)
+                        } else {
+                            "TEXT".to_string()
+                        }
+                    },
+                    FieldType::Integer { .. } => "INTEGER".to_string(),
+                    FieldType::BigInteger => "INTEGER".to_string(), // SQLite只有INTEGER类型
+                    FieldType::Float { .. } => "REAL".to_string(),
+                    FieldType::Double => "REAL".to_string(), // SQLite只有REAL类型
+                    FieldType::Text => "TEXT".to_string(),
+                    FieldType::Boolean => "INTEGER".to_string(),
+                    FieldType::DateTime => "TEXT".to_string(),
+                    FieldType::Date => "TEXT".to_string(),
+                    FieldType::Time => "TEXT".to_string(),
+                    FieldType::Json => "TEXT".to_string(),
+                    FieldType::Uuid => "TEXT".to_string(),
+                    FieldType::Binary => "BLOB".to_string(),
+                    FieldType::Decimal { precision: _, scale: _ } => "REAL".to_string(), // SQLite没有DECIMAL，使用REAL
+                    FieldType::Array { .. } => "TEXT".to_string(), // 存储为JSON
+                    FieldType::Object { .. } => "TEXT".to_string(), // 存储为JSON
+                    FieldType::Reference { .. } => "TEXT".to_string(), // 存储引用ID
                 };
                 
                 // 如果是id字段，添加主键约束
@@ -567,5 +580,32 @@ impl DatabaseAdapter for SqliteAdapter {
             
             Ok(row.is_some())
         }
+    }
+
+    async fn drop_table(
+        &self,
+        connection: &DatabaseConnection,
+        table: &str,
+    ) -> QuickDbResult<()> {
+        let pool = match connection {
+            DatabaseConnection::SQLite(pool) => pool,
+            _ => return Err(QuickDbError::ConnectionError {
+                message: "Invalid connection type for SQLite".to_string(),
+            }),
+        };
+        
+        let sql = format!("DROP TABLE IF EXISTS {}", table);
+        
+        debug!("执行SQLite删除表SQL: {}", sql);
+        
+        sqlx::query(&sql)
+            .execute(pool)
+            .await
+            .map_err(|e| QuickDbError::QueryError {
+                message: format!("删除SQLite表失败: {}", e),
+            })?;
+        
+        info!("成功删除SQLite表: {}", table);
+        Ok(())
     }
 }

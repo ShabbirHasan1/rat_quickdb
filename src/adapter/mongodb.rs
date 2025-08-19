@@ -790,4 +790,27 @@ impl DatabaseAdapter for MongoAdapter {
             })
         }
     }
+
+    async fn drop_table(
+        &self,
+        connection: &DatabaseConnection,
+        table: &str,
+    ) -> QuickDbResult<()> {
+        if let DatabaseConnection::MongoDB(db) = connection {
+            debug!("执行MongoDB删除集合: {}", table);
+            
+            let collection = db.collection::<mongodb::bson::Document>(table);
+            collection.drop(None).await
+                .map_err(|e| QuickDbError::QueryError {
+                    message: format!("删除MongoDB集合失败: {}", e),
+                })?;
+            
+            info!("成功删除MongoDB集合: {}", table);
+            Ok(())
+        } else {
+            Err(QuickDbError::ConnectionError {
+                message: "连接类型不匹配，期望MongoDB连接".to_string(),
+            })
+        }
+    }
 }

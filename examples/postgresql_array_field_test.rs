@@ -1,5 +1,5 @@
 use rat_quickdb::{
-    array_field, string_field, integer_field,
+    array_field, list_field, string_field, integer_field, float_field, boolean_field, datetime_field, dict_field,
     Model, ModelManager, ModelOperations, FieldType, DatabaseConfig, ConnectionConfig, PoolConfig, IdStrategy,
     init, add_database, DataValue, DatabaseType, QueryCondition, TlsConfig
 };
@@ -14,8 +14,12 @@ rat_quickdb::define_model! {
         name: String,
         age: i32,
         scores: Vec<i32>,
+        grades: Vec<f64>,
+        is_active: Vec<bool>,
         tags: Vec<String>,
         hobbies: Vec<String>,
+        #[serde(with = "rat_quickdb::types::serde_helpers::hashmap_datavalue")]
+        metadata: HashMap<String, DataValue>,
     }
     
     collection = "students",
@@ -31,6 +35,19 @@ rat_quickdb::define_model! {
             },
             Some(10), // 最多10个分数
             None,     // 可以没有分数
+        ),
+        grades: array_field(
+            FieldType::Float {
+                min_value: Some(0.0),
+                max_value: Some(4.0),
+            },
+            Some(10), // 最多10个成绩
+            None,     // 可以没有成绩
+        ),
+        is_active: array_field(
+            FieldType::Boolean,
+            Some(5),  // 最多5个布尔值
+            None,     // 可以没有
         ),
         tags: array_field(
             FieldType::String {
@@ -50,6 +67,14 @@ rat_quickdb::define_model! {
             Some(5), // 最多5个爱好
             None,    // 可以没有爱好
         ),
+        metadata: dict_field({
+            let mut fields = HashMap::new();
+            fields.insert("school".to_string(), string_field(Some(100), None, None));
+            fields.insert("year".to_string(), integer_field(Some(2000), Some(2030)));
+            fields.insert("gpa".to_string(), float_field(Some(0.0), Some(4.0)));
+            fields.insert("graduated".to_string(), boolean_field());
+            fields
+        }),
     }
 }
 
@@ -101,18 +126,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     // 设置PostgreSQL为默认数据库
     use rat_quickdb::manager::get_global_pool_manager;
-    get_global_pool_manager().set_default_alias("postgresql_test").await?;
+    let pool_manager = get_global_pool_manager();
+    pool_manager.set_default_alias("postgresql_test").await?;
     
     info!("🛡️ [MAMMOTH-READY] 开始测试PostgreSQL数组字段");
     
+    // 通过PoolManager获取连接池来删除可能存在的残留表，确保测试环境干净
+    info!("清理测试环境，删除可能存在的残留表...");
+    let pools = pool_manager.get_connection_pools();
+    if let Some(pool) = pools.get("postgresql_test") {
+        let _ = pool.drop_table("students").await; // 忽略错误，表可能不存在
+    }
+    info!("测试环境清理完成");
+    
     // 创建测试学生数据
+    let mut metadata = HashMap::new();
+    metadata.insert("school".to_string(), DataValue::String("清华大学".to_string()));
+    metadata.insert("year".to_string(), DataValue::Int(2024));
+    metadata.insert("gpa".to_string(), DataValue::Float(3.8));
+    metadata.insert("graduated".to_string(), DataValue::Bool(false));
+    
     let student = Student {
         id: None,
         name: "张三".to_string(),
         age: 20,
         scores: vec![95, 87, 92],
+        grades: vec![3.8, 3.5, 3.9],
+        is_active: vec![true, false, true],
         tags: vec!["优秀".to_string(), "积极".to_string()],
         hobbies: vec!["编程".to_string(), "阅读".to_string(), "运动".to_string()],
+        metadata,
     };
     
     info!("原始学生数据: {:?}", student);
@@ -128,15 +171,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for student in found_students {
         info!("学生数据: {:?}", student);
         info!("  scores: {:?}", student.scores);
+        info!("  grades: {:?}", student.grades);
+        info!("  is_active: {:?}", student.is_active);
         info!("  tags: {:?}", student.tags);
         info!("  hobbies: {:?}", student.hobbies);
+        info!("  metadata: {:?}", student.metadata);
         
         // 检查数组内容是否正确
         assert_eq!(student.scores, vec![95, 87, 92]);
+        assert_eq!(student.grades, vec![3.8, 3.5, 3.9]);
+        assert_eq!(student.is_active, vec![true, false, true]);
         assert_eq!(student.tags, vec!["优秀".to_string(), "积极".to_string()]);
         assert_eq!(student.hobbies, vec!["编程".to_string(), "阅读".to_string(), "运动".to_string()]);
         
-        info!("✅ PostgreSQL数组字段测试通过！");
+        // 检查字典内容是否正确
+        assert_eq!(student.metadata.get("school"), Some(&DataValue::String("清华大学".to_string())));
+        assert_eq!(student.metadata.get("year"), Some(&DataValue::Int(2024)));
+        assert_eq!(student.metadata.get("gpa"), Some(&DataValue::Float(3.8)));
+        assert_eq!(student.metadata.get("graduated"), Some(&DataValue::Bool(false)));
+        
+        info!("✅ PostgreSQL数组字段和字典字段测试通过！");
     }
     
     info!("PostgreSQL数组字段测试完成");

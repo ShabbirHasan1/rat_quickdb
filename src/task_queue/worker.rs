@@ -173,6 +173,10 @@ impl TaskWorker {
                 let result = self.handle_drop_table(&table, cascade).await;
                 let _ = response_tx.send(result);
             }
+            DbTask::DropAndRecreateTable { schema, options, response_tx } => {
+                let result = self.handle_drop_and_recreate_table(schema, options).await;
+                let _ = response_tx.send(result);
+            }
             
             DbTask::MigrateTable { table, from_version, to_version, response_tx } => {
                 let result = self.handle_migrate_table(&table, from_version, to_version).await;
@@ -614,8 +618,18 @@ impl TaskWorker {
     }
     
     async fn handle_drop_table(&self, table: &str, _cascade: bool) -> QuickDbResult<()> {
-        // TODO: 实现删除表功能
-        Err(QuickDbError::Other(anyhow::anyhow!("删除表功能尚未实现")))
+        // 调用表管理器的删除表方法
+        self.table_manager.drop_table(table).await
+    }
+    
+    /// 处理删除并重建表任务
+    async fn handle_drop_and_recreate_table(
+        &self,
+        schema: crate::table::TableSchema,
+        options: Option<crate::table::manager::TableCreateOptions>,
+    ) -> QuickDbResult<()> {
+        // 调用表管理器的删除并重建表方法
+        self.table_manager.drop_and_recreate_table(&schema, options).await
     }
     
     async fn handle_migrate_table(

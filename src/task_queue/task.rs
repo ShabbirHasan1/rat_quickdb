@@ -8,6 +8,7 @@ use serde::{Serialize, Deserialize};
 use crate::error::QuickDbResult;
 use crate::types::*;
 use crate::table::TableSchema;
+use crate::table::manager::TableCreateOptions;
 
 /// 数据库操作任务
 #[derive(Debug)]
@@ -186,6 +187,16 @@ pub enum DbTask {
         table: String,
         /// 是否级联删除
         cascade: bool,
+        /// 结果返回通道
+        response_tx: oneshot::Sender<QuickDbResult<()>>,
+    },
+    
+    /// 删除并重建表任务
+    DropAndRecreateTable {
+        /// 表模式
+        schema: TableSchema,
+        /// 创建选项
+        options: Option<TableCreateOptions>,
         /// 结果返回通道
         response_tx: oneshot::Sender<QuickDbResult<()>>,
     },

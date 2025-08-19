@@ -11,6 +11,7 @@ struct Student {
     name: String,
     subjects: Vec<String>,
     scores: Vec<i32>,
+    metadata: HashMap<String, DataValue>,
 }
 
 #[tokio::test]

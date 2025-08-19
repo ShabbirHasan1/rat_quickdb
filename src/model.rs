@@ -95,6 +95,36 @@ impl ToDataValue for Vec<i64> {
     }
 }
 
+// 为Vec<f64>提供特定的实现
+impl ToDataValue for Vec<f64> {
+    fn to_data_value(&self) -> DataValue {
+        // 将浮点数组转换为DataValue::Array
+        let data_values: Vec<DataValue> = self.iter()
+            .map(|&f| DataValue::Float(f))
+            .collect();
+        DataValue::Array(data_values)
+    }
+}
+
+// 为Vec<bool>提供特定的实现
+impl ToDataValue for Vec<bool> {
+    fn to_data_value(&self) -> DataValue {
+        // 将布尔数组转换为DataValue::Array
+        let data_values: Vec<DataValue> = self.iter()
+            .map(|&b| DataValue::Bool(b))
+            .collect();
+        DataValue::Array(data_values)
+    }
+}
+
+// 为HashMap<String, DataValue>提供特定的实现
+impl ToDataValue for HashMap<String, DataValue> {
+    fn to_data_value(&self) -> DataValue {
+        // 将字典转换为DataValue::Object
+        DataValue::Object(self.clone())
+    }
+}
+
 // 注意：不能同时有泛型和特定类型的实现，所以移除了通用的Vec<T>实现
 // 如果需要支持其他Vec类型，请添加特定的实现
 
@@ -124,19 +154,36 @@ pub enum FieldType {
         min_value: Option<i64>,
         max_value: Option<i64>,
     },
+    /// 大整数类型
+    BigInteger,
     /// 浮点数类型
     Float {
         min_value: Option<f64>,
         max_value: Option<f64>,
     },
+    /// 双精度浮点数类型
+    Double,
+    /// 文本类型
+    Text,
     /// 布尔类型
     Boolean,
     /// 日期时间类型
     DateTime,
+    /// 日期类型
+    Date,
+    /// 时间类型
+    Time,
     /// UUID类型
     Uuid,
     /// JSON类型
     Json,
+    /// 二进制类型
+    Binary,
+    /// 十进制类型
+    Decimal {
+        precision: u8,
+        scale: u8,
+    },
     /// 数组类型
     Array {
         item_type: Box<FieldType>,
@@ -458,6 +505,62 @@ impl FieldDefinition {
                     });
                 }
             }
+            FieldType::BigInteger => {
+                if !matches!(value, DataValue::Int(_)) {
+                    return Err(QuickDbError::ValidationError {
+                        field: "type_mismatch".to_string(),
+                        message: "字段类型不匹配，期望大整数类型".to_string()
+                    });
+                }
+            }
+            FieldType::Double => {
+                if !matches!(value, DataValue::Float(_)) {
+                    return Err(QuickDbError::ValidationError {
+                        field: "type_mismatch".to_string(),
+                        message: "字段类型不匹配，期望双精度浮点数类型".to_string()
+                    });
+                }
+            }
+            FieldType::Text => {
+                if !matches!(value, DataValue::String(_)) {
+                    return Err(QuickDbError::ValidationError {
+                        field: "type_mismatch".to_string(),
+                        message: "字段类型不匹配，期望文本类型".to_string()
+                    });
+                }
+            }
+            FieldType::Date => {
+                if !matches!(value, DataValue::DateTime(_)) {
+                    return Err(QuickDbError::ValidationError {
+                        field: "type_mismatch".to_string(),
+                        message: "字段类型不匹配，期望日期类型".to_string()
+                    });
+                }
+            }
+            FieldType::Time => {
+                if !matches!(value, DataValue::DateTime(_)) {
+                    return Err(QuickDbError::ValidationError {
+                        field: "type_mismatch".to_string(),
+                        message: "字段类型不匹配，期望时间类型".to_string()
+                    });
+                }
+            }
+            FieldType::Binary => {
+                if !matches!(value, DataValue::String(_)) {
+                    return Err(QuickDbError::ValidationError {
+                        field: "type_mismatch".to_string(),
+                        message: "字段类型不匹配，期望二进制数据（Base64字符串）".to_string()
+                    });
+                }
+            }
+            FieldType::Decimal { precision: _, scale: _ } => {
+                if !matches!(value, DataValue::Float(_)) {
+                    return Err(QuickDbError::ValidationError {
+                        field: "type_mismatch".to_string(),
+                        message: "字段类型不匹配，期望十进制数类型".to_string()
+                    });
+                }
+            }
         }
 
         Ok(())
@@ -565,8 +668,21 @@ pub trait Model: Serialize + for<'de> Deserialize<'de> + Send + Sync {
         // 直接将 HashMap<String, DataValue> 转换为 JsonValue，避免带类型标签的序列化
         let mut json_map = serde_json::Map::new();
         for (key, value) in data {
-            let json_value = value.to_json_value();
-            info!("🔍 字段 {} 转换: {:?} -> {:?}", key, value, json_value);
+            let json_value = match &value {
+                // 对于字符串类型的DataValue，检查是否是JSON格式
+                DataValue::String(s) => {
+                    // 尝试解析为JSON，如果失败则作为普通字符串处理
+                    if (s.starts_with('[') && s.ends_with(']')) || (s.starts_with('{') && s.ends_with('}')) {
+                        match serde_json::from_str::<serde_json::Value>(s) {
+                            Ok(parsed) => parsed,
+                            Err(_) => value.to_json_value(),
+                        }
+                    } else {
+                        value.to_json_value()
+                    }
+                },
+                _ => value.to_json_value(),
+            };
             json_map.insert(key, json_value);
         }
         let json_value = JsonValue::Object(json_map);
@@ -904,6 +1020,11 @@ pub fn uuid_field() -> FieldDefinition {
 /// 便捷函数：创建JSON字段
 pub fn json_field() -> FieldDefinition {
     FieldDefinition::new(FieldType::Json)
+}
+
+/// 便捷函数：创建字典字段（基于Object类型）
+pub fn dict_field(fields: HashMap<String, FieldDefinition>) -> FieldDefinition {
+    FieldDefinition::new(FieldType::Object { fields })
 }
 
 /// 便捷函数：创建引用字段

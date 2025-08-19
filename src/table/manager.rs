@@ -171,15 +171,69 @@ impl TableManager {
             }
         }
         
-        let connection = self.pool_manager.get_connection(Some("default")).await?;
-        let db_type = self.pool_manager.get_database_type("default")?;
-        let adapter = crate::adapter::create_adapter(&db_type)?;
+        // 获取默认连接池
+        let pools = self.pool_manager.get_connection_pools();
+        let pool = pools.get("default")
+            .ok_or_else(|| QuickDbError::ConfigError {
+                message: "无法获取默认连接池".to_string(),
+            })?
+            .clone();
         
-        // TODO: 实现 create_table 方法
-        // 这需要在 DatabaseAdapter trait 中添加 create_table 方法
-        let result = Ok(());
+        // 将TableSchema转换为HashMap<String, FieldType>
+        let mut fields = std::collections::HashMap::new();
+        for column in &schema.columns {
+            // 将ColumnType转换为FieldType
+            let field_type = match &column.column_type {
+                crate::table::schema::ColumnType::Integer => crate::model::FieldType::Integer {
+                    min_value: None,
+                    max_value: None,
+                },
+                crate::table::schema::ColumnType::BigInteger => crate::model::FieldType::BigInteger,
+                crate::table::schema::ColumnType::Float => crate::model::FieldType::Float {
+                    min_value: None,
+                    max_value: None,
+                },
+                crate::table::schema::ColumnType::Double => crate::model::FieldType::Double,
+                crate::table::schema::ColumnType::String { length } => crate::model::FieldType::String {
+                    max_length: length.map(|l| l as usize),
+                    min_length: None,
+                    regex: None,
+                },
+                crate::table::schema::ColumnType::Text => crate::model::FieldType::Text,
+                crate::table::schema::ColumnType::Boolean => crate::model::FieldType::Boolean,
+                crate::table::schema::ColumnType::DateTime => crate::model::FieldType::DateTime,
+                crate::table::schema::ColumnType::Date => crate::model::FieldType::Date,
+                crate::table::schema::ColumnType::Time => crate::model::FieldType::Time,
+                crate::table::schema::ColumnType::Json => crate::model::FieldType::Json,
+                crate::table::schema::ColumnType::Binary { length: _ } => crate::model::FieldType::Binary,
+                crate::table::schema::ColumnType::Uuid => crate::model::FieldType::Uuid,
+                crate::table::schema::ColumnType::Decimal { precision, scale } => crate::model::FieldType::Decimal {
+                    precision: *precision as u8,
+                    scale: *scale as u8,
+                },
+                crate::table::schema::ColumnType::SmallInteger => crate::model::FieldType::Integer {
+                    min_value: None,
+                    max_value: None,
+                },
+                crate::table::schema::ColumnType::LongText => crate::model::FieldType::Text,
+                crate::table::schema::ColumnType::Timestamp => crate::model::FieldType::DateTime,
+                crate::table::schema::ColumnType::Blob => crate::model::FieldType::Binary,
+                crate::table::schema::ColumnType::Enum { values: _ } => crate::model::FieldType::String {
+                    max_length: None,
+                    min_length: None,
+                    regex: None,
+                },
+                crate::table::schema::ColumnType::Custom { type_name: _ } => crate::model::FieldType::String {
+                    max_length: None,
+                    min_length: None,
+                    regex: None,
+                },
+            };
+            fields.insert(column.name.clone(), field_type);
+        }
         
-        self.pool_manager.release_connection(&connection).await?;
+        // 使用ConnectionPool的create_table方法
+        let result = pool.create_table(&schema.name, &fields).await;
         
         if result.is_ok() {
             // 更新缓存
@@ -211,15 +265,16 @@ impl TableManager {
     
     /// 删除表
     pub async fn drop_table(&self, table_name: &str) -> QuickDbResult<()> {
-        let connection = self.pool_manager.get_connection(Some("default")).await?;
-        let db_type = self.pool_manager.get_database_type("default")?;
-        let adapter = crate::adapter::create_adapter(&db_type)?;
+        // 获取默认连接池
+        let pools = self.pool_manager.get_connection_pools();
+        let pool = pools.get("default")
+            .ok_or_else(|| QuickDbError::ConfigError {
+                message: "无法获取默认连接池".to_string(),
+            })?
+            .clone();
         
-        // TODO: 实现 drop_table 方法
-        // 这需要在 DatabaseAdapter trait 中添加 drop_table 方法
-        let result = Ok(());
-        
-        self.pool_manager.release_connection(&connection).await?;
+        // 使用ConnectionPool的drop_table方法
+        let result = pool.drop_table(table_name).await;
         
         if result.is_ok() {
             // 清除缓存
@@ -237,6 +292,46 @@ impl TableManager {
         }
         
         result
+    }
+    
+    /// 删除并重建表
+    /// 
+    /// 这个方法会先删除指定的表，然后根据提供的模式重新创建表
+    /// 
+    /// # 参数
+    /// 
+    /// * `schema` - 表模式定义
+    /// * `options` - 表创建选项
+    /// 
+    /// # 返回值
+    /// 
+    /// 返回操作结果
+    pub async fn drop_and_recreate_table(
+        &self,
+        schema: &TableSchema,
+        options: Option<TableCreateOptions>,
+    ) -> QuickDbResult<()> {
+        let table_name = &schema.name;
+        
+        info!("开始删除并重建表: {}", table_name);
+        
+        // 检查表是否存在
+        let table_exists = self.check_table_exists(table_name).await?;
+        
+        // 如果表存在，先删除
+        if table_exists {
+            info!("表 {} 存在，正在删除...", table_name);
+            self.drop_table(table_name).await?;
+        } else {
+            info!("表 {} 不存在，直接创建", table_name);
+        }
+        
+        // 重新创建表
+        info!("正在重新创建表: {}", table_name);
+        self.create_table(schema, options).await?;
+        
+        info!("成功删除并重建表: {}", table_name);
+        Ok(())
     }
     
     /// 获取表模式

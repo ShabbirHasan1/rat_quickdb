@@ -2136,6 +2136,7 @@ fn rat_quickdb_py(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(array_field, m)?)?;
     m.add_function(wrap_pyfunction!(list_field, m)?)?;
     m.add_function(wrap_pyfunction!(json_field, m)?)?;
+    m.add_function(wrap_pyfunction!(dict_field, m)?)?;
     
     Ok(())
 }

@@ -110,6 +110,11 @@ pub enum DatabaseOperation {
         unique: bool,
         response: oneshot::Sender<QuickDbResult<()>>,
     },
+    /// 删除表
+    DropTable {
+        table: String,
+        response: oneshot::Sender<QuickDbResult<()>>,
+    },
 }
 
 /// 原生数据库连接枚举 - 直接持有数据库连接，不使用Arc包装
@@ -487,6 +492,10 @@ impl SqliteWorker {
                 let result = self.adapter.create_index(&self.connection, &table, &index_name, &fields, unique).await;
                 let _ = response.send(result);
             },
+            DatabaseOperation::DropTable { table, response } => {
+                let result = self.adapter.drop_table(&self.connection, &table).await;
+                let _ = response.send(result);
+            },
         }
         
         Ok(())
@@ -768,6 +777,11 @@ impl MultiConnectionManager {
             },
             DatabaseOperation::CreateIndex { table, index_name, fields, unique, response } => {
                 let result = worker.adapter.create_index(&worker.connection, &table, &index_name, &fields, unique).await;
+                let _ = response.send(result);
+                Ok(())
+            },
+            DatabaseOperation::DropTable { table, response } => {
+                let result = worker.adapter.drop_table(&worker.connection, &table).await;
                 let _ = response.send(result);
                 Ok(())
             },
@@ -1262,6 +1276,26 @@ impl ConnectionPool {
             index_name: index_name.to_string(),
             fields: fields.to_vec(),
             unique,
+            response: response_sender,
+        };
+        
+        self.operation_sender.send(operation)
+            .map_err(|_| QuickDbError::QueryError {
+                message: "发送操作失败".to_string(),
+            })?;
+        
+        response_receiver.await
+            .map_err(|_| QuickDbError::QueryError {
+                message: "接收响应失败".to_string(),
+            })?
+    }
+    
+    /// 删除表
+    pub async fn drop_table(&self, table: &str) -> QuickDbResult<()> {
+        let (response_sender, response_receiver) = oneshot::channel();
+        
+        let operation = DatabaseOperation::DropTable {
+            table: table.to_string(),
             response: response_sender,
         };
         

@@ -352,7 +352,25 @@ impl DatabaseAdapter for CachedDatabaseAdapter {
         connection: &DatabaseConnection,
         table: &str,
     ) -> QuickDbResult<bool> {
-        // 表存在性检查不缓存，直接调用内部适配器
         self.inner.table_exists(connection, table).await
+    }
+
+    /// 删除表 - 删除成功后清理所有相关缓存
+    async fn drop_table(
+        &self,
+        connection: &DatabaseConnection,
+        table: &str,
+    ) -> QuickDbResult<()> {
+        let result = self.inner.drop_table(connection, table).await;
+        
+        // 删除成功后清理所有相关缓存
+        if result.is_ok() {
+            if let Err(e) = self.cache_manager.clear_table_query_cache(table).await {
+                warn!("清理表缓存失败: {}", e);
+            }
+            debug!("已清理表缓存: table={}", table);
+        }
+        
+        result
     }
 }

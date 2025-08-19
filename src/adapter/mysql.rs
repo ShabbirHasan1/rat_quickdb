@@ -556,16 +556,29 @@ impl DatabaseAdapter for MysqlAdapter {
             
             for (name, field_type) in fields {
                 let sql_type = match field_type {
-                    FieldType::String { .. } => "TEXT",
-                    FieldType::Integer { .. } => "BIGINT",
-                    FieldType::Float { .. } => "DOUBLE",
-                    FieldType::Boolean => "BOOLEAN",
-                    FieldType::DateTime => "DATETIME",
-                    FieldType::Uuid => "VARCHAR(36)",
-                    FieldType::Json => "JSON",
-                    FieldType::Array { .. } => "JSON",
-                    FieldType::Object { .. } => "JSON",
-                    FieldType::Reference { .. } => "VARCHAR(255)",
+                    FieldType::String { max_length, .. } => {
+                        if let Some(max_len) = max_length {
+                            format!("VARCHAR({})", max_len)
+                        } else {
+                            "TEXT".to_string()
+                        }
+                    },
+                    FieldType::Integer { .. } => "INT".to_string(),
+                    FieldType::BigInteger => "BIGINT".to_string(),
+                    FieldType::Float { .. } => "FLOAT".to_string(),
+                    FieldType::Double => "DOUBLE".to_string(),
+                    FieldType::Text => "TEXT".to_string(),
+                    FieldType::Boolean => "BOOLEAN".to_string(),
+                    FieldType::DateTime => "DATETIME".to_string(),
+                    FieldType::Date => "DATE".to_string(),
+                    FieldType::Time => "TIME".to_string(),
+                    FieldType::Uuid => "VARCHAR(36)".to_string(),
+                    FieldType::Json => "JSON".to_string(),
+                    FieldType::Binary => "BLOB".to_string(),
+                    FieldType::Decimal { precision, scale } => format!("DECIMAL({},{})", precision, scale),
+                    FieldType::Array { .. } => "JSON".to_string(),
+                    FieldType::Object { .. } => "JSON".to_string(),
+                    FieldType::Reference { .. } => "VARCHAR(255)".to_string(),
                 };
                 
                 // 如果是id字段，添加主键约束
@@ -631,6 +644,27 @@ impl DatabaseAdapter for MysqlAdapter {
             let results = self.execute_query(pool, sql, &params).await?;
             
             Ok(!results.is_empty())
+        } else {
+            Err(QuickDbError::ConnectionError {
+                message: "连接类型不匹配，期望MySQL连接".to_string(),
+            })
+        }
+    }
+
+    async fn drop_table(
+        &self,
+        connection: &DatabaseConnection,
+        table: &str,
+    ) -> QuickDbResult<()> {
+        if let DatabaseConnection::MySQL(pool) = connection {
+            let sql = format!("DROP TABLE IF EXISTS {}", table);
+            
+            debug!("执行MySQL删除表SQL: {}", sql);
+            
+            self.execute_update(pool, &sql, &[]).await?;
+            
+            info!("成功删除MySQL表: {}", table);
+            Ok(())
         } else {
             Err(QuickDbError::ConnectionError {
                 message: "连接类型不匹配，期望MySQL连接".to_string(),

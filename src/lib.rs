@@ -41,7 +41,7 @@ pub use odm::{AsyncOdmManager, OdmOperations, get_odm_manager, get_odm_manager_m
 pub use model::{
     Model, ModelOperations, ModelManager, FieldType, FieldDefinition, ModelMeta, IndexDefinition,
     array_field, list_field, string_field, integer_field, float_field, boolean_field,
-    datetime_field, uuid_field, json_field, reference_field
+    datetime_field, uuid_field, json_field, dict_field, reference_field
 };
 pub use serializer::{DataSerializer, SerializerConfig, OutputFormat, SerializationResult};
 pub use adapter::{DatabaseAdapter, create_adapter};

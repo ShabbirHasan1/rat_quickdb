@@ -136,6 +136,13 @@ pub trait DatabaseAdapter: Send + Sync {
         connection: &DatabaseConnection,
         table: &str,
     ) -> QuickDbResult<bool>;
+
+    /// 删除表/集合
+    async fn drop_table(
+        &self,
+        connection: &DatabaseConnection,
+        table: &str,
+    ) -> QuickDbResult<()>;
 }
 
 /// 根据数据库类型创建适配器
