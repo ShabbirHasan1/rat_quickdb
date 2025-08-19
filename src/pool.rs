@@ -349,6 +349,17 @@ impl SqliteWorker {
             }),
         };
         
+        // 特殊处理内存数据库：直接连接，不创建文件
+        if path == ":memory:" {
+            info!("连接SQLite内存数据库: 别名={}", self.db_config.alias);
+            let pool = sqlx::SqlitePool::connect(&path)
+                .await
+                .map_err(|e| QuickDbError::ConnectionError {
+                    message: format!("SQLite内存数据库连接失败: {}", e),
+                })?;
+            return Ok(DatabaseConnection::SQLite(pool));
+        }
+        
         // 检查数据库文件是否存在
         let file_exists = std::path::Path::new(&path).exists();
         
@@ -923,6 +934,17 @@ impl ConnectionPool {
                 message: "SQLite连接配置类型不匹配".to_string(),
             }),
         };
+        
+        // 特殊处理内存数据库：直接连接，不创建文件
+        if path == ":memory:" {
+            info!("连接SQLite内存数据库: 别名={}", self.db_config.alias);
+            let pool = sqlx::SqlitePool::connect(&path)
+                .await
+                .map_err(|e| QuickDbError::ConnectionError {
+                    message: format!("SQLite内存数据库连接失败: {}", e),
+                })?;
+            return Ok(DatabaseConnection::SQLite(pool));
+        }
         
         // 检查数据库文件是否存在
         let file_exists = std::path::Path::new(&path).exists();
