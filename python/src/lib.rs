@@ -145,6 +145,8 @@ pub struct PyL2CacheConfig {
     pub compression_level: i32,
     #[pyo3(get, set)]
     pub enable_wal: bool,
+    #[pyo3(get, set)]
+    pub clear_on_startup: bool,
 }
 
 /// TTL配置
@@ -307,6 +309,7 @@ impl PyCacheConfig {
                 max_disk_mb: l2_config.max_disk_mb,
                 compression_level: l2_config.compression_level,
                 enable_wal: l2_config.enable_wal,
+                clear_on_startup: l2_config.clear_on_startup,
             })
         } else {
             None
@@ -360,6 +363,7 @@ impl PyL2CacheConfig {
             max_disk_mb: 1000,
             compression_level: 3,
             enable_wal: true,
+            clear_on_startup: false,
         }
     }
 }

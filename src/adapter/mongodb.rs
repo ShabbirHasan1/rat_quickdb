@@ -59,11 +59,55 @@ impl MongoAdapter {
 
     /// 将BSON文档转换为JSON值
     fn document_to_json(&self, doc: &Document) -> QuickDbResult<Value> {
-        let json_str = doc.to_string();
-        serde_json::from_str(&json_str)
-            .map_err(|e| QuickDbError::QueryError {
-                message: format!("转换BSON文档为JSON失败: {}", e),
-            })
+        // 手动转换BSON文档为JSON，正确处理ObjectId
+        let mut json_map = serde_json::Map::new();
+        
+        for (key, value) in doc {
+            let json_value = self.bson_to_json_value(value)?;
+            json_map.insert(key.clone(), json_value);
+        }
+        
+        Ok(Value::Object(json_map))
+    }
+    
+    /// 将BSON值转换为JSON值，正确处理ObjectId
+    fn bson_to_json_value(&self, bson: &Bson) -> QuickDbResult<Value> {
+        match bson {
+            Bson::ObjectId(oid) => Ok(Value::String(oid.to_hex())),
+            Bson::String(s) => Ok(Value::String(s.clone())),
+            Bson::Int32(i) => Ok(Value::Number(serde_json::Number::from(*i))),
+            Bson::Int64(i) => Ok(Value::Number(serde_json::Number::from(*i))),
+            Bson::Double(f) => {
+                if let Some(num) = serde_json::Number::from_f64(*f) {
+                    Ok(Value::Number(num))
+                } else {
+                    Ok(Value::Null)
+                }
+            },
+            Bson::Boolean(b) => Ok(Value::Bool(*b)),
+            Bson::Null => Ok(Value::Null),
+            Bson::Array(arr) => {
+                let mut json_arr = Vec::new();
+                for item in arr {
+                    json_arr.push(self.bson_to_json_value(item)?);
+                }
+                Ok(Value::Array(json_arr))
+            },
+            Bson::Document(doc) => {
+                let mut json_map = serde_json::Map::new();
+                for (key, value) in doc {
+                    json_map.insert(key.clone(), self.bson_to_json_value(value)?);
+                }
+                Ok(Value::Object(json_map))
+            },
+            Bson::DateTime(dt) => Ok(Value::String(dt.to_string())),
+            Bson::Binary(bin) => Ok(Value::String(base64::encode(&bin.bytes))),
+            Bson::Decimal128(dec) => Ok(Value::String(dec.to_string())),
+            _ => {
+                // 对于其他BSON类型，转换为字符串
+                Ok(Value::String(bson.to_string()))
+            }
+        }
     }
 
     /// 构建MongoDB查询文档

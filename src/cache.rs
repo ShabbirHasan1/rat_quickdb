@@ -138,6 +138,7 @@ impl CacheManager {
                 enable_compression: config.compression_config.enabled,
                 compression_level: config.l2_config.as_ref().map(|c| c.compression_level).unwrap_or(6),
                 background_threads: 2,
+                clear_on_startup: false,
             })
             .compression_config(rat_memcache::config::CompressionConfig {
                 enable_lz4: config.compression_config.enabled,
@@ -330,19 +331,9 @@ impl CacheManager {
         let start_time = Instant::now();
         let key = self.generate_cache_key(table, id, "record");
         
-        // 优化：使用更高效的序列化方式
-        let serialized = match data {
-            DataValue::Json(json_val) => {
-                // 对于JSON值，直接序列化JSON而不是DataValue包装
-                serde_json::to_vec(json_val)
-                    .map_err(|e| anyhow!("Failed to serialize JSON data: {}", e))?
-            }
-            _ => {
-                // 其他类型使用标准序列化
-                serde_json::to_vec(data)
-                    .map_err(|e| anyhow!("Failed to serialize data: {}", e))?
-            }
-        };
+        // 统一序列化方式：始终序列化DataValue包装，确保存储和读取格式一致
+        let serialized = serde_json::to_vec(data)
+            .map_err(|e| anyhow!("Failed to serialize data: {}", e))?;
 
         let options = CacheOptions {
             ttl_seconds: Some(self.config.ttl_config.default_ttl_secs),

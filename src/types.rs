@@ -583,6 +583,8 @@ pub struct L2CacheConfig {
     pub compression_level: i32,
     /// 是否启用 WAL
     pub enable_wal: bool,
+    /// 启动时清空缓存目录
+    pub clear_on_startup: bool,
 }
 
 /// TTL 配置
@@ -756,6 +758,7 @@ impl L2CacheConfig {
             max_disk_mb: 1000,
             compression_level: 3,
             enable_wal: true,
+            clear_on_startup: false,
         }
     }
 
@@ -774,6 +777,12 @@ impl L2CacheConfig {
     /// 启用 WAL
     pub fn enable_wal(mut self, enable: bool) -> Self {
         self.enable_wal = enable;
+        self
+    }
+
+    /// 设置启动时清空缓存目录
+    pub fn clear_on_startup(mut self, clear: bool) -> Self {
+        self.clear_on_startup = clear;
         self
     }
 }
