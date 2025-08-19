@@ -35,7 +35,7 @@ struct User {
 #[tokio::main]
 async fn main() -> QuickDbResult<()> {
     // 初始化日志
-    env_logger::init();
+    zerg_creep::init_logger();
     
     println!("=== ID生成器和缓存功能演示 ===");
     

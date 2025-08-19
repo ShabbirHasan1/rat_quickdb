@@ -111,6 +111,7 @@ class MongoDbMultiConditionQueryDemo(GracefulShutdownMixin):
         l2_config.max_disk_mb = 300  # 最大磁盘300MB
         l2_config.compression_level = 6
         l2_config.enable_wal = True
+        l2_config.clear_on_startup = False  # 启动时不清空缓存目录
         cache_config.l2_config = l2_config
         
         # TTL配置

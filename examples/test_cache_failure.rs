@@ -73,6 +73,7 @@ async fn test_invalid_cache_path() -> QuickDbResult<()> {
                 max_disk_mb: 500,
                 compression_level: 6,
                 enable_wal: true,
+                clear_on_startup: false,
             }),
             ttl_config: TtlConfig {
                 default_ttl_secs: 300,
@@ -143,6 +144,7 @@ async fn test_uncreatable_cache_path() -> QuickDbResult<()> {
                 max_disk_mb: 500,
                 compression_level: 6,
                 enable_wal: true,
+                clear_on_startup: false,
             }),
             ttl_config: TtlConfig {
                 default_ttl_secs: 300,

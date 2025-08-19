@@ -238,17 +238,18 @@ class MongoDbCachePerformanceTest(GracefulShutdownMixin):
         cache_config.enable()
         cache_config.strategy = "lru"
         
-        # L1缓存配置 - 进一步增加容量以提高命中率
-        l1_config = PyL1CacheConfig(10000)  # 进一步增加到10000条记录
-        l1_config.max_memory_mb = 1000  # 进一步增加到1000MB内存
+        # L1缓存配置 - 适配系统内存限制
+        l1_config = PyL1CacheConfig(5000)  # 5000条记录
+        l1_config.max_memory_mb = 100  # 100MB内存，适配系统限制
         l1_config.enable_stats = False  # 禁用统计以减少开销
         cache_config.l1_config = l1_config
         
-        # L2缓存配置 - 进一步增加磁盘容量并禁用所有开销功能
+        # L2缓存配置 - 合理的磁盘容量配置
         l2_config = PyL2CacheConfig(f"{self.test_data_dir}/mongodb_cache_test")
-        l2_config.max_disk_mb = 4000  # 进一步增加到4GB磁盘空间
+        l2_config.max_disk_mb = 1000  # 1GB磁盘空间
         l2_config.compression_level = 1  # 最低压缩级别以最大化性能
         l2_config.enable_wal = False  # 禁用WAL以减少磁盘I/O开销
+        l2_config.clear_on_startup = False  # 启动时不清空缓存目录
         # 注意：L2缓存可能不支持禁用统计功能
         cache_config.l2_config = l2_config
         
@@ -264,7 +265,7 @@ class MongoDbCachePerformanceTest(GracefulShutdownMixin):
         compression_config.threshold_bytes = 1024
         cache_config.compression_config = compression_config
         
-        print("  📊 缓存配置: L1(10000条/1000MB) + L2(4GB) + TTL(1小时) + 零开销优化")
+        print("  📊 缓存配置: L1(5000条/100MB) + L2(1GB) + TTL(1小时) + 零开销优化")
         return cache_config
     
     def _add_cached_mongodb_database(self):

@@ -361,11 +361,16 @@ async fn demonstrate_multi_database_config() -> Result<(), QuickDbError> {
     let log_db = DatabaseConfigBuilder::new()
         .db_type(DatabaseType::MongoDB)
         .connection(ConnectionConfig::MongoDB {
-            uri: "mongodb://localhost:27017".to_string(),
+            host: "localhost".to_string(),
+            port: 27017,
             database: "logs".to_string(),
+            username: None,
+            password: None,
             auth_source: None,
+            direct_connection: false,
             tls_config: None,
             zstd_config: None,
+            options: None,
         })
         .pool(
             PoolConfigBuilder::new()
@@ -467,8 +472,11 @@ async fn demonstrate_convenience_functions() -> Result<(), QuickDbError> {
     // 使用便捷函数创建MongoDB配置
     let mongodb_config = mongodb_config(
         "convenience_mongodb",
-        "mongodb://localhost:27017",
+        "localhost",
+        27017,
         "testdb",
+        None::<&str>,
+        None::<&str>,
         pool_config,
     )?;
     info!("MongoDB配置: 别名={}, 类型={:?}", mongodb_config.alias, mongodb_config.db_type);

@@ -155,6 +155,7 @@ class MongoDbCacheSimpleTest:
         l2_config.max_disk_mb = 2000
         l2_config.compression_level = 1
         l2_config.enable_wal = False
+        l2_config.clear_on_startup = False  # 启动时不清空缓存目录
         cache_config.l2_config = l2_config
         
         # TTL配置

@@ -13,7 +13,7 @@ use std::time::Duration;
 #[tokio::main]
 async fn main() -> Result<(), QuickDbError> {
     // 初始化日志
-    env_logger::init();
+    zerg_creep::init_logger();
 
     println!("MongoDB 连接配置示例");
     println!("====================");

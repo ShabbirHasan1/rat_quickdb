@@ -49,6 +49,7 @@ async fn main() -> QuickDbResult<()> {
                 max_disk_mb: 100,
                 compression_level: 3,
                 enable_wal: true,
+                clear_on_startup: false,
             }),
             ttl_config: TtlConfig {
                 default_ttl_secs: 300,
