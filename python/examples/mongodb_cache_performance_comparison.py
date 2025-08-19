@@ -113,7 +113,7 @@ class TestUser:
     def to_json(self) -> str:
         """转换为JSON字符串"""
         return json.dumps({
-            "_id": self.id,  # MongoDB使用_id作为主键
+            "id": self.id,  # 统一使用id字段，ODM自动处理MongoDB的_id映射
             "name": self.name,
             "email": self.email,
             "age": self.age,

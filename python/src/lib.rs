@@ -29,7 +29,7 @@ use model_bindings::*;
 /// 获取版本信息
 #[pyfunction]
 fn get_version() -> String {
-    "0.1.1".to_string()
+    env!("CARGO_PKG_VERSION").to_string()
 }
 
 /// 获取库信息

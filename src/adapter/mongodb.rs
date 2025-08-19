@@ -64,7 +64,12 @@ impl MongoAdapter {
         
         for (key, value) in doc {
             let json_value = self.bson_to_json_value(value)?;
-            json_map.insert(key.clone(), json_value);
+            // 将MongoDB的_id字段转换为统一的id字段，体现ODM优势
+            if key == "_id" {
+                json_map.insert("id".to_string(), json_value);
+            } else {
+                json_map.insert(key.clone(), json_value);
+            }
         }
         
         Ok(Value::Object(json_map))
@@ -115,7 +120,7 @@ impl MongoAdapter {
         let mut query_doc = Document::new();
         
         for condition in conditions {
-            let field_name = &condition.field;
+            let field_name = self.map_field_name(&condition.field);
             let bson_value = self.data_value_to_bson(&condition.value);
             
             match condition.operator {
@@ -264,7 +269,9 @@ impl MongoAdapter {
         let mut update_doc = Document::new();
         let mut set_doc = Document::new();
         
-        for (key, value) in data {
+        // 映射字段名（id -> _id）
+        let mapped_data = self.map_data_fields(data);
+        for (key, value) in &mapped_data {
             if key != "_id" { // MongoDB的_id字段不能更新
                 set_doc.insert(key, self.data_value_to_bson(value));
             }
@@ -280,6 +287,25 @@ impl MongoAdapter {
     /// 获取集合引用
     fn get_collection(&self, db: &mongodb::Database, table: &str) -> Collection<Document> {
         db.collection::<Document>(table)
+    }
+    
+    /// 将用户字段名映射到MongoDB字段名（id -> _id）
+    fn map_field_name(&self, field_name: &str) -> String {
+        if field_name == "id" {
+            "_id".to_string()
+        } else {
+            field_name.to_string()
+        }
+    }
+    
+    /// 将数据映射中的id字段转换为_id字段
+    fn map_data_fields(&self, data: &HashMap<String, DataValue>) -> HashMap<String, DataValue> {
+        let mut mapped_data = HashMap::new();
+        for (key, value) in data {
+            let mapped_key = self.map_field_name(key);
+            mapped_data.insert(mapped_key, value.clone());
+        }
+        mapped_data
     }
 }
 
@@ -320,8 +346,10 @@ impl DatabaseAdapter for MongoAdapter {
             
             let collection = self.get_collection(db, table);
             
+            // 映射字段名（id -> _id）
+            let mapped_data = self.map_data_fields(data);
             let mut doc = Document::new();
-            for (key, value) in data {
+            for (key, value) in &mapped_data {
                 doc.insert(key, self.data_value_to_bson(value));
             }
             
@@ -334,7 +362,7 @@ impl DatabaseAdapter for MongoAdapter {
                 })?;
             
             Ok(serde_json::json!({
-                "_id": result.inserted_id.to_string()
+                "id": result.inserted_id.to_string()
             }))
         } else {
             Err(QuickDbError::ConnectionError {
