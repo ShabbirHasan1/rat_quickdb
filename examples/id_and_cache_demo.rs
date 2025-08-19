@@ -9,7 +9,7 @@ use rat_quickdb::{
     manager::{add_database, get_connection, get_id_generator, get_mongo_auto_increment_generator},
     types::{
         DatabaseConfig, ConnectionConfig, IdStrategy, IdType, DataValue, QueryOptions, PaginationConfig,
-        QueryCondition, QueryOperator,
+        QueryCondition, QueryOperator, DatabaseType, PoolConfig,
     },
     QuickDbResult,
 };
@@ -49,7 +49,6 @@ async fn main() -> QuickDbResult<()> {
     demonstrate_mongodb_auto_increment().await?;
     
     // 演示缓存功能
-    #[cfg(feature = "cache")]
     demonstrate_cache_functionality().await?;
     
     println!("\n=== 演示完成 ===");
@@ -61,11 +60,22 @@ async fn demonstrate_uuid_id_strategy() -> QuickDbResult<()> {
     println!("\n--- UUID ID策略演示 ---");
     
     // 配置使用UUID的数据库
+    let pool_config = rat_quickdb::types::PoolConfig::builder()
+        .max_connections(5)
+        .min_connections(1)
+        .connection_timeout(30)
+        .idle_timeout(600)
+        .max_lifetime(3600)
+        .build()?;
+        
     let config = DatabaseConfig::builder()
+        .db_type(rat_quickdb::types::DatabaseType::SQLite)
         .connection(ConnectionConfig::SQLite {
             path: ":memory:".to_string(),
             create_if_missing: true,
         })
+        .pool(pool_config)
+        .alias("uuid_db")
         .id_strategy(IdStrategy::Uuid)
         .build()?;
     
@@ -90,16 +100,26 @@ async fn demonstrate_uuid_id_strategy() -> QuickDbResult<()> {
 }
 
 /// 演示雪花算法ID策略
-#[cfg(feature = "snowflake-id")]
 async fn demonstrate_snowflake_id_strategy() -> QuickDbResult<()> {
     println!("\n--- 雪花算法ID策略演示 ---");
     
     // 配置使用雪花算法的数据库
+    let pool_config = rat_quickdb::types::PoolConfig::builder()
+        .max_connections(5)
+        .min_connections(1)
+        .connection_timeout(30)
+        .idle_timeout(600)
+        .max_lifetime(3600)
+        .build()?;
+        
     let config = DatabaseConfig::builder()
+        .db_type(rat_quickdb::types::DatabaseType::SQLite)
         .connection(ConnectionConfig::SQLite {
             path: ":memory:".to_string(),
             create_if_missing: true,
         })
+        .pool(pool_config)
+        .alias("snowflake_db")
         .id_strategy(IdStrategy::Snowflake { machine_id: 1, datacenter_id: 1 }) // 机器ID=1, 数据中心ID=1
         .build()?;
     
@@ -123,54 +143,66 @@ async fn demonstrate_snowflake_id_strategy() -> QuickDbResult<()> {
     Ok(())
 }
 
-#[cfg(not(feature = "snowflake-id"))]
-async fn demonstrate_snowflake_id_strategy() -> QuickDbResult<()> {
-    println!("\n--- 雪花算法ID策略演示 ---");
-    println!("注意: snowflake-id 特性未启用，跳过雪花算法演示");
-    Ok(())
-}
-
 /// 演示MongoDB自增ID
-#[cfg(feature = "mongodb")]
 async fn demonstrate_mongodb_auto_increment() -> QuickDbResult<()> {
     println!("\n--- MongoDB自增ID演示 ---");
     
+    // 注意：此演示需要本地运行 MongoDB 服务
+    // 如果 MongoDB 服务未运行，将显示连接错误但不会影响其他功能
+    println!("注意: 此演示需要本地 MongoDB 服务运行在 localhost:27017");
+    
     // 配置MongoDB数据库
+    let pool_config = rat_quickdb::types::PoolConfig::builder()
+        .max_connections(10)
+        .min_connections(1)
+        .connection_timeout(30)
+        .idle_timeout(600)
+        .max_lifetime(3600)
+        .build()?;
+        
     let config = DatabaseConfig::builder()
+        .db_type(rat_quickdb::types::DatabaseType::MongoDB)
         .connection(ConnectionConfig::MongoDB {
-            connection_string: "mongodb://localhost:27017".to_string(),
-            database_name: "test_db".to_string(),
-            max_pool_size: Some(10),
-            min_pool_size: Some(1),
-            max_idle_time: None,
+            host: "localhost".to_string(),
+            port: 27017,
+            database: "test_db".to_string(),
+            username: None,
+            password: None,
+            auth_source: None,
+            direct_connection: false,
             tls_config: None,
             zstd_config: None,
+            options: None,
         })
+        .pool(pool_config)
+        .alias("mongo_db")
         .id_strategy(IdStrategy::AutoIncrement)
         .build()?;
     
-    add_database(config).await?;
-    
-    // 获取MongoDB自增ID生成器
-    let mongo_generator = get_mongo_auto_increment_generator("mongo_db")?;
-    
-    for i in 1..=5 {
-        let id = mongo_generator.next_id("users").await?;
-        println!("生成的MongoDB自增ID {}: {}", i, id);
+    // 尝试连接 MongoDB，如果失败则跳过演示
+    match add_database(config).await {
+        Ok(_) => {
+            println!("✓ MongoDB 连接成功");
+            
+            // 获取MongoDB自增ID生成器
+            let mongo_generator = get_mongo_auto_increment_generator("mongo_db")?;
+            
+            for i in 1..=5 {
+                let id = mongo_generator.next_id().await?;
+                println!("生成的MongoDB自增ID {}: {}", i, id);
+            }
+            
+            // 重置计数器演示
+            mongo_generator.set_start_value(100);
+            let reset_id = mongo_generator.next_id().await?;
+            println!("重置计数器后的ID: {}", reset_id);
+        }
+        Err(e) => {
+            println!("⚠️ MongoDB 连接失败，跳过演示: {}", e);
+            println!("   请确保 MongoDB 服务正在运行: mongod --dbpath /path/to/data");
+        }
     }
     
-    // 重置计数器演示
-    mongo_generator.reset_counter("users", 100).await?;
-    let reset_id = mongo_generator.next_id("users").await?;
-    println!("重置计数器后的ID: {}", reset_id);
-    
-    Ok(())
-}
-
-#[cfg(not(feature = "mongodb"))]
-async fn demonstrate_mongodb_auto_increment() -> QuickDbResult<()> {
-    println!("\n--- MongoDB自增ID演示 ---");
-    println!("注意: mongodb 特性未启用，跳过MongoDB自增ID演示");
     Ok(())
 }
 
@@ -200,11 +232,22 @@ async fn demonstrate_cache_functionality() -> QuickDbResult<()> {
         },
     };
     
+    let pool_config = PoolConfig {
+        min_connections: 1,
+        max_connections: 5,
+        connection_timeout: 30,
+        idle_timeout: 300,
+        max_lifetime: 1800,
+    };
+
     let config = DatabaseConfig::builder()
+        .db_type(DatabaseType::SQLite)
         .connection(ConnectionConfig::SQLite {
             path: ":memory:".to_string(),
             create_if_missing: true,
         })
+        .pool(pool_config)
+        .alias("cache_db")
         .id_strategy(IdStrategy::Uuid)
         .cache(cache_config)
         .build()?;
