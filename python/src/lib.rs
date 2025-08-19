@@ -849,6 +849,7 @@ impl PyDbQueueBridge {
         connection_timeout: Option<u64>,
         idle_timeout: Option<u64>,
         max_lifetime: Option<u64>,
+        cache_config: Option<PyCacheConfig>,
     ) -> PyResult<String> {
         info!("添加PostgreSQL数据库: alias={}, host={}, port={}, database={}", alias, host, port, database);
         
@@ -867,7 +868,7 @@ impl PyDbQueueBridge {
                 }
             };
         
-        let db_config = match DatabaseConfigBuilder::new()
+        let mut db_config_builder = DatabaseConfigBuilder::new()
             .db_type(DatabaseType::PostgreSQL)
             .connection(ConnectionConfig::PostgreSQL { 
                 host: host.clone(),
@@ -880,8 +881,14 @@ impl PyDbQueueBridge {
             })
             .pool(pool_config)
             .alias(alias.clone())
-            .id_strategy(IdStrategy::Uuid)
-            .build() {
+            .id_strategy(IdStrategy::Uuid);
+        
+        // 添加缓存配置
+        if let Some(cache_config) = cache_config {
+            db_config_builder = db_config_builder.cache(cache_config.to_rust_config());
+        }
+        
+        let db_config = match db_config_builder.build() {
                 Ok(config) => config,
                 Err(e) => {
                     return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
@@ -940,6 +947,7 @@ impl PyDbQueueBridge {
         connection_timeout: Option<u64>,
         idle_timeout: Option<u64>,
         max_lifetime: Option<u64>,
+        cache_config: Option<PyCacheConfig>,
     ) -> PyResult<String> {
         info!("添加MySQL数据库: alias={}, host={}, port={}, database={}", alias, host, port, database);
         
@@ -958,7 +966,7 @@ impl PyDbQueueBridge {
                 }
             };
         
-        let db_config = match DatabaseConfigBuilder::new()
+        let mut db_config_builder = DatabaseConfigBuilder::new()
             .db_type(DatabaseType::MySQL)
             .connection(ConnectionConfig::MySQL { 
                 host: host.clone(),
@@ -971,8 +979,14 @@ impl PyDbQueueBridge {
             })
             .pool(pool_config)
             .alias(alias.clone())
-            .id_strategy(IdStrategy::Uuid)
-            .build() {
+            .id_strategy(IdStrategy::Uuid);
+        
+        // 添加缓存配置
+         if let Some(cache_config) = cache_config {
+             db_config_builder = db_config_builder.cache(cache_config.to_rust_config());
+         }
+        
+        let db_config = match db_config_builder.build() {
                 Ok(config) => config,
                 Err(e) => {
                     return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
