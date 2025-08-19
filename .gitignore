@@ -7,3 +7,4 @@
 /python/Cargo.lock
 /**/*.db
 /**/*.so
+/python/debug_cache
