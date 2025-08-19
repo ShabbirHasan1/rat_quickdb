@@ -20,47 +20,45 @@ pub struct SqliteAdapter;
 
 impl SqliteAdapter {
 
-    /// 将sqlx的行转换为JSON值
-    fn row_to_json(&self, row: &SqliteRow) -> QuickDbResult<Value> {
-        let mut map = serde_json::Map::new();
+    /// 将sqlx的行转换为DataValue映射
+    fn row_to_data_map(&self, row: &SqliteRow) -> QuickDbResult<HashMap<String, DataValue>> {
+        let mut map = HashMap::new();
         
         for column in row.columns() {
             let column_name = column.name();
             
             // 尝试获取不同类型的值
-            let json_value = if let Ok(value) = row.try_get::<Option<String>, _>(column_name) {
-                match value {
-                    Some(s) => Value::String(s),
-                    None => Value::Null,
-                }
+            let data_value = if let Ok(value) = row.try_get::<Option<String>, _>(column_name) {
+                // 使用通用的JSON字符串检测和反序列化方法
+                crate::types::parse_optional_json_string_to_data_value(value)
             } else if let Ok(value) = row.try_get::<Option<i64>, _>(column_name) {
                 match value {
-                    Some(i) => Value::Number(i.into()),
-                    None => Value::Null,
+                    Some(i) => DataValue::Int(i),
+                    None => DataValue::Null,
                 }
             } else if let Ok(value) = row.try_get::<Option<f64>, _>(column_name) {
                 match value {
-                    Some(f) => Value::Number(serde_json::Number::from_f64(f).unwrap_or_else(|| 0.into())),
-                    None => Value::Null,
+                    Some(f) => DataValue::Float(f),
+                    None => DataValue::Null,
                 }
             } else if let Ok(value) = row.try_get::<Option<bool>, _>(column_name) {
                 match value {
-                    Some(b) => Value::Bool(b),
-                    None => Value::Null,
+                    Some(b) => DataValue::Bool(b),
+                    None => DataValue::Null,
                 }
             } else if let Ok(value) = row.try_get::<Option<Vec<u8>>, _>(column_name) {
                 match value {
-                    Some(bytes) => Value::String(base64::encode(bytes)),
-                    None => Value::Null,
+                    Some(bytes) => DataValue::Bytes(bytes),
+                    None => DataValue::Null,
                 }
             } else {
-                Value::Null
+                DataValue::Null
             };
             
-            map.insert(column_name.to_string(), json_value);
+            map.insert(column_name.to_string(), data_value);
         }
         
-        Ok(Value::Object(map))
+        Ok(map)
     }
 }
 
@@ -71,7 +69,7 @@ impl DatabaseAdapter for SqliteAdapter {
         connection: &DatabaseConnection,
         table: &str,
         data: &HashMap<String, DataValue>,
-    ) -> QuickDbResult<Value> {
+    ) -> QuickDbResult<DataValue> {
         let pool = match connection {
             DatabaseConnection::SQLite(pool) => pool,
             _ => return Err(QuickDbError::ConnectionError {
@@ -122,12 +120,12 @@ impl DatabaseAdapter for SqliteAdapter {
                     DataValue::DateTime(dt) => { query = query.bind(dt.to_rfc3339()); },
                     DataValue::Uuid(uuid) => { query = query.bind(uuid.to_string()); },
                     DataValue::Json(json) => { query = query.bind(json.to_string()); },
-                    DataValue::Array(arr) => {
-                        let json = serde_json::to_string(arr).unwrap_or_default();
+                    DataValue::Array(_) => {
+                        let json = param.to_json_value().to_string();
                         query = query.bind(json);
                     },
-                    DataValue::Object(obj) => {
-                        let json = serde_json::to_string(obj).unwrap_or_default();
+                    DataValue::Object(_) => {
+                        let json = param.to_json_value().to_string();
                         query = query.bind(json);
                     },
                     DataValue::Null => { query = query.bind(Option::<String>::None); },
@@ -139,10 +137,18 @@ impl DatabaseAdapter for SqliteAdapter {
                     message: format!("执行SQLite插入失败: {}", e),
                 })?;
             
-            Ok(serde_json::json!({
-                "id": result.last_insert_rowid(),
-                "affected_rows": result.rows_affected()
-            }))
+            // 对于AutoIncrement策略，直接返回自增ID
+            // 注意：这里假设使用AutoIncrement策略，后续需要根据实际策略配置调整
+            let id = result.last_insert_rowid();
+            if id > 0 {
+                Ok(DataValue::Int(id))
+            } else {
+                // 如果没有自增ID，返回包含详细信息的对象
+                let mut result_map = HashMap::new();
+                result_map.insert("id".to_string(), DataValue::Int(id));
+                result_map.insert("affected_rows".to_string(), DataValue::Int(result.rows_affected() as i64));
+                Ok(DataValue::Object(result_map))
+            }
     }
 
     async fn find_by_id(
@@ -150,7 +156,7 @@ impl DatabaseAdapter for SqliteAdapter {
         connection: &DatabaseConnection,
         table: &str,
         id: &DataValue,
-    ) -> QuickDbResult<Option<Value>> {
+    ) -> QuickDbResult<Option<DataValue>> {
         let pool = match connection {
             DatabaseConnection::SQLite(pool) => pool,
             _ => return Err(QuickDbError::ConnectionError {
@@ -173,7 +179,10 @@ impl DatabaseAdapter for SqliteAdapter {
                 })?;
             
             match row {
-                Some(r) => Ok(Some(self.row_to_json(&r)?)),
+                Some(r) => {
+                    let data_map = self.row_to_data_map(&r)?;
+                    Ok(Some(DataValue::Object(data_map)))
+                },
                 None => Ok(None),
             }
         }
@@ -185,7 +194,7 @@ impl DatabaseAdapter for SqliteAdapter {
         table: &str,
         conditions: &[QueryCondition],
         options: &QueryOptions,
-    ) -> QuickDbResult<Vec<Value>> {
+    ) -> QuickDbResult<Vec<DataValue>> {
         let pool = match connection {
             DatabaseConnection::SQLite(pool) => pool,
             _ => return Err(QuickDbError::ConnectionError {
@@ -219,7 +228,8 @@ impl DatabaseAdapter for SqliteAdapter {
             
             let mut results = Vec::new();
             for row in rows {
-                results.push(self.row_to_json(&row)?);
+                let data_map = self.row_to_data_map(&row)?;
+                results.push(DataValue::Object(data_map));
             }
             
             Ok(results)
@@ -232,7 +242,7 @@ impl DatabaseAdapter for SqliteAdapter {
         table: &str,
         condition_groups: &[QueryConditionGroup],
         options: &QueryOptions,
-    ) -> QuickDbResult<Vec<Value>> {
+    ) -> QuickDbResult<Vec<DataValue>> {
         let pool = match connection {
             DatabaseConnection::SQLite(pool) => pool,
             _ => return Err(QuickDbError::ConnectionError {
@@ -269,7 +279,8 @@ impl DatabaseAdapter for SqliteAdapter {
             
             let mut results = Vec::new();
             for row in rows {
-                results.push(self.row_to_json(&row)?);
+                let data_map = self.row_to_data_map(&row)?;
+                results.push(DataValue::Object(data_map));
             }
             
             Ok(results)

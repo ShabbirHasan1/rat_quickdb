@@ -21,94 +21,129 @@ pub struct PostgresAdapter;
 impl PostgresAdapter {
 
 
-    /// 将PostgreSQL行转换为JSON值
-    fn row_to_json(&self, row: &sqlx::postgres::PgRow) -> QuickDbResult<Value> {
-        let mut map = serde_json::Map::new();
+    /// 将PostgreSQL行转换为DataValue映射
+    fn row_to_data_map(&self, row: &sqlx::postgres::PgRow) -> QuickDbResult<HashMap<String, DataValue>> {
+        let mut map = HashMap::new();
         
         for column in row.columns() {
             let column_name = column.name();
             
             // 根据PostgreSQL类型转换值
-            let json_value = match column.type_info().name() {
+            let data_value = match column.type_info().name() {
                 "INT4" | "INT8" => {
                     if let Ok(val) = row.try_get::<Option<i32>, _>(column_name) {
-                        val.map(|v| Value::Number(serde_json::Number::from(v))).unwrap_or(Value::Null)
+                        match val {
+                            Some(i) => DataValue::Int(i as i64),
+                            None => DataValue::Null,
+                        }
                     } else if let Ok(val) = row.try_get::<Option<i64>, _>(column_name) {
-                        val.map(|v| Value::Number(serde_json::Number::from(v))).unwrap_or(Value::Null)
+                        match val {
+                            Some(i) => DataValue::Int(i),
+                            None => DataValue::Null,
+                        }
                     } else {
-                        Value::Null
+                        DataValue::Null
                     }
                 },
                 "FLOAT4" | "FLOAT8" => {
                     if let Ok(val) = row.try_get::<Option<f32>, _>(column_name) {
-                        val.map(|v| {
-                            if let Some(num) = serde_json::Number::from_f64(v as f64) {
-                                Value::Number(num)
-                            } else {
-                                Value::Null
-                            }
-                        }).unwrap_or(Value::Null)
+                        match val {
+                            Some(f) => DataValue::Float(f as f64),
+                            None => DataValue::Null,
+                        }
                     } else if let Ok(val) = row.try_get::<Option<f64>, _>(column_name) {
-                        val.map(|v| {
-                            if let Some(num) = serde_json::Number::from_f64(v) {
-                                Value::Number(num)
-                            } else {
-                                Value::Null
-                            }
-                        }).unwrap_or(Value::Null)
+                        match val {
+                            Some(f) => DataValue::Float(f),
+                            None => DataValue::Null,
+                        }
                     } else {
-                        Value::Null
+                        DataValue::Null
                     }
                 },
                 "BOOL" => {
                     if let Ok(val) = row.try_get::<Option<bool>, _>(column_name) {
-                        val.map(Value::Bool).unwrap_or(Value::Null)
+                        match val {
+                            Some(b) => DataValue::Bool(b),
+                            None => DataValue::Null,
+                        }
                     } else {
-                        Value::Null
+                        DataValue::Null
                     }
                 },
                 "TEXT" | "VARCHAR" | "CHAR" => {
                     if let Ok(val) = row.try_get::<Option<String>, _>(column_name) {
-                        val.map(Value::String).unwrap_or(Value::Null)
+                        match val {
+                            Some(s) => DataValue::String(s),
+                            None => DataValue::Null,
+                        }
                     } else {
-                        Value::Null
+                        DataValue::Null
                     }
                 },
                 "UUID" => {
                     if let Ok(val) = row.try_get::<Option<uuid::Uuid>, _>(column_name) {
-                        val.map(|u| Value::String(u.to_string())).unwrap_or(Value::Null)
+                        match val {
+                            Some(u) => DataValue::Uuid(u),
+                            None => DataValue::Null,
+                        }
                     } else {
-                        Value::Null
+                        DataValue::Null
                     }
                 },
                 "JSON" | "JSONB" => {
+                    // PostgreSQL原生支持JSONB，直接获取serde_json::Value
+                    // 无需像MySQL/SQLite那样解析JSON字符串
                     if let Ok(val) = row.try_get::<Option<serde_json::Value>, _>(column_name) {
-                        val.unwrap_or(Value::Null)
+                        match val {
+                            Some(json_val) => {
+                                // 使用现有的转换函数，确保类型正确
+                                crate::types::json_value_to_data_value(json_val)
+                            },
+                            None => DataValue::Null,
+                        }
                     } else {
-                        Value::Null
+                        DataValue::Null
                     }
                 },
                 "TIMESTAMP" | "TIMESTAMPTZ" => {
                     if let Ok(val) = row.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(column_name) {
-                        val.map(|dt| Value::String(dt.to_rfc3339())).unwrap_or(Value::Null)
+                        match val {
+                            Some(dt) => DataValue::DateTime(dt),
+                            None => DataValue::Null,
+                        }
                     } else {
-                        Value::Null
+                        DataValue::Null
                     }
                 },
                 _ => {
                     // 对于未知类型，尝试作为字符串获取
                     if let Ok(val) = row.try_get::<Option<String>, _>(column_name) {
-                        val.map(Value::String).unwrap_or(Value::Null)
+                        match val {
+                            Some(s) => DataValue::String(s),
+                            None => DataValue::Null,
+                        }
                     } else {
-                        Value::Null
+                        DataValue::Null
                     }
                 }
             };
             
-            map.insert(column_name.to_string(), json_value);
+            map.insert(column_name.to_string(), data_value);
         }
         
-        Ok(Value::Object(map))
+        Ok(map)
+    }
+
+    /// 将PostgreSQL行转换为JSON值（保留用于向后兼容）
+    fn row_to_json(&self, row: &sqlx::postgres::PgRow) -> QuickDbResult<Value> {
+        let data_map = self.row_to_data_map(row)?;
+        let mut json_map = serde_json::Map::new();
+        
+        for (key, value) in data_map {
+            json_map.insert(key, value.to_json_value());
+        }
+        
+        Ok(Value::Object(json_map))
     }
 
     /// 执行查询并返回结果
@@ -117,7 +152,7 @@ impl PostgresAdapter {
         pool: &sqlx::Pool<sqlx::Postgres>,
         sql: &str,
         params: &[DataValue],
-    ) -> QuickDbResult<Vec<Value>> {
+    ) -> QuickDbResult<Vec<DataValue>> {
         let mut query = sqlx::query(sql);
         
         // 绑定参数
@@ -132,8 +167,16 @@ impl PostgresAdapter {
                 DataValue::Json(json) => query.bind(json),
                 DataValue::Bytes(bytes) => query.bind(bytes.as_slice()),
                 DataValue::Null => query.bind(Option::<String>::None),
-                DataValue::Array(arr) => query.bind(serde_json::to_value(arr).unwrap_or_default()),
-                DataValue::Object(obj) => query.bind(serde_json::to_value(obj).unwrap_or_default()),
+                DataValue::Array(arr) => {
+                    // 使用 to_json_value() 避免序列化时包含类型标签
+                    let json_array = DataValue::Array(arr.clone()).to_json_value();
+                    query.bind(json_array)
+                },
+                DataValue::Object(obj) => {
+                    // 使用 to_json_value() 避免序列化时包含类型标签
+                    let json_object = DataValue::Object(obj.clone()).to_json_value();
+                    query.bind(json_object)
+                },
             };
         }
         
@@ -145,8 +188,8 @@ impl PostgresAdapter {
         
         let mut results = Vec::new();
         for row in rows {
-            let value = self.row_to_json(&row)?;
-            results.push(value);
+            let data_map = self.row_to_data_map(&row)?;
+            results.push(DataValue::Object(data_map));
         }
         
         Ok(results)
@@ -195,37 +238,71 @@ impl DatabaseAdapter for PostgresAdapter {
         connection: &DatabaseConnection,
         table: &str,
         data: &HashMap<String, DataValue>,
-    ) -> QuickDbResult<Value> {
+    ) -> QuickDbResult<DataValue> {
         if let DatabaseConnection::PostgreSQL(pool) = connection {
             // 自动建表逻辑：检查表是否存在，如果不存在则创建
+            let mut has_auto_increment_id = false;
             if !self.table_exists(connection, table).await? {
                 info!("表 {} 不存在，正在自动创建", table);
                 let schema = TableSchema::infer_from_data(table.to_string(), data);
+                
+                // 检查是否有自增id字段
+                if let Some(id_col) = schema.columns.iter().find(|col| col.name == "id") {
+                    has_auto_increment_id = id_col.auto_increment;
+                }
+                
                 // 将 ColumnDefinition 转换为 HashMap<String, FieldType>
-                    let fields: HashMap<String, FieldType> = schema.columns.iter()
-                        .map(|col| {
-                            let field_type = match &col.column_type {
-                                ColumnType::String { .. } => FieldType::String { max_length: None, min_length: None, regex: None },
-                                ColumnType::Text | ColumnType::LongText => FieldType::String { max_length: None, min_length: None, regex: None },
-                                ColumnType::Integer | ColumnType::SmallInteger => FieldType::Integer { min_value: None, max_value: None },
-                                ColumnType::BigInteger => FieldType::Integer { min_value: None, max_value: None },
-                                ColumnType::Float | ColumnType::Double => FieldType::Float { min_value: None, max_value: None },
-                                ColumnType::Boolean => FieldType::Boolean,
-                                ColumnType::DateTime | ColumnType::Date | ColumnType::Time | ColumnType::Timestamp => FieldType::DateTime,
-                                ColumnType::Uuid => FieldType::Uuid,
-                                ColumnType::Json => FieldType::Json,
-                                _ => FieldType::String { max_length: None, min_length: None, regex: None }, // 默认为字符串
-                            };
-                            (col.name.clone(), field_type)
-                        })
-                        .collect();
+                let fields: HashMap<String, FieldType> = schema.columns.iter()
+                    .map(|col| {
+                        let field_type = match &col.column_type {
+                            ColumnType::String { .. } => FieldType::String { max_length: None, min_length: None, regex: None },
+                            ColumnType::Text | ColumnType::LongText => FieldType::String { max_length: None, min_length: None, regex: None },
+                            ColumnType::Integer | ColumnType::SmallInteger => FieldType::Integer { min_value: None, max_value: None },
+                            ColumnType::BigInteger => FieldType::Integer { min_value: None, max_value: None },
+                            ColumnType::Float | ColumnType::Double => FieldType::Float { min_value: None, max_value: None },
+                            ColumnType::Boolean => FieldType::Boolean,
+                            ColumnType::DateTime | ColumnType::Date | ColumnType::Time | ColumnType::Timestamp => FieldType::DateTime,
+                            ColumnType::Uuid => FieldType::Uuid,
+                            ColumnType::Json => FieldType::Json,
+                            _ => FieldType::String { max_length: None, min_length: None, regex: None }, // 默认为字符串
+                        };
+                        (col.name.clone(), field_type)
+                    })
+                    .collect();
                 self.create_table(connection, table, &fields).await?;
                 info!("自动创建PostgreSQL表 '{}' 成功", table);
+            } else {
+                // 表已存在，检查是否有SERIAL类型的id字段
+                let check_serial_sql = "SELECT column_default FROM information_schema.columns WHERE table_name = $1 AND column_name = 'id'";
+                let rows = sqlx::query(check_serial_sql)
+                    .bind(table)
+                    .fetch_all(pool)
+                    .await
+                    .map_err(|e| QuickDbError::QueryError {
+                        message: format!("检查表结构失败: {}", e),
+                    })?;
+                
+                if let Some(row) = rows.first() {
+                    if let Ok(Some(default_value)) = row.try_get::<Option<String>, _>("column_default") {
+                        has_auto_increment_id = default_value.starts_with("nextval");
+                    }
+                }
+            }
+            
+            // 准备插入数据
+            // 如果数据中没有id字段，说明期望使用自增ID，不需要在INSERT中包含id字段
+            // 如果数据中有id字段但表使用SERIAL自增，也要移除id字段让PostgreSQL自动生成
+            let mut insert_data = data.clone();
+            let data_has_id = insert_data.contains_key("id");
+            
+            if !data_has_id || (data_has_id && has_auto_increment_id) {
+                insert_data.remove("id");
+                debug!("使用PostgreSQL SERIAL自增，不在INSERT中包含id字段");
             }
             
             let (sql, params) = SqlQueryBuilder::new()
                 .database_type(super::query_builder::DatabaseType::PostgreSQL)
-                .insert(data.clone())
+                .insert(insert_data)
                 .from(table)
                 .returning(&["id"])
                 .build()?;
@@ -237,9 +314,10 @@ impl DatabaseAdapter for PostgresAdapter {
             if let Some(result) = results.first() {
                 Ok(result.clone())
             } else {
-                Ok(serde_json::json!({
-                    "affected_rows": 1
-                }))
+                // 创建一个表示成功插入的DataValue
+                let mut success_map = HashMap::new();
+                success_map.insert("affected_rows".to_string(), DataValue::Int(1));
+                Ok(DataValue::Object(success_map))
             }
         } else {
             Err(QuickDbError::ConnectionError {
@@ -253,7 +331,7 @@ impl DatabaseAdapter for PostgresAdapter {
         connection: &DatabaseConnection,
         table: &str,
         id: &DataValue,
-    ) -> QuickDbResult<Option<Value>> {
+    ) -> QuickDbResult<Option<DataValue>> {
         if let DatabaseConnection::PostgreSQL(pool) = connection {
             let condition = QueryCondition {
                 field: "id".to_string(),
@@ -286,7 +364,7 @@ impl DatabaseAdapter for PostgresAdapter {
         table: &str,
         conditions: &[QueryCondition],
         options: &QueryOptions,
-    ) -> QuickDbResult<Vec<Value>> {
+    ) -> QuickDbResult<Vec<DataValue>> {
         if let DatabaseConnection::PostgreSQL(pool) = connection {
             let mut builder = SqlQueryBuilder::new()
                 .database_type(super::query_builder::DatabaseType::PostgreSQL)
@@ -324,7 +402,7 @@ impl DatabaseAdapter for PostgresAdapter {
         table: &str,
         condition_groups: &[QueryConditionGroup],
         options: &QueryOptions,
-    ) -> QuickDbResult<Vec<Value>> {
+    ) -> QuickDbResult<Vec<DataValue>> {
         if let DatabaseConnection::PostgreSQL(pool) = connection {
             let mut builder = SqlQueryBuilder::new()
                 .database_type(super::query_builder::DatabaseType::PostgreSQL)
@@ -456,9 +534,9 @@ impl DatabaseAdapter for PostgresAdapter {
             
             let results = self.execute_query(pool, &sql, &params).await?;
             if let Some(result) = results.first() {
-                if let Some(count) = result.get("count") {
-                    if let Some(count_num) = count.as_u64() {
-                        return Ok(count_num);
+                if let DataValue::Object(obj) = result {
+                    if let Some(DataValue::Int(count)) = obj.get("count") {
+                        return Ok(*count as u64);
                     }
                 }
             }
@@ -509,9 +587,14 @@ impl DatabaseAdapter for PostgresAdapter {
                     FieldType::Reference { target_collection: _ } => "TEXT",
                 };
                 
-                // 如果是id字段，添加主键约束
+                // 如果是id字段，检查是否需要自增
                 if name == "id" {
-                    field_definitions.push(format!("{} {} PRIMARY KEY", name, sql_type));
+                    // 对于id字段，如果是整数类型且配置了AutoIncrement策略，使用SERIAL
+                    if matches!(field_type, FieldType::Integer { .. }) {
+                        field_definitions.push("id SERIAL PRIMARY KEY".to_string());
+                    } else {
+                        field_definitions.push(format!("{} {} PRIMARY KEY", name, sql_type));
+                    }
                 } else {
                     field_definitions.push(format!("{} {}", name, sql_type));
                 }

@@ -33,73 +33,92 @@ impl MysqlAdapter {
         }
     }
 
-    /// 将MySQL行转换为JSON值
-    fn row_to_json(&self, row: &MySqlRow) -> QuickDbResult<Value> {
-        let mut map = serde_json::Map::new();
+    /// 将MySQL行转换为DataValue映射
+    fn row_to_data_map(&self, row: &MySqlRow) -> QuickDbResult<HashMap<String, DataValue>> {
+        let mut map = HashMap::new();
         
         for column in row.columns() {
             let column_name = column.name();
             
             // 根据MySQL类型转换值
-            let json_value = match column.type_info().name() {
+            let data_value = match column.type_info().name() {
                 "INT" | "BIGINT" | "SMALLINT" | "TINYINT" => {
                     if let Ok(val) = row.try_get::<Option<i64>, _>(column_name) {
-                        val.map(|v| Value::Number(v.into())).unwrap_or(Value::Null)
+                        match val {
+                            Some(i) => DataValue::Int(i),
+                            None => DataValue::Null,
+                        }
                     } else {
-                        Value::Null
+                        DataValue::Null
                     }
                 },
                 "FLOAT" | "DOUBLE" => {
                     if let Ok(val) = row.try_get::<Option<f64>, _>(column_name) {
-                        val.and_then(|v| serde_json::Number::from_f64(v))
-                            .map(Value::Number)
-                            .unwrap_or(Value::Null)
+                        match val {
+                            Some(f) => DataValue::Float(f),
+                            None => DataValue::Null,
+                        }
                     } else {
-                        Value::Null
+                        DataValue::Null
                     }
                 },
                 "BOOLEAN" | "BOOL" => {
                     if let Ok(val) = row.try_get::<Option<bool>, _>(column_name) {
-                        val.map(Value::Bool).unwrap_or(Value::Null)
+                        match val {
+                            Some(b) => DataValue::Bool(b),
+                            None => DataValue::Null,
+                        }
                     } else {
-                        Value::Null
+                        DataValue::Null
                     }
                 },
                 "VARCHAR" | "TEXT" | "CHAR" => {
-                    if let Ok(val) = row.try_get::<Option<String>, _>(column_name) {
-                        val.map(Value::String).unwrap_or(Value::Null)
+                    if let Ok(value) = row.try_get::<Option<String>, _>(column_name) {
+                        match value {
+                            Some(s) => crate::types::parse_optional_json_string_to_data_value(Some(s)),
+                            None => DataValue::Null,
+                        }
                     } else {
-                        Value::Null
+                        DataValue::Null
                     }
                 },
                 "JSON" => {
                     if let Ok(val) = row.try_get::<Option<JsonValue>, _>(column_name) {
-                        val.unwrap_or(Value::Null)
+                        match val {
+                            Some(json_val) => crate::types::json_value_to_data_value(json_val),
+                            None => DataValue::Null,
+                        }
                     } else {
-                        Value::Null
+                        DataValue::Null
                     }
                 },
                 "DATETIME" | "TIMESTAMP" => {
                     if let Ok(val) = row.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(column_name) {
-                        val.map(|dt| Value::String(dt.to_rfc3339())).unwrap_or(Value::Null)
+                        match val {
+                            Some(dt) => DataValue::DateTime(dt),
+                            None => DataValue::Null,
+                        }
                     } else {
-                        Value::Null
+                        DataValue::Null
                     }
                 },
                 _ => {
-                    // 对于未知类型，尝试作为字符串获取
-                    if let Ok(val) = row.try_get::<Option<String>, _>(column_name) {
-                        val.map(Value::String).unwrap_or(Value::Null)
+                    // 对于未知类型，尝试作为字符串处理
+                    if let Ok(value) = row.try_get::<Option<String>, _>(column_name) {
+                        match value {
+                            Some(s) => DataValue::String(s),
+                            None => DataValue::Null,
+                        }
                     } else {
-                        Value::Null
+                        DataValue::Null
                     }
                 }
             };
             
-            map.insert(column_name.to_string(), json_value);
+            map.insert(column_name.to_string(), data_value);
         }
         
-        Ok(Value::Object(map))
+        Ok(map)
     }
 
 
@@ -110,13 +129,22 @@ impl MysqlAdapter {
         pool: &Pool<MySql>,
         sql: &str,
         params: &[DataValue],
-    ) -> QuickDbResult<Vec<Value>> {
+    ) -> QuickDbResult<Vec<DataValue>> {
         let mut query = sqlx::query(sql);
         
         // 绑定参数
         for param in params {
             query = match param {
-                DataValue::String(s) => query.bind(s),
+                DataValue::String(s) => {
+                    // 检查是否为JSON字符串，如果是则转换为对应的DataValue类型
+                    let converted_value = crate::types::parse_json_string_to_data_value(s.clone());
+                    match converted_value {
+                        DataValue::Json(json_val) => {
+                            query.bind(serde_json::to_string(&json_val).unwrap_or_default())
+                        },
+                        _ => query.bind(s)
+                    }
+                },
                 DataValue::Int(i) => query.bind(*i),
                 DataValue::Float(f) => query.bind(*f),
                 DataValue::Bool(b) => query.bind(*b),
@@ -125,8 +153,20 @@ impl MysqlAdapter {
                 DataValue::Json(json) => query.bind(json.to_string()),
                 DataValue::Bytes(bytes) => query.bind(bytes.as_slice()),
                 DataValue::Null => query.bind(Option::<String>::None),
-                DataValue::Array(arr) => query.bind(serde_json::to_string(arr).unwrap_or_default()),
-                DataValue::Object(obj) => query.bind(serde_json::to_string(obj).unwrap_or_default()),
+                DataValue::Array(arr) => {
+                    // 将DataValue数组转换为原始JSON数组
+                    let json_values: Vec<serde_json::Value> = arr.iter()
+                        .map(|v| v.to_json_value())
+                        .collect();
+                    query.bind(serde_json::to_string(&json_values).unwrap_or_default())
+                },
+                DataValue::Object(obj) => {
+                    // 将DataValue对象转换为原始JSON对象
+                    let json_map: serde_json::Map<String, serde_json::Value> = obj.iter()
+                        .map(|(k, v)| (k.clone(), v.to_json_value()))
+                        .collect();
+                    query.bind(serde_json::to_string(&json_map).unwrap_or_default())
+                },
             };
         }
 
@@ -137,8 +177,8 @@ impl MysqlAdapter {
         
         let mut results = Vec::new();
         for row in rows {
-            let value = self.row_to_json(&row)?;
-            results.push(value);
+            let data_map = self.row_to_data_map(&row)?;
+            results.push(DataValue::Object(data_map));
         }
         
         Ok(results)
@@ -156,7 +196,16 @@ impl MysqlAdapter {
         // 绑定参数
         for param in params {
             query = match param {
-                DataValue::String(s) => query.bind(s),
+                DataValue::String(s) => {
+                    // 检查是否为JSON字符串，如果是则转换为对应的DataValue类型
+                    let converted_value = crate::types::parse_json_string_to_data_value(s.clone());
+                    match converted_value {
+                        DataValue::Json(json_val) => {
+                            query.bind(serde_json::to_string(&json_val).unwrap_or_default())
+                        },
+                        _ => query.bind(s)
+                    }
+                },
                 DataValue::Int(i) => query.bind(*i),
                 DataValue::Float(f) => query.bind(*f),
                 DataValue::Bool(b) => query.bind(*b),
@@ -165,8 +214,20 @@ impl MysqlAdapter {
                 DataValue::Json(json) => query.bind(json.to_string()),
                 DataValue::Bytes(bytes) => query.bind(bytes.as_slice()),
                 DataValue::Null => query.bind(Option::<String>::None),
-                DataValue::Array(arr) => query.bind(serde_json::to_string(arr).unwrap_or_default()),
-                DataValue::Object(obj) => query.bind(serde_json::to_string(obj).unwrap_or_default()),
+                DataValue::Array(arr) => {
+                    // 将DataValue数组转换为原始JSON数组
+                    let json_values: Vec<serde_json::Value> = arr.iter()
+                        .map(|v| v.to_json_value())
+                        .collect();
+                    query.bind(serde_json::to_string(&json_values).unwrap_or_default())
+                },
+                DataValue::Object(obj) => {
+                    // 将DataValue对象转换为原始JSON对象
+                    let json_map: serde_json::Map<String, serde_json::Value> = obj.iter()
+                        .map(|(k, v)| (k.clone(), v.to_json_value()))
+                        .collect();
+                    query.bind(serde_json::to_string(&json_map).unwrap_or_default())
+                },
             };
         }
 
@@ -186,7 +247,7 @@ impl DatabaseAdapter for MysqlAdapter {
         connection: &DatabaseConnection,
         table: &str,
         data: &HashMap<String, DataValue>,
-    ) -> QuickDbResult<Value> {
+    ) -> QuickDbResult<DataValue> {
         if let DatabaseConnection::MySQL(pool) = connection {
             // 自动建表逻辑：检查表是否存在，如果不存在则创建
             if !self.table_exists(connection, table).await? {
@@ -228,8 +289,10 @@ impl DatabaseAdapter for MysqlAdapter {
             if let Some(result) = id_results.first() {
                 Ok(result.clone())
             } else {
-                Ok(serde_json::json!({
-                    "affected_rows": affected_rows
+                Ok(DataValue::Object({
+                    let mut map = std::collections::HashMap::new();
+                    map.insert("affected_rows".to_string(), DataValue::Int(affected_rows as i64));
+                    map
                 }))
             }
         } else {
@@ -244,7 +307,7 @@ impl DatabaseAdapter for MysqlAdapter {
         connection: &DatabaseConnection,
         table: &str,
         id: &DataValue,
-    ) -> QuickDbResult<Option<Value>> {
+    ) -> QuickDbResult<Option<DataValue>> {
         if let DatabaseConnection::MySQL(pool) = connection {
             let condition = QueryCondition {
                 field: "id".to_string(),
@@ -274,7 +337,7 @@ impl DatabaseAdapter for MysqlAdapter {
         table: &str,
         conditions: &[QueryCondition],
         options: &QueryOptions,
-    ) -> QuickDbResult<Vec<Value>> {
+    ) -> QuickDbResult<Vec<DataValue>> {
         if let DatabaseConnection::MySQL(pool) = connection {
             let mut builder = SqlQueryBuilder::new()
                 .select(&["*"])
@@ -307,7 +370,7 @@ impl DatabaseAdapter for MysqlAdapter {
         table: &str,
         condition_groups: &[QueryConditionGroup],
         options: &QueryOptions,
-    ) -> QuickDbResult<Vec<Value>> {
+    ) -> QuickDbResult<Vec<DataValue>> {
         if let DatabaseConnection::MySQL(pool) = connection {
             let mut builder = SqlQueryBuilder::new()
                 .select(&["*"])
@@ -452,9 +515,9 @@ impl DatabaseAdapter for MysqlAdapter {
             let results = self.execute_query(pool, &sql, &params).await?;
             
             if let Some(result) = results.first() {
-                if let Some(count_value) = result.get("count") {
-                    if let Some(count) = count_value.as_u64() {
-                        return Ok(count);
+                if let DataValue::Object(map) = result {
+                    if let Some(DataValue::Int(count)) = map.get("count") {
+                        return Ok(*count as u64);
                     }
                 }
             }
@@ -507,7 +570,7 @@ impl DatabaseAdapter for MysqlAdapter {
                 
                 // 如果是id字段，添加主键约束
                 if name == "id" {
-                    field_definitions.push(format!("{} {} PRIMARY KEY AUTO_INCREMENT", name, sql_type));
+                    field_definitions.push(format!("{} {} AUTO_INCREMENT PRIMARY KEY", name, sql_type));
                 } else {
                     field_definitions.push(format!("{} {}", name, sql_type));
                 }

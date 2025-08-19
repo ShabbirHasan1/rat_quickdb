@@ -338,8 +338,8 @@ impl DataValue {
     pub fn type_name(&self) -> &'static str {
         match self {
             DataValue::Null => "null",
-            DataValue::Bool(_) => "bool",
-            DataValue::Int(_) => "int",
+            DataValue::Bool(_) => "boolean",
+            DataValue::Int(_) => "integer",
             DataValue::Float(_) => "float",
             DataValue::String(_) => "string",
             DataValue::Bytes(_) => "bytes",
@@ -372,7 +372,83 @@ impl DataValue {
 
     /// 转换为 JSON 值
     pub fn to_json_value(&self) -> serde_json::Value {
-        serde_json::to_value(self).unwrap_or(serde_json::Value::Null)
+        match self {
+            DataValue::Null => serde_json::Value::Null,
+            DataValue::Bool(b) => serde_json::Value::Bool(*b),
+            DataValue::Int(i) => serde_json::Value::Number(serde_json::Number::from(*i)),
+            DataValue::Float(f) => {
+                serde_json::Number::from_f64(*f)
+                    .map(serde_json::Value::Number)
+                    .unwrap_or(serde_json::Value::Null)
+            },
+            DataValue::String(s) => serde_json::Value::String(s.clone()),
+            DataValue::Bytes(b) => {
+                // 将字节数组转换为 base64 字符串
+                serde_json::Value::String(base64::encode(b))
+            },
+            DataValue::DateTime(dt) => serde_json::Value::String(dt.to_rfc3339()),
+            DataValue::Uuid(u) => serde_json::Value::String(u.to_string()),
+            DataValue::Json(j) => {
+                // 对于 JSON 值，需要检查是否包含带类型标签的数组或对象
+                match j {
+                    serde_json::Value::Array(arr) => {
+                        // 检查数组元素是否是带类型标签的对象，如果是则提取原始值
+                        let cleaned_array: Vec<serde_json::Value> = arr.iter()
+                            .map(|item| {
+                                if let serde_json::Value::Object(obj) = item {
+                                    // 检查是否是单键对象（类型标签格式）
+                                    if obj.len() == 1 {
+                                        let (key, value) = obj.iter().next().unwrap();
+                                        match key.as_str() {
+                                            "String" | "Int" | "Float" | "Bool" | "Null" 
+                                            | "Bytes" | "DateTime" | "Uuid" => value.clone(),
+                                            _ => item.clone(),
+                                        }
+                                    } else {
+                                        item.clone()
+                                    }
+                                } else {
+                                    item.clone()
+                                }
+                            })
+                            .collect();
+                        serde_json::Value::Array(cleaned_array)
+                    },
+                    _ => j.clone(),
+                }
+            },
+            DataValue::Array(arr) => {
+                let json_array: Vec<serde_json::Value> = arr.iter()
+                    .map(|item| {
+                        // 对于数组元素，直接提取原始值，避免带类型标签的序列化
+                        match item {
+                            DataValue::String(s) => serde_json::Value::String(s.clone()),
+                            DataValue::Int(i) => serde_json::Value::Number(serde_json::Number::from(*i)),
+                            DataValue::Float(f) => {
+                                serde_json::Number::from_f64(*f)
+                                    .map(serde_json::Value::Number)
+                                    .unwrap_or(serde_json::Value::Null)
+                            },
+                            DataValue::Bool(b) => serde_json::Value::Bool(*b),
+                            DataValue::Null => serde_json::Value::Null,
+                            DataValue::Bytes(b) => serde_json::Value::String(base64::encode(b)),
+                            DataValue::DateTime(dt) => serde_json::Value::String(dt.to_rfc3339()),
+                            DataValue::Uuid(u) => serde_json::Value::String(u.to_string()),
+                            DataValue::Json(j) => j.clone(),
+                            // 对于复杂类型，仍然递归调用
+                            _ => item.to_json_value(),
+                        }
+                    })
+                    .collect();
+                serde_json::Value::Array(json_array)
+            },
+            DataValue::Object(obj) => {
+                let json_object: serde_json::Map<String, serde_json::Value> = obj.iter()
+                    .map(|(k, v)| (k.clone(), v.to_json_value()))
+                    .collect();
+                serde_json::Value::Object(json_object)
+            }
+        }
     }
 
     /// 从 JSON 值解析
@@ -388,6 +464,209 @@ impl DataValue {
     /// 从 JSON 解析（兼容旧代码）
     pub fn from_json(value: serde_json::Value) -> Self {
         Self::from_json_value(value)
+    }
+
+    /// 直接反序列化为指定类型
+    pub fn deserialize_to<T>(&self) -> Result<T, crate::error::QuickDbError>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        serde_json::from_value(serde_json::to_value(self)?)
+            .map_err(|e| crate::quick_error!(serialization, format!("DataValue 反序列化失败: {}", e)))
+    }
+}
+
+// 为常用类型实现 From trait，避免 JSON 序列化的性能开销
+impl From<bool> for DataValue {
+    fn from(value: bool) -> Self {
+        DataValue::Bool(value)
+    }
+}
+
+impl From<i32> for DataValue {
+    fn from(value: i32) -> Self {
+        DataValue::Int(value as i64)
+    }
+}
+
+impl From<i64> for DataValue {
+    fn from(value: i64) -> Self {
+        DataValue::Int(value)
+    }
+}
+
+impl From<f32> for DataValue {
+    fn from(value: f32) -> Self {
+        DataValue::Float(value as f64)
+    }
+}
+
+impl From<f64> for DataValue {
+    fn from(value: f64) -> Self {
+        DataValue::Float(value)
+    }
+}
+
+impl From<String> for DataValue {
+    fn from(value: String) -> Self {
+        DataValue::String(value)
+    }
+}
+
+impl From<&str> for DataValue {
+    fn from(value: &str) -> Self {
+        DataValue::String(value.to_string())
+    }
+}
+
+impl From<Vec<u8>> for DataValue {
+    fn from(value: Vec<u8>) -> Self {
+        DataValue::Bytes(value)
+    }
+}
+
+impl From<DateTime<Utc>> for DataValue {
+    fn from(value: DateTime<Utc>) -> Self {
+        DataValue::DateTime(value)
+    }
+}
+
+impl From<Uuid> for DataValue {
+    fn from(value: Uuid) -> Self {
+        DataValue::Uuid(value)
+    }
+}
+
+impl From<serde_json::Value> for DataValue {
+    fn from(value: serde_json::Value) -> Self {
+        DataValue::Json(value)
+    }
+}
+
+/// 将 serde_json::Value 正确转换为对应的 DataValue 类型
+/// 而不是简单包装为 DataValue::Json
+pub fn json_value_to_data_value(value: serde_json::Value) -> DataValue {
+    match value {
+        serde_json::Value::Null => DataValue::Null,
+        serde_json::Value::Bool(b) => DataValue::Bool(b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                DataValue::Int(i)
+            } else if let Some(f) = n.as_f64() {
+                DataValue::Float(f)
+            } else {
+                DataValue::Json(serde_json::Value::Number(n))
+            }
+        },
+        serde_json::Value::String(s) => DataValue::String(s),
+        serde_json::Value::Array(arr) => {
+            // 对于数组，直接保存为 JSON 值，避免递归包装导致的类型标签问题
+            DataValue::Json(serde_json::Value::Array(arr))
+        },
+        serde_json::Value::Object(obj) => {
+            // 对于对象，直接保存为 JSON 值，避免递归包装导致的类型标签问题
+            DataValue::Json(serde_json::Value::Object(obj))
+        }
+    }
+}
+
+/// SQL适配器通用的JSON字符串检测和反序列化方法
+/// 基于SQLite成功的修复方案，用于处理存储为JSON字符串的数组和对象字段
+/// 
+/// # 参数
+/// * `value` - 可能包含JSON字符串的字符串值
+/// 
+/// # 返回值
+/// * 如果字符串以'['或'{'开头且能成功解析为JSON，返回对应的DataValue::Array或DataValue::Object
+/// * 否则返回DataValue::String
+pub fn parse_json_string_to_data_value(value: String) -> DataValue {
+    // 检查字符串是否以JSON数组或对象标识符开头
+    if value.starts_with('[') || value.starts_with('{') {
+        // 尝试解析为JSON
+        match serde_json::from_str::<serde_json::Value>(&value) {
+            Ok(json_value) => {
+                // 根据JSON类型返回对应的DataValue
+                json_value_to_data_value(json_value)
+            },
+            Err(_) => {
+                // 解析失败，作为普通字符串处理
+                DataValue::String(value)
+            }
+        }
+    } else {
+        // 不是JSON格式，直接返回字符串
+        DataValue::String(value)
+    }
+}
+
+/// SQL适配器通用的可选字符串JSON检测和反序列化方法
+/// 处理数据库中可能为NULL的字符串字段
+/// 
+/// # 参数
+/// * `value` - 可能为None的字符串值
+/// 
+/// # 返回值
+/// * 如果值为None，返回DataValue::Null
+/// * 否则返回DataValue::String
+pub fn parse_optional_json_string_to_data_value(value: Option<String>) -> DataValue {
+    match value {
+        Some(s) => DataValue::String(s),
+        None => DataValue::Null,
+    }
+}
+
+// 为常用的Vec类型提供From实现，直接序列化为JSON字符串
+impl From<Vec<String>> for DataValue {
+    fn from(value: Vec<String>) -> Self {
+        match serde_json::to_string(&value) {
+            Ok(json_str) => DataValue::String(json_str),
+            Err(_) => DataValue::Array(vec![]), // 序列化失败时返回空数组
+        }
+    }
+}
+
+impl From<Vec<i32>> for DataValue {
+    fn from(value: Vec<i32>) -> Self {
+        match serde_json::to_string(&value) {
+            Ok(json_str) => DataValue::String(json_str),
+            Err(_) => DataValue::Array(vec![]), // 序列化失败时返回空数组
+        }
+    }
+}
+
+impl From<Vec<i64>> for DataValue {
+    fn from(value: Vec<i64>) -> Self {
+        match serde_json::to_string(&value) {
+            Ok(json_str) => DataValue::String(json_str),
+            Err(_) => DataValue::Array(vec![]), // 序列化失败时返回空数组
+        }
+    }
+}
+
+impl From<Vec<f64>> for DataValue {
+    fn from(value: Vec<f64>) -> Self {
+        match serde_json::to_string(&value) {
+            Ok(json_str) => DataValue::String(json_str),
+            Err(_) => DataValue::Array(vec![]), // 序列化失败时返回空数组
+        }
+    }
+}
+
+impl<T> From<Option<T>> for DataValue
+where
+    T: Into<DataValue>,
+{
+    fn from(value: Option<T>) -> Self {
+        match value {
+            Some(v) => v.into(),
+            None => DataValue::Null,
+        }
+    }
+}
+
+impl From<HashMap<String, DataValue>> for DataValue {
+    fn from(value: HashMap<String, DataValue>) -> Self {
+        DataValue::Object(value)
     }
 }
 

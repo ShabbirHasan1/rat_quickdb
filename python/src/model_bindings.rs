@@ -550,3 +550,17 @@ pub fn json_field(
     
     field_def
 }
+
+/// 创建列表字段（array_field 的别名）
+/// 在 MongoDB 中使用原生数组，在 SQL 数据库中使用 JSON 存储
+#[pyfunction]
+pub fn list_field(
+    item_type: &PyFieldType,
+    required: Option<bool>,
+    max_items: Option<usize>,
+    min_items: Option<usize>,
+    description: Option<String>,
+) -> PyFieldDefinition {
+    // list_field 是 array_field 的别名，提供更直观的命名
+    array_field(item_type, required, max_items, min_items, description)
+}

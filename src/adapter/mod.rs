@@ -7,7 +7,7 @@ use crate::types::*;
 use crate::model::FieldType;
 use crate::pool::DatabaseConnection;
 use async_trait::async_trait;
-use serde_json::Value;
+
 use std::collections::HashMap;
 
 // 导入各个数据库适配器
@@ -34,7 +34,7 @@ pub trait DatabaseAdapter: Send + Sync {
         connection: &DatabaseConnection,
         table: &str,
         data: &HashMap<String, DataValue>,
-    ) -> QuickDbResult<Value>;
+    ) -> QuickDbResult<DataValue>;
 
     /// 根据ID查找记录
     async fn find_by_id(
@@ -42,7 +42,7 @@ pub trait DatabaseAdapter: Send + Sync {
         connection: &DatabaseConnection,
         table: &str,
         id: &DataValue,
-    ) -> QuickDbResult<Option<Value>>;
+    ) -> QuickDbResult<Option<DataValue>>;
 
     /// 查找记录
     async fn find(
@@ -51,7 +51,7 @@ pub trait DatabaseAdapter: Send + Sync {
         table: &str,
         conditions: &[QueryCondition],
         options: &QueryOptions,
-    ) -> QuickDbResult<Vec<Value>>;
+    ) -> QuickDbResult<Vec<DataValue>>;
 
     /// 使用条件组合查找记录（支持OR逻辑）
     async fn find_with_groups(
@@ -60,7 +60,7 @@ pub trait DatabaseAdapter: Send + Sync {
         table: &str,
         condition_groups: &[QueryConditionGroup],
         options: &QueryOptions,
-    ) -> QuickDbResult<Vec<Value>>;
+    ) -> QuickDbResult<Vec<DataValue>>;
 
     /// 更新记录
     async fn update(

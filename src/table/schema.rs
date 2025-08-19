@@ -339,15 +339,18 @@ impl TableSchema {
         for (field_name, field_value) in data {
             if field_name == "id" {
                 has_id_field = true;
-                // 如果数据中包含id字段，使用数据中的类型，但设置为主键
-                let column_type = Self::infer_column_type(field_value);
+                // 如果数据中包含id字段，对于Null值使用BigInteger类型，其他使用推断类型
+                let column_type = match field_value {
+                    DataValue::Null => ColumnType::BigInteger, // id字段为Null时默认使用BigInteger
+                    _ => Self::infer_column_type(field_value),
+                };
                 columns.push(ColumnDefinition {
                     name: field_name.clone(),
                     column_type,
                     nullable: false, // 主键不能为空
                     default_value: None,
                     primary_key: true,
-                    auto_increment: matches!(field_value, DataValue::Int(_)), // 只有整数类型才自增
+                    auto_increment: matches!(field_value, DataValue::Int(_) | DataValue::Null), // 整数类型或Null都设置为自增
                     unique: true,
                     comment: Some("主键ID".to_string()),
                     length: None,

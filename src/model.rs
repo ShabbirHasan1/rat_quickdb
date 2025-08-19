@@ -13,6 +13,103 @@ use std::collections::HashMap;
 use std::marker::PhantomData;
 use zerg_creep::{debug, error, info, warn};
 
+/// 支持直接转换为 DataValue 的 trait
+/// 避免 JSON 序列化的性能开销
+pub trait ToDataValue {
+    fn to_data_value(&self) -> DataValue;
+}
+
+/// 为基础类型实现 ToDataValue
+impl ToDataValue for String {
+    fn to_data_value(&self) -> DataValue {
+        DataValue::String(self.clone())
+    }
+}
+
+impl ToDataValue for &str {
+    fn to_data_value(&self) -> DataValue {
+        DataValue::String(self.to_string())
+    }
+}
+
+impl ToDataValue for i32 {
+    fn to_data_value(&self) -> DataValue {
+        DataValue::Int(*self as i64)
+    }
+}
+
+impl ToDataValue for i64 {
+    fn to_data_value(&self) -> DataValue {
+        DataValue::Int(*self)
+    }
+}
+
+impl ToDataValue for f32 {
+    fn to_data_value(&self) -> DataValue {
+        DataValue::Float(*self as f64)
+    }
+}
+
+impl ToDataValue for f64 {
+    fn to_data_value(&self) -> DataValue {
+        DataValue::Float(*self)
+    }
+}
+
+impl ToDataValue for bool {
+    fn to_data_value(&self) -> DataValue {
+        DataValue::Bool(*self)
+    }
+}
+
+// 为Vec<String>提供特定的实现，确保字符串数组被正确转换为DataValue::Array
+impl ToDataValue for Vec<String> {
+    fn to_data_value(&self) -> DataValue {
+        // 将字符串数组转换为DataValue::Array
+        let data_values: Vec<DataValue> = self.iter()
+            .map(|s| DataValue::String(s.clone()))
+            .collect();
+        DataValue::Array(data_values)
+    }
+}
+
+// 为Vec<i32>提供特定的实现
+impl ToDataValue for Vec<i32> {
+    fn to_data_value(&self) -> DataValue {
+        // 将整数数组转换为DataValue::Array
+        let data_values: Vec<DataValue> = self.iter()
+            .map(|&i| DataValue::Int(i as i64))
+            .collect();
+        DataValue::Array(data_values)
+    }
+}
+
+// 为Vec<i64>提供特定的实现
+impl ToDataValue for Vec<i64> {
+    fn to_data_value(&self) -> DataValue {
+        // 将整数数组转换为DataValue::Array
+        let data_values: Vec<DataValue> = self.iter()
+            .map(|&i| DataValue::Int(i))
+            .collect();
+        DataValue::Array(data_values)
+    }
+}
+
+// 注意：不能同时有泛型和特定类型的实现，所以移除了通用的Vec<T>实现
+// 如果需要支持其他Vec类型，请添加特定的实现
+
+impl<T> ToDataValue for Option<T>
+where
+    T: ToDataValue,
+{
+    fn to_data_value(&self) -> DataValue {
+        match self {
+            Some(v) => v.to_data_value(),
+            None => DataValue::Null,
+        }
+    }
+}
+
 /// 字段类型枚举
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum FieldType {
@@ -127,9 +224,13 @@ impl FieldDefinition {
 
     /// 验证字段值
     pub fn validate(&self, value: &DataValue) -> QuickDbResult<()> {
+        self.validate_with_field_name(value, "unknown")
+    }
+    
+    pub fn validate_with_field_name(&self, value: &DataValue, field_name: &str) -> QuickDbResult<()> {
         // 检查必填字段
         if self.required && matches!(value, DataValue::Null) {
-            return Err(QuickDbError::ValidationError { field: "unknown".to_string(), message: "必填字段不能为空".to_string() });
+            return Err(QuickDbError::ValidationError { field: field_name.to_string(), message: "必填字段不能为空".to_string() });
         }
 
         // 如果值为空且不是必填字段，则跳过验证
@@ -262,33 +363,76 @@ impl FieldDefinition {
                 // JSON类型可以接受任何值
             }
             FieldType::Array { item_type, max_items, min_items } => {
-                if let DataValue::Array(arr) = value {
-                    if let Some(max_items) = max_items {
-                        if arr.len() > *max_items {
+                match value {
+                    DataValue::Array(arr) => {
+                        // 处理DataValue::Array格式
+                        if let Some(max_items) = max_items {
+                            if arr.len() > *max_items {
+                                return Err(QuickDbError::ValidationError {
+                                    field: "array_size".to_string(),
+                                    message: format!("数组元素数量不能超过{}", max_items)
+                                });
+                            }
+                        }
+                        if let Some(min_items) = min_items {
+                            if arr.len() < *min_items {
+                                return Err(QuickDbError::ValidationError {
+                                    field: "array_size".to_string(),
+                                    message: format!("数组元素数量不能少于{}", min_items)
+                                });
+                            }
+                        }
+                        // 验证数组中的每个元素
+                        let item_field = FieldDefinition::new((**item_type).clone());
+                        for item in arr {
+                            item_field.validate(item)?;
+                        }
+                    },
+                    DataValue::String(json_str) => {
+                        // 处理JSON字符串格式的数组
+                        if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
+                            if let Some(arr) = json_value.as_array() {
+                                if let Some(max_items) = max_items {
+                                    if arr.len() > *max_items {
+                                        return Err(QuickDbError::ValidationError {
+                                            field: "array_size".to_string(),
+                                            message: format!("数组元素数量不能超过{}", max_items)
+                                        });
+                                    }
+                                }
+                                if let Some(min_items) = min_items {
+                                    if arr.len() < *min_items {
+                                        return Err(QuickDbError::ValidationError {
+                                            field: "array_size".to_string(),
+                                            message: format!("数组元素数量不能少于{}", min_items)
+                                        });
+                                    }
+                                }
+                                // 验证数组中的每个元素
+                                let item_field = FieldDefinition::new((**item_type).clone());
+                                for item_json in arr {
+                                    let item_data_value = DataValue::from_json(item_json.clone());
+                                    item_field.validate(&item_data_value)?;
+                                }
+                            } else {
+                                return Err(QuickDbError::ValidationError {
+                                    field: "type_mismatch".to_string(),
+                                    message: "JSON字符串不是有效的数组格式".to_string()
+                                });
+                            }
+                        } else {
                             return Err(QuickDbError::ValidationError {
-                                field: "array_size".to_string(),
-                                message: format!("数组元素数量不能超过{}", max_items)
+                                field: "type_mismatch".to_string(),
+                                message: "无法解析JSON字符串".to_string()
                             });
                         }
+                    },
+                    _ => {
+                        return Err(QuickDbError::ValidationError {
+                            field: "type_mismatch".to_string(),
+                            message: "字段类型不匹配，期望数组类型或JSON字符串".to_string()
+                        });
                     }
-                    if let Some(min_items) = min_items {
-                        if arr.len() < *min_items {
-                            return Err(QuickDbError::ValidationError {
-                                field: "array_size".to_string(),
-                                message: format!("数组元素数量不能少于{}", min_items)
-                            });
-                        }
-                    }
-                    // 验证数组中的每个元素
-                    let item_field = FieldDefinition::new((**item_type).clone());
-                    for item in arr {
-                        item_field.validate(item)?;
-                    }
-                } else {
-                    return Err(QuickDbError::ValidationError {
-                        field: "type_mismatch".to_string(),
-                        message: "字段类型不匹配，期望数组类型".to_string()
-                    });
                 }
             }
             FieldType::Object { fields } => {
@@ -368,44 +512,74 @@ pub trait Model: Serialize + for<'de> Deserialize<'de> + Send + Sync {
         let meta = Self::meta();
         let data = self.to_data_map()?;
         
+        // 调试信息：打印序列化后的数据
+        info!("🔍 验证数据映射: {:?}", data);
+        
         for (field_name, field_def) in &meta.fields {
             let field_value = data.get(field_name).unwrap_or(&DataValue::Null);
-            field_def.validate(field_value)?;
+            info!("🔍 验证字段 {}: {:?}", field_name, field_value);
+            field_def.validate_with_field_name(field_value, field_name)?;
         }
         
         Ok(())
     }
     
-    /// 转换为数据映射
-    fn to_data_map(&self) -> QuickDbResult<HashMap<String, DataValue>> {
+    /// 转换为数据映射（直接转换，避免 JSON 序列化开销）
+    /// 子类应该重写此方法以提供高性能的直接转换
+    fn to_data_map_direct(&self) -> QuickDbResult<HashMap<String, DataValue>> {
+        // 默认回退到 JSON 序列化方式，但建议子类重写
+        warn!("使用默认的 JSON 序列化方式，建议重写 to_data_map_direct 方法以提高性能");
+        self.to_data_map_legacy()
+    }
+    
+    /// 转换为数据映射（传统 JSON 序列化方式）
+    /// 保留此方法用于向后兼容和调试
+    fn to_data_map_legacy(&self) -> QuickDbResult<HashMap<String, DataValue>> {
         let json_str = serde_json::to_string(self)
             .map_err(|e| QuickDbError::SerializationError { message: format!("序列化失败: {}", e) })?;
+        info!("🔍 序列化后的JSON字符串: {}", json_str);
+        
         let json_value: JsonValue = serde_json::from_str(&json_str)
             .map_err(|e| QuickDbError::SerializationError { message: format!("解析JSON失败: {}", e) })?;
+        info!("🔍 解析后的JsonValue: {:?}", json_value);
         
         let mut data_map = HashMap::new();
         if let JsonValue::Object(obj) = json_value {
             for (key, value) in obj {
-                data_map.insert(key, DataValue::from_json(value));
+                let data_value = DataValue::from_json(value.clone());
+                info!("🔍 字段 {} 转换: {:?} -> {:?}", key, value, data_value);
+                data_map.insert(key, data_value);
             }
         }
         
         Ok(data_map)
     }
     
+    /// 将模型转换为数据映射（高性能版本）
+    fn to_data_map(&self) -> QuickDbResult<HashMap<String, DataValue>> {
+        self.to_data_map_direct()
+    }
+
     /// 从数据映射创建模型实例
     fn from_data_map(data: HashMap<String, DataValue>) -> QuickDbResult<Self> {
-        let mut json_obj = serde_json::Map::new();
+        // 直接将 HashMap<String, DataValue> 转换为 JsonValue，避免带类型标签的序列化
+        let mut json_map = serde_json::Map::new();
         for (key, value) in data {
-            json_obj.insert(key, value.to_json());
+            let json_value = value.to_json_value();
+            info!("🔍 字段 {} 转换: {:?} -> {:?}", key, value, json_value);
+            json_map.insert(key, json_value);
         }
+        let json_value = JsonValue::Object(json_map);
         
-        let json_value = JsonValue::Object(json_obj);
-        let result = serde_json::from_value(json_value)
-            .map_err(|e| QuickDbError::SerializationError { message: format!("反序列化失败: {}", e) })?;
-        Ok(result)
+        debug!("准备反序列化的JSON数据: {}", serde_json::to_string_pretty(&json_value).unwrap_or_else(|_| "无法序列化".to_string()));
+        serde_json::from_value(json_value).map_err(|e| {
+            error!("反序列化失败，错误详情: {}", e);
+            QuickDbError::SerializationError { message: format!("反序列化失败: {}", e) }
+        })
     }
 }
+
+
 
 /// 模型操作特征
 /// 
@@ -472,14 +646,19 @@ impl<T: Model> ModelOperations<T> for ModelManager<T> {
             database_alias.as_deref(),
         ).await?;
         
-        if let Some(json_str) = result {
-            let json_value: JsonValue = serde_json::from_str(&json_str)
-                .map_err(|e| QuickDbError::SerializationError { message: format!("解析JSON失败: {}", e) })?;
-            
-            let model: T = serde_json::from_value(json_value)
-                .map_err(|e| QuickDbError::SerializationError { message: format!("反序列化模型失败: {}", e) })?;
-            
-            Ok(Some(model))
+        if let Some(data_value) = result {
+            // 处理 DataValue::Object 格式的数据
+            match data_value {
+                DataValue::Object(data_map) => {
+                    let model: T = T::from_data_map(data_map)?;
+                    Ok(Some(model))
+                },
+                _ => {
+                    // 兼容其他格式，使用直接反序列化
+                    let model: T = data_value.deserialize_to()?;
+                    Ok(Some(model))
+                }
+            }
         } else {
             Ok(None)
         }
@@ -498,22 +677,23 @@ impl<T: Model> ModelOperations<T> for ModelManager<T> {
             database_alias.as_deref(),
         ).await?;
         
-        let json_value: JsonValue = serde_json::from_str(&result)
-            .map_err(|e| QuickDbError::SerializationError { message: format!("解析JSON失败: {}", e) })?;
-        
-        if let JsonValue::Array(arr) = json_value {
-            let mut models = Vec::new();
-            for item in arr {
-                let model: T = serde_json::from_value(item)
-                    .map_err(|e| QuickDbError::SerializationError { message: format!("反序列化模型失败: {}", e) })?;
-                models.push(model);
+        // result 已经是 Vec<DataValue>，直接处理
+        let mut models = Vec::new();
+        for data_value in result {
+            // 处理 DataValue::Object 格式的数据
+            match data_value {
+                DataValue::Object(data_map) => {
+                    let model: T = T::from_data_map(data_map)?;
+                    models.push(model);
+                },
+                _ => {
+                    // 兼容其他格式，使用直接反序列化
+                    let model: T = data_value.deserialize_to()?;
+                    models.push(model);
+                }
             }
-            Ok(models)
-        } else {
-            Err(QuickDbError::SerializationError {
-                message: "查询结果不是数组格式".to_string()
-            })
         }
+        Ok(models)
     }
     
     async fn update(&self, _updates: HashMap<String, DataValue>) -> QuickDbResult<bool> {
@@ -646,6 +826,93 @@ macro_rules! field_types {
     };
 }
 
+/// 便捷函数：创建数组字段
+/// 在 MongoDB 中使用原生数组，在 SQL 数据库中使用 JSON 存储
+pub fn array_field(
+    item_type: FieldType,
+    max_items: Option<usize>,
+    min_items: Option<usize>,
+) -> FieldDefinition {
+    FieldDefinition::new(FieldType::Array {
+        item_type: Box::new(item_type),
+        max_items,
+        min_items,
+    })
+}
+
+/// 便捷函数：创建列表字段（array_field 的别名）
+/// 在 MongoDB 中使用原生数组，在 SQL 数据库中使用 JSON 存储
+pub fn list_field(
+    item_type: FieldType,
+    max_items: Option<usize>,
+    min_items: Option<usize>,
+) -> FieldDefinition {
+    // list_field 是 array_field 的别名，提供更直观的命名
+    array_field(item_type, max_items, min_items)
+}
+
+/// 便捷函数：创建字符串字段
+pub fn string_field(
+    max_length: Option<usize>,
+    min_length: Option<usize>,
+    regex: Option<String>,
+) -> FieldDefinition {
+    FieldDefinition::new(FieldType::String {
+        max_length,
+        min_length,
+        regex,
+    })
+}
+
+/// 便捷函数：创建整数字段
+pub fn integer_field(
+    min_value: Option<i64>,
+    max_value: Option<i64>,
+) -> FieldDefinition {
+    FieldDefinition::new(FieldType::Integer {
+        min_value,
+        max_value,
+    })
+}
+
+/// 便捷函数：创建浮点数字段
+pub fn float_field(
+    min_value: Option<f64>,
+    max_value: Option<f64>,
+) -> FieldDefinition {
+    FieldDefinition::new(FieldType::Float {
+        min_value,
+        max_value,
+    })
+}
+
+/// 便捷函数：创建布尔字段
+pub fn boolean_field() -> FieldDefinition {
+    FieldDefinition::new(FieldType::Boolean)
+}
+
+/// 便捷函数：创建日期时间字段
+pub fn datetime_field() -> FieldDefinition {
+    FieldDefinition::new(FieldType::DateTime)
+}
+
+/// 便捷函数：创建UUID字段
+pub fn uuid_field() -> FieldDefinition {
+    FieldDefinition::new(FieldType::Uuid)
+}
+
+/// 便捷函数：创建JSON字段
+pub fn json_field() -> FieldDefinition {
+    FieldDefinition::new(FieldType::Json)
+}
+
+/// 便捷函数：创建引用字段
+pub fn reference_field(target_collection: String) -> FieldDefinition {
+    FieldDefinition::new(FieldType::Reference {
+        target_collection,
+    })
+}
+
 /// 便捷宏：定义模型
 #[macro_export]
 macro_rules! define_model {
@@ -710,6 +977,18 @@ macro_rules! define_model {
                     description: None,
                 }
             }
+            
+            /// 高性能直接转换实现，避免 JSON 序列化开销
+            fn to_data_map_direct(&self) -> $crate::error::QuickDbResult<std::collections::HashMap<String, $crate::types::DataValue>> {
+                use $crate::model::ToDataValue;
+                let mut data_map = std::collections::HashMap::new();
+                
+                $(
+                    data_map.insert(stringify!($field).to_string(), self.$field.to_data_value());
+                )*
+                
+                Ok(data_map)
+            }
         }
         
         impl $name {
@@ -720,11 +999,42 @@ macro_rules! define_model {
                 let collection_name = Self::collection_name();
                 let database_alias = Self::database_alias();
                 
-                $crate::odm::create(
+                let result = $crate::odm::create(
                     &collection_name,
                     data,
                     database_alias.as_deref(),
-                ).await
+                ).await?;
+                
+                // 将 DataValue 转换为 String（通常是 ID）
+                match result {
+                    $crate::types::DataValue::String(id) => Ok(id),
+                    $crate::types::DataValue::Int(id) => Ok(id.to_string()),
+                    $crate::types::DataValue::Uuid(id) => Ok(id.to_string()),
+                    $crate::types::DataValue::Object(obj) => {
+                        // 如果返回的是对象，尝试提取id字段
+                        if let Some(id_value) = obj.get("id") {
+                            match id_value {
+                                $crate::types::DataValue::String(id) => Ok(id.clone()),
+                                $crate::types::DataValue::Int(id) => Ok(id.to_string()),
+                                $crate::types::DataValue::Uuid(id) => Ok(id.to_string()),
+                                _ => Ok(format!("{:?}", id_value))
+                            }
+                        } else {
+                            // 如果对象中没有id字段，序列化整个对象
+                            match serde_json::to_string(&obj) {
+                                Ok(json_str) => Ok(json_str),
+                                Err(_) => Ok(format!("{:?}", obj))
+                            }
+                        }
+                    },
+                    other => {
+                        // 如果返回的不是简单的 ID 类型，尝试序列化为 JSON
+                        match serde_json::to_string(&other) {
+                            Ok(json_str) => Ok(json_str),
+                            Err(_) => Ok(format!("{:?}", other))
+                        }
+                    }
+                }
             }
             
             /// 更新模型

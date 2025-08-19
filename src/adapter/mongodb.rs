@@ -9,7 +9,7 @@ use crate::pool::DatabaseConnection;
 use crate::table::{TableManager, TableSchema, ColumnType};
 use crate::model::FieldType;
 use async_trait::async_trait;
-use serde_json::Value;
+
 use std::collections::HashMap;
 use mongodb::{bson::{doc, Document, Bson}, Collection};
 use zerg_creep::{info, error, warn, debug};
@@ -57,60 +57,101 @@ impl MongoAdapter {
         }
     }
 
-    /// 将BSON文档转换为JSON值
-    fn document_to_json(&self, doc: &Document) -> QuickDbResult<Value> {
-        // 手动转换BSON文档为JSON，正确处理ObjectId
-        let mut json_map = serde_json::Map::new();
+    /// 将BSON文档转换为DataValue
+    fn document_to_data_value(&self, doc: &Document) -> QuickDbResult<DataValue> {
+        let mut data_map = HashMap::new();
         
         for (key, value) in doc {
-            let json_value = self.bson_to_json_value(value)?;
+            let data_value = self.bson_to_data_value(value)?;
             // 将MongoDB的_id字段转换为统一的id字段，体现ODM优势
             if key == "_id" {
-                json_map.insert("id".to_string(), json_value);
+                data_map.insert("id".to_string(), data_value);
             } else {
-                json_map.insert(key.clone(), json_value);
+                data_map.insert(key.clone(), data_value);
             }
         }
         
-        Ok(Value::Object(json_map))
+        Ok(DataValue::Object(data_map))
     }
     
-    /// 将BSON值转换为JSON值，正确处理ObjectId
-    fn bson_to_json_value(&self, bson: &Bson) -> QuickDbResult<Value> {
+    /// 将BSON值转换为JSON Value
+    fn bson_to_json_value(&self, bson: &Bson) -> QuickDbResult<serde_json::Value> {
         match bson {
-            Bson::ObjectId(oid) => Ok(Value::String(oid.to_hex())),
-            Bson::String(s) => Ok(Value::String(s.clone())),
-            Bson::Int32(i) => Ok(Value::Number(serde_json::Number::from(*i))),
-            Bson::Int64(i) => Ok(Value::Number(serde_json::Number::from(*i))),
+            Bson::ObjectId(oid) => Ok(serde_json::Value::String(oid.to_hex())),
+            Bson::String(s) => Ok(serde_json::Value::String(s.clone())),
+            Bson::Int32(i) => Ok(serde_json::Value::Number(serde_json::Number::from(*i))),
+            Bson::Int64(i) => Ok(serde_json::Value::Number(serde_json::Number::from(*i))),
             Bson::Double(f) => {
                 if let Some(num) = serde_json::Number::from_f64(*f) {
-                    Ok(Value::Number(num))
+                    Ok(serde_json::Value::Number(num))
                 } else {
-                    Ok(Value::Null)
+                    Ok(serde_json::Value::String(f.to_string()))
                 }
             },
-            Bson::Boolean(b) => Ok(Value::Bool(*b)),
-            Bson::Null => Ok(Value::Null),
+            Bson::Boolean(b) => Ok(serde_json::Value::Bool(*b)),
+            Bson::Null => Ok(serde_json::Value::Null),
             Bson::Array(arr) => {
                 let mut json_arr = Vec::new();
                 for item in arr {
                     json_arr.push(self.bson_to_json_value(item)?);
                 }
-                Ok(Value::Array(json_arr))
+                Ok(serde_json::Value::Array(json_arr))
             },
             Bson::Document(doc) => {
                 let mut json_map = serde_json::Map::new();
                 for (key, value) in doc {
                     json_map.insert(key.clone(), self.bson_to_json_value(value)?);
                 }
-                Ok(Value::Object(json_map))
+                Ok(serde_json::Value::Object(json_map))
             },
-            Bson::DateTime(dt) => Ok(Value::String(dt.to_string())),
-            Bson::Binary(bin) => Ok(Value::String(base64::encode(&bin.bytes))),
-            Bson::Decimal128(dec) => Ok(Value::String(dec.to_string())),
+            Bson::DateTime(dt) => {
+                // 将BSON DateTime转换为ISO 8601字符串
+                let system_time: std::time::SystemTime = dt.clone().into();
+                let datetime = chrono::DateTime::<chrono::Utc>::from(system_time);
+                Ok(serde_json::Value::String(datetime.to_rfc3339()))
+            },
+            Bson::Binary(bin) => Ok(serde_json::Value::String(base64::encode(&bin.bytes))),
+            Bson::Decimal128(dec) => Ok(serde_json::Value::String(dec.to_string())),
+            _ => Ok(serde_json::Value::String(format!("{:?}", bson))),
+        }
+    }
+    
+    /// 将BSON值转换为DataValue，正确处理ObjectId
+    fn bson_to_data_value(&self, bson: &Bson) -> QuickDbResult<DataValue> {
+        match bson {
+            Bson::ObjectId(oid) => Ok(DataValue::String(oid.to_hex())),
+            Bson::String(s) => Ok(DataValue::String(s.clone())),
+            Bson::Int32(i) => Ok(DataValue::Int(*i as i64)),
+            Bson::Int64(i) => Ok(DataValue::Int(*i)),
+            Bson::Double(f) => Ok(DataValue::Float(*f)),
+            Bson::Boolean(b) => Ok(DataValue::Bool(*b)),
+            Bson::Null => Ok(DataValue::Null),
+            Bson::Array(arr) => {
+                let mut data_arr = Vec::new();
+                for item in arr {
+                    data_arr.push(self.bson_to_data_value(item)?);
+                }
+                Ok(DataValue::Array(data_arr))
+            },
+            Bson::Document(doc) => {
+                let mut data_map = HashMap::new();
+                for (key, value) in doc {
+                    let data_value = self.bson_to_data_value(value)?;
+                    data_map.insert(key.clone(), data_value);
+                }
+                Ok(DataValue::Object(data_map))
+            },
+            Bson::DateTime(dt) => {
+                // 将BSON DateTime转换为chrono::DateTime
+                let system_time: std::time::SystemTime = dt.clone().into();
+                let datetime = chrono::DateTime::<chrono::Utc>::from(system_time);
+                Ok(DataValue::DateTime(datetime))
+            },
+            Bson::Binary(bin) => Ok(DataValue::Bytes(bin.bytes.clone())),
+            Bson::Decimal128(dec) => Ok(DataValue::String(dec.to_string())),
             _ => {
                 // 对于其他BSON类型，转换为字符串
-                Ok(Value::String(bson.to_string()))
+                Ok(DataValue::String(bson.to_string()))
             }
         }
     }
@@ -316,7 +357,7 @@ impl DatabaseAdapter for MongoAdapter {
         connection: &DatabaseConnection,
         table: &str,
         data: &HashMap<String, DataValue>,
-    ) -> QuickDbResult<Value> {
+    ) -> QuickDbResult<DataValue> {
         if let DatabaseConnection::MongoDB(db) = connection {
             // 自动建表逻辑：检查集合是否存在，如果不存在则创建
             if !self.table_exists(connection, table).await? {
@@ -361,9 +402,9 @@ impl DatabaseAdapter for MongoAdapter {
                     message: format!("MongoDB插入失败: {}", e),
                 })?;
             
-            Ok(serde_json::json!({
-                "id": result.inserted_id.to_string()
-            }))
+            let mut result_map = HashMap::new();
+            result_map.insert("id".to_string(), DataValue::String(result.inserted_id.to_string()));
+            Ok(DataValue::Object(result_map))
         } else {
             Err(QuickDbError::ConnectionError {
                 message: "连接类型不匹配，期望MongoDB连接".to_string(),
@@ -376,7 +417,7 @@ impl DatabaseAdapter for MongoAdapter {
         connection: &DatabaseConnection,
         table: &str,
         id: &DataValue,
-    ) -> QuickDbResult<Option<Value>> {
+    ) -> QuickDbResult<Option<DataValue>> {
         if let DatabaseConnection::MongoDB(db) = connection {
             let collection = self.get_collection(db, table);
             
@@ -401,7 +442,7 @@ impl DatabaseAdapter for MongoAdapter {
                 })?;
             
             if let Some(doc) = result {
-                Ok(Some(self.document_to_json(&doc)?))
+                Ok(Some(self.document_to_data_value(&doc)?))
             } else {
                 Ok(None)
             }
@@ -418,7 +459,7 @@ impl DatabaseAdapter for MongoAdapter {
         table: &str,
         conditions: &[QueryCondition],
         options: &QueryOptions,
-    ) -> QuickDbResult<Vec<Value>> {
+    ) -> QuickDbResult<Vec<DataValue>> {
         if let DatabaseConnection::MongoDB(db) = connection {
             let collection = self.get_collection(db, table);
             
@@ -460,7 +501,7 @@ impl DatabaseAdapter for MongoAdapter {
                 let doc = cursor.deserialize_current().map_err(|e| QuickDbError::QueryError {
                     message: format!("MongoDB文档反序列化失败: {}", e),
                 })?;
-                results.push(self.document_to_json(&doc)?);
+                results.push(self.document_to_data_value(&doc)?);
             }
             
             Ok(results)
@@ -477,7 +518,7 @@ impl DatabaseAdapter for MongoAdapter {
         table: &str,
         condition_groups: &[QueryConditionGroup],
         options: &QueryOptions,
-    ) -> QuickDbResult<Vec<Value>> {
+    ) -> QuickDbResult<Vec<DataValue>> {
         if let DatabaseConnection::MongoDB(db) = connection {
             let collection = self.get_collection(db, table);
             
@@ -519,7 +560,7 @@ impl DatabaseAdapter for MongoAdapter {
                 let doc = cursor.deserialize_current().map_err(|e| QuickDbError::QueryError {
                     message: format!("MongoDB文档反序列化失败: {}", e),
                 })?;
-                results.push(self.document_to_json(&doc)?);
+                results.push(self.document_to_data_value(&doc)?);
             }
             
             Ok(results)

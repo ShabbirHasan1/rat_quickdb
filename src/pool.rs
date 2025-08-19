@@ -36,27 +36,27 @@ pub enum DatabaseOperation {
     Create {
         table: String,
         data: HashMap<String, DataValue>,
-        response: oneshot::Sender<QuickDbResult<serde_json::Value>>,
+        response: oneshot::Sender<QuickDbResult<DataValue>>,
     },
     /// 根据ID查找记录
     FindById {
         table: String,
         id: DataValue,
-        response: oneshot::Sender<QuickDbResult<Option<serde_json::Value>>>,
+        response: oneshot::Sender<QuickDbResult<Option<DataValue>>>,
     },
     /// 查找记录
     Find {
         table: String,
         conditions: Vec<QueryCondition>,
         options: QueryOptions,
-        response: oneshot::Sender<QuickDbResult<Vec<Value>>>,
+        response: oneshot::Sender<QuickDbResult<Vec<DataValue>>>,
     },
     /// 使用条件组合查找记录（支持OR逻辑）
     FindWithGroups {
         table: String,
         condition_groups: Vec<QueryConditionGroup>,
         options: QueryOptions,
-        response: oneshot::Sender<QuickDbResult<Vec<Value>>>,
+        response: oneshot::Sender<QuickDbResult<Vec<DataValue>>>,
     },
     /// 更新记录
     Update {
@@ -996,7 +996,7 @@ impl ConnectionPool {
         &self,
         table: &str,
         data: &HashMap<String, DataValue>,
-    ) -> QuickDbResult<serde_json::Value> {
+    ) -> QuickDbResult<DataValue> {
         let (response_sender, response_receiver) = oneshot::channel();
         
         let operation = DatabaseOperation::Create {
@@ -1021,7 +1021,7 @@ impl ConnectionPool {
         &self,
         table: &str,
         id: &DataValue,
-    ) -> QuickDbResult<Option<serde_json::Value>> {
+    ) -> QuickDbResult<Option<DataValue>> {
         let (response_sender, response_receiver) = oneshot::channel();
         
         let operation = DatabaseOperation::FindById {
@@ -1047,7 +1047,7 @@ impl ConnectionPool {
         table: &str,
         conditions: &[QueryCondition],
         options: &QueryOptions,
-    ) -> QuickDbResult<Vec<serde_json::Value>> {
+    ) -> QuickDbResult<Vec<DataValue>> {
         let (response_sender, response_receiver) = oneshot::channel();
         
         let operation = DatabaseOperation::Find {

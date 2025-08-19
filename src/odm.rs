@@ -25,24 +25,24 @@ pub trait OdmOperations {
         collection: &str,
         data: HashMap<String, DataValue>,
         alias: Option<&str>,
-    ) -> QuickDbResult<String>;
-    
-    /// 根据ID查询记录
+    ) -> QuickDbResult<DataValue>;
+
+    /// 根据ID查找记录
     async fn find_by_id(
         &self,
         collection: &str,
         id: &str,
         alias: Option<&str>,
-    ) -> QuickDbResult<Option<String>>;
-    
-    /// 查询记录
+    ) -> QuickDbResult<Option<DataValue>>;
+
+    /// 查找记录
     async fn find(
         &self,
         collection: &str,
         conditions: Vec<QueryCondition>,
         options: Option<QueryOptions>,
         alias: Option<&str>,
-    ) -> QuickDbResult<String>;
+    ) -> QuickDbResult<Vec<DataValue>>;
     
     /// 更新记录
     async fn update(
@@ -102,20 +102,20 @@ pub enum OdmRequest {
         collection: String,
         data: HashMap<String, DataValue>,
         alias: Option<String>,
-        response: oneshot::Sender<QuickDbResult<String>>,
+        response: oneshot::Sender<QuickDbResult<DataValue>>,
     },
     FindById {
         collection: String,
         id: String,
         alias: Option<String>,
-        response: oneshot::Sender<QuickDbResult<Option<String>>>,
+        response: oneshot::Sender<QuickDbResult<Option<DataValue>>>,
     },
     Find {
         collection: String,
         conditions: Vec<QueryCondition>,
         options: Option<QueryOptions>,
         alias: Option<String>,
-        response: oneshot::Sender<QuickDbResult<String>>,
+        response: oneshot::Sender<QuickDbResult<Vec<DataValue>>>,
     },
     Update {
         collection: String,
@@ -248,8 +248,16 @@ impl AsyncOdmManager {
         collection: &str,
         data: HashMap<String, DataValue>,
         alias: Option<String>,
-    ) -> QuickDbResult<String> {
-        let actual_alias = alias.unwrap_or_else(|| "default".to_string());
+    ) -> QuickDbResult<DataValue> {
+        let manager = get_global_pool_manager();
+        let actual_alias = match alias {
+            Some(a) => a,
+            None => {
+                // 使用连接池管理器的默认别名
+                manager.get_default_alias().await
+                    .unwrap_or_else(|| "default".to_string())
+            }
+        };
         debug!("处理创建请求: collection={}, alias={}", collection, actual_alias);
         
         let manager = get_global_pool_manager();
@@ -280,9 +288,8 @@ impl AsyncOdmManager {
                 message: "等待连接池响应超时".to_string(),
             })??;
         
-        // 将结果序列化为JSON字符串
-        serde_json::to_string(&result)
-            .map_err(|e| QuickDbError::SerializationError { message: format!("序列化失败: {}", e) })
+        // 直接返回 DataValue 结果
+        Ok(result)
     }
     
     /// 处理根据ID查询请求
@@ -290,8 +297,15 @@ impl AsyncOdmManager {
         collection: &str,
         id: &str,
         alias: Option<String>,
-    ) -> QuickDbResult<Option<String>> {
-        let actual_alias = alias.unwrap_or_else(|| "default".to_string());
+    ) -> QuickDbResult<Option<DataValue>> {
+        let manager = get_global_pool_manager();
+        let actual_alias = match alias {
+            Some(a) => a,
+            None => {
+                manager.get_default_alias().await
+                    .unwrap_or_else(|| "default".to_string())
+            }
+        };
         debug!("处理根据ID查询请求: collection={}, id={}, alias={}", collection, id, actual_alias);
         
         let manager = get_global_pool_manager();
@@ -317,18 +331,10 @@ impl AsyncOdmManager {
             })?;
         
         // 等待响应
-        let result = response_rx.await
+        response_rx.await
             .map_err(|_| QuickDbError::ConnectionError {
                 message: "等待连接池响应超时".to_string(),
-            })??;
-        
-        if let Some(value) = result {
-            Ok(Some(serde_json::to_string(&value)
-                .map_err(|e| QuickDbError::SerializationError { message: format!("序列化失败: {}", e) })?)
-            )
-        } else {
-            Ok(None)
-        }
+            })?
     }
     
     /// 处理查询请求
@@ -337,8 +343,15 @@ impl AsyncOdmManager {
         conditions: Vec<QueryCondition>,
         options: Option<QueryOptions>,
         alias: Option<String>,
-    ) -> QuickDbResult<String> {
-        let actual_alias = alias.unwrap_or_else(|| "default".to_string());
+    ) -> QuickDbResult<Vec<DataValue>> {
+        let manager = get_global_pool_manager();
+        let actual_alias = match alias {
+            Some(a) => a,
+            None => {
+                manager.get_default_alias().await
+                    .unwrap_or_else(|| "default".to_string())
+            }
+        };
         debug!("处理查询请求: collection={}, alias={}", collection, actual_alias);
         
         let manager = get_global_pool_manager();
@@ -365,13 +378,10 @@ impl AsyncOdmManager {
             })?;
         
         // 等待响应
-        let result = response_rx.await
+        response_rx.await
             .map_err(|_| QuickDbError::ConnectionError {
                 message: "等待连接池响应超时".to_string(),
-            })??;
-        
-        serde_json::to_string(&result)
-            .map_err(|e| QuickDbError::SerializationError { message: format!("序列化失败: {}", e) })
+            })?
     }
     
     /// 处理更新请求
@@ -381,7 +391,14 @@ impl AsyncOdmManager {
         updates: HashMap<String, DataValue>,
         alias: Option<String>,
     ) -> QuickDbResult<u64> {
-        let actual_alias = alias.unwrap_or_else(|| "default".to_string());
+        let manager = get_global_pool_manager();
+        let actual_alias = match alias {
+            Some(a) => a,
+            None => {
+                manager.get_default_alias().await
+                    .unwrap_or_else(|| "default".to_string())
+            }
+        };
         debug!("处理更新请求: collection={}, alias={}", collection, actual_alias);
         
         let manager = get_global_pool_manager();
@@ -423,7 +440,14 @@ impl AsyncOdmManager {
         updates: HashMap<String, DataValue>,
         alias: Option<String>,
     ) -> QuickDbResult<bool> {
-        let actual_alias = alias.unwrap_or_else(|| "default".to_string());
+        let manager = get_global_pool_manager();
+        let actual_alias = match alias {
+            Some(a) => a,
+            None => {
+                manager.get_default_alias().await
+                    .unwrap_or_else(|| "default".to_string())
+            }
+        };
         debug!("处理根据ID更新请求: collection={}, id={}, alias={}", collection, id, actual_alias);
         
         let manager = get_global_pool_manager();
@@ -464,7 +488,14 @@ impl AsyncOdmManager {
         conditions: Vec<QueryCondition>,
         alias: Option<String>,
     ) -> QuickDbResult<u64> {
-        let actual_alias = alias.unwrap_or_else(|| "default".to_string());
+        let manager = get_global_pool_manager();
+        let actual_alias = match alias {
+            Some(a) => a,
+            None => {
+                manager.get_default_alias().await
+                    .unwrap_or_else(|| "default".to_string())
+            }
+        };
         debug!("处理删除请求: collection={}, alias={}", collection, actual_alias);
         
         let manager = get_global_pool_manager();
@@ -504,7 +535,14 @@ impl AsyncOdmManager {
         id: &str,
         alias: Option<String>,
     ) -> QuickDbResult<bool> {
-        let actual_alias = alias.unwrap_or_else(|| "default".to_string());
+        let manager = get_global_pool_manager();
+        let actual_alias = match alias {
+            Some(a) => a,
+            None => {
+                manager.get_default_alias().await
+                    .unwrap_or_else(|| "default".to_string())
+            }
+        };
         debug!("处理根据ID删除请求: collection={}, id={}, alias={}", collection, id, actual_alias);
         
         let manager = get_global_pool_manager();
@@ -544,7 +582,14 @@ impl AsyncOdmManager {
         conditions: Vec<QueryCondition>,
         alias: Option<String>,
     ) -> QuickDbResult<u64> {
-        let actual_alias = alias.unwrap_or_else(|| "default".to_string());
+        let manager = get_global_pool_manager();
+        let actual_alias = match alias {
+            Some(a) => a,
+            None => {
+                manager.get_default_alias().await
+                    .unwrap_or_else(|| "default".to_string())
+            }
+        };
         debug!("处理计数请求: collection={}, alias={}", collection, actual_alias);
         
         let manager = get_global_pool_manager();
@@ -584,7 +629,14 @@ impl AsyncOdmManager {
         conditions: Vec<QueryCondition>,
         alias: Option<String>,
     ) -> QuickDbResult<bool> {
-        let actual_alias = alias.unwrap_or_else(|| "default".to_string());
+        let manager = get_global_pool_manager();
+        let actual_alias = match alias {
+            Some(a) => a,
+            None => {
+                manager.get_default_alias().await
+                    .unwrap_or_else(|| "default".to_string())
+            }
+        };
         debug!("处理存在性检查请求: collection={}, alias={}", collection, actual_alias);
         
         let manager = get_global_pool_manager();
@@ -647,7 +699,7 @@ impl OdmOperations for AsyncOdmManager {
         collection: &str,
         data: HashMap<String, DataValue>,
         alias: Option<&str>,
-    ) -> QuickDbResult<String> {
+    ) -> QuickDbResult<DataValue> {
         let (sender, receiver) = oneshot::channel();
         
         let request = OdmRequest::Create {
@@ -673,7 +725,7 @@ impl OdmOperations for AsyncOdmManager {
         collection: &str,
         id: &str,
         alias: Option<&str>,
-    ) -> QuickDbResult<Option<String>> {
+    ) -> QuickDbResult<Option<DataValue>> {
         let (sender, receiver) = oneshot::channel();
         
         let request = OdmRequest::FindById {
@@ -700,7 +752,7 @@ impl OdmOperations for AsyncOdmManager {
         conditions: Vec<QueryCondition>,
         options: Option<QueryOptions>,
         alias: Option<&str>,
-    ) -> QuickDbResult<String> {
+    ) -> QuickDbResult<Vec<DataValue>> {
         let (sender, receiver) = oneshot::channel();
         
         let request = OdmRequest::Find {
@@ -904,7 +956,7 @@ pub async fn create(
     collection: &str,
     data: HashMap<String, DataValue>,
     alias: Option<&str>,
-) -> QuickDbResult<String> {
+) -> QuickDbResult<DataValue> {
     let manager = get_odm_manager().await;
     manager.create(collection, data, alias).await
 }
@@ -914,7 +966,7 @@ pub async fn find_by_id(
     collection: &str,
     id: &str,
     alias: Option<&str>,
-) -> QuickDbResult<Option<String>> {
+) -> QuickDbResult<Option<DataValue>> {
     let manager = get_odm_manager().await;
     manager.find_by_id(collection, id, alias).await
 }
@@ -925,7 +977,7 @@ pub async fn find(
     conditions: Vec<QueryCondition>,
     options: Option<QueryOptions>,
     alias: Option<&str>,
-) -> QuickDbResult<String> {
+) -> QuickDbResult<Vec<DataValue>> {
     let manager = get_odm_manager().await;
     manager.find(collection, conditions, options, alias).await
 }

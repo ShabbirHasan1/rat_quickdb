@@ -231,7 +231,7 @@ impl PyQueueBridge {
                         serde_json::Value::String(s) => DataValue::String(s.clone()),
                         serde_json::Value::Number(n) => {
                             if let Some(i) = n.as_i64() {
-                                DataValue::Integer(i)
+                                DataValue::Int(i)
                             } else if let Some(f) = n.as_f64() {
                                 DataValue::Float(f)
                             } else {
@@ -291,7 +291,7 @@ impl PyQueueBridge {
                             serde_json::Value::String(s) => DataValue::String(s.clone()),
                             serde_json::Value::Number(n) => {
                                 if let Some(i) = n.as_i64() {
-                                    DataValue::Integer(i)
+                                    DataValue::Int(i)
                                 } else if let Some(f) = n.as_f64() {
                                     DataValue::Float(f)
                                 } else {

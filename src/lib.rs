@@ -38,7 +38,11 @@ pub use manager::{
     get_cache_manager, get_cache_stats, clear_cache, clear_all_caches
 };
 pub use odm::{AsyncOdmManager, OdmOperations, get_odm_manager, get_odm_manager_mut};
-pub use model::{Model, ModelOperations, ModelManager, FieldType, FieldDefinition, ModelMeta, IndexDefinition};
+pub use model::{
+    Model, ModelOperations, ModelManager, FieldType, FieldDefinition, ModelMeta, IndexDefinition,
+    array_field, list_field, string_field, integer_field, float_field, boolean_field,
+    datetime_field, uuid_field, json_field, reference_field
+};
 pub use serializer::{DataSerializer, SerializerConfig, OutputFormat, SerializationResult};
 pub use adapter::{DatabaseAdapter, create_adapter};
 pub use config::{
@@ -59,7 +63,9 @@ pub use cache::{CacheManager, CacheStats};
 // 导出ID生成器相关类型
 pub use id_generator::{IdGenerator, MongoAutoIncrementGenerator};
 
-// 重新导出便捷函数
+// 重新导出 ODM 操作函数（底层 DataValue API）
+// 注意：这些函数返回 DataValue，主要用于内部使用
+// 对于应用开发，推荐使用 ModelManager<T> 获取结构化数据
 pub use odm::{create, find_by_id, find, update, update_by_id, delete, delete_by_id, count, exists};
 
 // Python API 导出（仅在启用 python-bindings 特性时）

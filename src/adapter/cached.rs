@@ -41,7 +41,7 @@ impl DatabaseAdapter for CachedDatabaseAdapter {
         connection: &DatabaseConnection,
         table: &str,
         data: &HashMap<String, DataValue>,
-    ) -> QuickDbResult<Value> {
+    ) -> QuickDbResult<DataValue> {
         let result = self.inner.create(connection, table, data).await;
         
         // 创建成功后只清理查询缓存，保留记录缓存
@@ -61,7 +61,7 @@ impl DatabaseAdapter for CachedDatabaseAdapter {
         connection: &DatabaseConnection,
         table: &str,
         id: &DataValue,
-    ) -> QuickDbResult<Option<Value>> {
+    ) -> QuickDbResult<Option<DataValue>> {
         // 将DataValue转换为IdType
         let id_type = match id {
             DataValue::Int(n) => IdType::Number(*n),
@@ -76,9 +76,7 @@ impl DatabaseAdapter for CachedDatabaseAdapter {
         match self.cache_manager.get_cached_record(table, &id_type).await {
             Ok(Some(cached_result)) => {
                 debug!("缓存命中: 表={}, ID={:?}", table, id);
-                if let DataValue::Json(value) = cached_result {
-                    return Ok(Some(value));
-                }
+                return Ok(Some(cached_result));
             }
             Ok(None) => {
                 debug!("缓存未命中: 表={}, ID={:?}", table, id);
@@ -93,8 +91,7 @@ impl DatabaseAdapter for CachedDatabaseAdapter {
         
         // 查询成功时缓存结果
         if let Ok(Some(ref record)) = result {
-            let data_value = DataValue::Json(record.clone());
-            if let Err(e) = self.cache_manager.cache_record(table, &id_type, &data_value).await {
+            if let Err(e) = self.cache_manager.cache_record(table, &id_type, record).await {
                 warn!("缓存记录失败: {}", e);
             }
         }
@@ -109,16 +106,12 @@ impl DatabaseAdapter for CachedDatabaseAdapter {
         table: &str,
         conditions: &[QueryCondition],
         options: &QueryOptions,
-    ) -> QuickDbResult<Vec<Value>> {
+    ) -> QuickDbResult<Vec<DataValue>> {
         // 先检查缓存
         match self.cache_manager.get_cached_query_result(table, options).await {
             Ok(Some(cached_result)) => {
                 debug!("查询缓存命中: 表={}", table);
-                // 将DataValue转换为JsonValue
-                let json_values: Vec<JsonValue> = cached_result.into_iter()
-                    .filter_map(|dv| if let DataValue::Json(v) = dv { Some(v) } else { None })
-                    .collect();
-                return Ok(json_values);
+                return Ok(cached_result);
             }
             Ok(None) => {
                 debug!("查询缓存未命中: 表={}", table);
@@ -133,8 +126,7 @@ impl DatabaseAdapter for CachedDatabaseAdapter {
         
         // 查询成功时缓存结果
         if let Ok(ref records) = result {
-            let data_values: Vec<DataValue> = records.iter().map(|v| DataValue::Json(v.clone())).collect();
-            if let Err(e) = self.cache_manager.cache_query_result(table, options, &data_values).await {
+            if let Err(e) = self.cache_manager.cache_query_result(table, options, records).await {
                 warn!("缓存查询结果失败: {}", e);
             }
         }
@@ -149,7 +141,7 @@ impl DatabaseAdapter for CachedDatabaseAdapter {
         table: &str,
         condition_groups: &[QueryConditionGroup],
         options: &QueryOptions,
-    ) -> QuickDbResult<Vec<Value>> {
+    ) -> QuickDbResult<Vec<DataValue>> {
         // 生成条件组合查询缓存键
         let cache_key = self.cache_manager.generate_condition_groups_cache_key(table, condition_groups, options);
         
@@ -157,11 +149,7 @@ impl DatabaseAdapter for CachedDatabaseAdapter {
         match self.cache_manager.get_cached_query_result(table, options).await {
             Ok(Some(cached_result)) => {
                 debug!("条件组合查询缓存命中: 表={}, 键={}", table, cache_key);
-                // 将DataValue转换为JsonValue
-                let json_result: Vec<Value> = cached_result.into_iter()
-                    .map(|dv| dv.to_json())
-                    .collect();
-                return Ok(json_result);
+                return Ok(cached_result);
             }
             Ok(None) => {
                 debug!("条件组合查询缓存未命中: 表={}, 键={}", table, cache_key);
@@ -174,11 +162,8 @@ impl DatabaseAdapter for CachedDatabaseAdapter {
         // 缓存未命中，查询数据库
         let result = self.inner.find_with_groups(connection, table, condition_groups, options).await?;
         
-        // 将JsonValue转换为DataValue并缓存查询结果
-        let data_values: Vec<DataValue> = result.iter()
-            .map(|jv| DataValue::from_json(jv.clone()))
-            .collect();
-        if let Err(e) = self.cache_manager.cache_query_result(table, options, &data_values).await {
+        // 缓存查询结果
+        if let Err(e) = self.cache_manager.cache_query_result(table, options, &result).await {
             warn!("缓存条件组合查询结果失败: {}", e);
         } else {
             debug!("已缓存条件组合查询结果: 表={}, 键={}, 结果数量={}", table, cache_key, result.len());
