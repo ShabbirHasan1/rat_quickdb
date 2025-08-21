@@ -226,6 +226,39 @@ impl PyDbQueueBridge {
         self.wait_for_response(response_receiver)
     }
 
+    /// 统计符合条件的记录数量
+    pub fn count(
+        &self,
+        table: String,
+        conditions_json: String,
+        alias: Option<String>,
+    ) -> PyResult<String> {
+        self.check_initialized()?;
+        
+        let conditions = self.parse_conditions_json(&conditions_json)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e))?;
+        
+        let (response_sender, response_receiver) = oneshot::channel();
+        let request = PyDbRequest {
+            request_id: Uuid::new_v4().to_string(),
+            operation: "count".to_string(),
+            collection: table,
+            data: None,
+            conditions: Some(conditions),
+            condition_groups: None,
+            options: None,
+            updates: None,
+            id: None,
+            alias,
+            database_config: None,
+            fields: None,
+            response_sender,
+        };
+        
+        self.send_request(request)?;
+        self.wait_for_response(response_receiver)
+    }
+
     /// 删除数据记录
     pub fn delete(
         &self,
@@ -1027,6 +1060,14 @@ impl PyDbQueueBridgeAsync {
                     Err(QuickDbError::ValidationError { field: "fields".to_string(), message: "缺少字段定义".to_string() })
                 }
             },
+            "count" => {
+                if let Some(ref conditions) = request.conditions {
+                    Self::handle_count_direct(&request.collection, conditions.clone(), request.alias.clone()).await
+                        .map(|count| count.to_string())
+                } else {
+                    Err(QuickDbError::ValidationError { field: "conditions".to_string(), message: "缺少查询条件".to_string() })
+                }
+            },
             _ => Err(QuickDbError::ValidationError { field: "operation".to_string(), message: format!("不支持的操作: {}", request.operation) })
         };
         
@@ -1299,6 +1340,19 @@ impl PyDbQueueBridgeAsync {
         
         // create_table 成功执行返回 true
         Ok(true)
+    }
+
+    /// 处理统计操作
+    async fn handle_count_direct(
+        collection: &str,
+        conditions: Vec<QueryCondition>,
+        alias: Option<String>,
+    ) -> QuickDbResult<u64> {
+        let odm_manager = get_odm_manager().await;
+        let alias_ref = alias.as_deref();
+        let count = odm_manager.count(collection, conditions, alias_ref).await?;
+        
+        Ok(count)
     }
 }
 
