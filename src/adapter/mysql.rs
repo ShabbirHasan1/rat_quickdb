@@ -32,93 +32,301 @@ impl MysqlAdapter {
             name: "MySQL".to_string(),
         }
     }
+    
+    /// 安全地读取整数字段，防止 byteorder 错误
+    fn safe_read_integer(row: &MySqlRow, column_name: &str) -> QuickDbResult<DataValue> {
+        // 尝试多种整数类型读取，按照从最常见到最不常见的顺序
+        
+        // 1. 尝试读取为 Option<i64>
+        if let Ok(val) = row.try_get::<Option<i64>, _>(column_name) {
+            return Ok(match val {
+                Some(i) => DataValue::Int(i),
+                None => DataValue::Null,
+            });
+        }
+        
+        // 2. 尝试读取为 Option<i32>
+        if let Ok(val) = row.try_get::<Option<i32>, _>(column_name) {
+            return Ok(match val {
+                Some(i) => DataValue::Int(i as i64),
+                None => DataValue::Null,
+            });
+        }
+        
+        // 3. 尝试读取为 Option<u64>
+        if let Ok(val) = row.try_get::<Option<u64>, _>(column_name) {
+            return Ok(match val {
+                Some(i) => {
+                    if i <= i64::MAX as u64 {
+                        DataValue::Int(i as i64)
+                    } else {
+                        // 如果超出 i64 范围，转为字符串
+                        DataValue::String(i.to_string())
+                    }
+                },
+                None => DataValue::Null,
+            });
+        }
+        
+        // 4. 尝试读取为 Option<u32>
+        if let Ok(val) = row.try_get::<Option<u32>, _>(column_name) {
+            return Ok(match val {
+                Some(i) => DataValue::Int(i as i64),
+                None => DataValue::Null,
+            });
+        }
+        
+        // 5. 最后尝试读取为字符串
+        if let Ok(val) = row.try_get::<Option<String>, _>(column_name) {
+            return Ok(match val {
+                Some(s) => {
+                    // 尝试解析为数字
+                    if let Ok(i) = s.parse::<i64>() {
+                        DataValue::Int(i)
+                    } else {
+                        DataValue::String(s)
+                    }
+                },
+                None => DataValue::Null,
+            });
+        }
+        
+        // 如果所有尝试都失败，返回错误
+        Err(QuickDbError::SerializationError {
+            message: format!("无法读取整数字段 '{}' 的值，所有类型转换都失败", column_name),
+        })
+    }
+
+    /// 安全读取浮点数，避免 byteorder 错误
+    fn safe_read_float(row: &MySqlRow, column_name: &str) -> QuickDbResult<DataValue> {
+        // 首先尝试读取 f32 (MySQL FLOAT 是 4 字节)
+        if let Ok(val) = row.try_get::<Option<f32>, _>(column_name) {
+            return Ok(match val {
+                Some(f) => DataValue::Float(f as f64),
+                None => DataValue::Null,
+            });
+        }
+        
+        // 然后尝试读取 f64 (MySQL DOUBLE 是 8 字节)
+        if let Ok(val) = row.try_get::<Option<f64>, _>(column_name) {
+            return Ok(match val {
+                Some(f) => DataValue::Float(f),
+                None => DataValue::Null,
+            });
+        }
+        
+        // 尝试以字符串读取并解析
+        if let Ok(val) = row.try_get::<Option<String>, _>(column_name) {
+            return Ok(match val {
+                Some(s) => {
+                    if let Ok(f) = s.parse::<f64>() {
+                        DataValue::Float(f)
+                    } else {
+                        DataValue::String(s)
+                    }
+                },
+                None => DataValue::Null,
+            });
+        }
+        
+        // 所有尝试都失败，返回错误
+        Err(QuickDbError::SerializationError { message: format!("无法读取浮点数字段 '{}'", column_name) })
+    }
+
+    /// 安全读取布尔值，避免 byteorder 错误
+    fn safe_read_bool(row: &MySqlRow, column_name: &str) -> QuickDbResult<DataValue> {
+        // 尝试以 bool 读取
+        if let Ok(val) = row.try_get::<Option<bool>, _>(column_name) {
+            return Ok(match val {
+                Some(b) => DataValue::Bool(b),
+                None => DataValue::Null,
+            });
+        }
+        
+        // 尝试以整数读取（MySQL 中 BOOLEAN 通常存储为 TINYINT）
+        if let Ok(val) = row.try_get::<Option<i8>, _>(column_name) {
+            return Ok(match val {
+                Some(i) => DataValue::Bool(i != 0),
+                None => DataValue::Null,
+            });
+        }
+        
+        // 尝试以字符串读取并解析
+        if let Ok(val) = row.try_get::<Option<String>, _>(column_name) {
+            return Ok(match val {
+                Some(s) => {
+                    match s.to_lowercase().as_str() {
+                        "true" | "1" | "yes" | "on" => DataValue::Bool(true),
+                        "false" | "0" | "no" | "off" => DataValue::Bool(false),
+                        _ => DataValue::String(s),
+                    }
+                },
+                None => DataValue::Null,
+            });
+        }
+        
+        // 所有尝试都失败，返回错误
+        Err(QuickDbError::SerializationError { message: format!("无法读取布尔字段 '{}'", column_name) })
+    }
 
     /// 将MySQL行转换为DataValue映射
     fn row_to_data_map(&self, row: &MySqlRow) -> QuickDbResult<HashMap<String, DataValue>> {
-        let mut map = HashMap::new();
+        let mut data_map = HashMap::new();
         
         for column in row.columns() {
             let column_name = column.name();
+            let column_type = column.type_info().name();
+            
+            // 调试：输出列类型信息
+            debug!("开始处理MySQL列 '{}' 的类型: '{}'", column_name, column_type);
+            println!("[DEBUG] 开始处理MySQL列 '{}' 的类型: '{}'", column_name, column_type);
             
             // 根据MySQL类型转换值
-            let data_value = match column.type_info().name() {
+            let data_value = match column_type {
                 "INT" | "BIGINT" | "SMALLINT" | "TINYINT" => {
-                    if let Ok(val) = row.try_get::<Option<i64>, _>(column_name) {
+                    debug!("准备读取整数字段: {}", column_name);
+                    // 使用安全的整数读取方法，防止 byteorder 错误
+                    match Self::safe_read_integer(row, column_name) {
+                        Ok(value) => {
+                            debug!("成功读取整数字段 {}: {:?}", column_name, value);
+                            value
+                        },
+                        Err(e) => {
+                            error!("读取整数字段 {} 时发生错误: {}", column_name, e);
+                            DataValue::Null
+                        }
+                    }
+                },
+                // 处理UNSIGNED整数类型
+                "INT UNSIGNED" | "BIGINT UNSIGNED" | "SMALLINT UNSIGNED" | "TINYINT UNSIGNED" => {
+                    // 首先尝试作为字符串读取，避免字节序问题
+                    if let Ok(val) = row.try_get::<Option<String>, _>(column_name) {
+                        match val {
+                            Some(s) => {
+                                if let Ok(u) = s.parse::<u64>() {
+                                    if u <= i64::MAX as u64 {
+                                        DataValue::Int(u as i64)
+                                    } else {
+                                        DataValue::String(u.to_string())
+                                    }
+                                } else if let Ok(i) = s.parse::<i64>() {
+                                    DataValue::Int(i)
+                                } else {
+                                    DataValue::String(s)
+                                }
+                            },
+                            None => DataValue::Null,
+                        }
+                    } else if let Ok(val) = row.try_get::<Option<u64>, _>(column_name) {
+                        match val {
+                            Some(u) => {
+                                if u <= i64::MAX as u64 {
+                                    DataValue::Int(u as i64)
+                                } else {
+                                    DataValue::String(u.to_string())
+                                }
+                            },
+                            None => DataValue::Null,
+                        }
+                    } else if let Ok(val) = row.try_get::<Option<i64>, _>(column_name) {
                         match val {
                             Some(i) => DataValue::Int(i),
                             None => DataValue::Null,
                         }
                     } else {
+                        warn!("无法读取无符号整数字段 '{}' 的值，类型: {}", column_name, column_type);
                         DataValue::Null
                     }
                 },
                 "FLOAT" | "DOUBLE" => {
-                    if let Ok(val) = row.try_get::<Option<f64>, _>(column_name) {
-                        match val {
-                            Some(f) => DataValue::Float(f),
-                            None => DataValue::Null,
+                    debug!("准备读取浮点数字段: {}", column_name);
+                    match Self::safe_read_float(row, column_name) {
+                        Ok(value) => {
+                            debug!("成功读取浮点数字段 {}: {:?}", column_name, value);
+                            value
+                        },
+                        Err(e) => {
+                            error!("读取浮点数字段 {} 时发生错误: {}", column_name, e);
+                            DataValue::Null
                         }
-                    } else {
-                        DataValue::Null
                     }
                 },
                 "BOOLEAN" | "BOOL" => {
-                    if let Ok(val) = row.try_get::<Option<bool>, _>(column_name) {
-                        match val {
-                            Some(b) => DataValue::Bool(b),
-                            None => DataValue::Null,
+                    debug!("准备读取布尔字段: {}", column_name);
+                    match Self::safe_read_bool(row, column_name) {
+                        Ok(value) => {
+                            debug!("成功读取布尔字段 {}: {:?}", column_name, value);
+                            value
+                        },
+                        Err(e) => {
+                            error!("读取布尔字段 {} 时发生错误: {}", column_name, e);
+                            DataValue::Null
                         }
-                    } else {
-                        DataValue::Null
                     }
                 },
                 "VARCHAR" | "TEXT" | "CHAR" => {
+                    debug!("准备读取字符串字段: {}", column_name);
                     if let Ok(value) = row.try_get::<Option<String>, _>(column_name) {
-                        match value {
-                            Some(s) => crate::types::parse_optional_json_string_to_data_value(Some(s)),
+                        let result = match value {
+                            Some(s) => DataValue::String(s),
                             None => DataValue::Null,
-                        }
+                        };
+                        debug!("成功读取字符串字段 {}: {:?}", column_name, result);
+                        result
                     } else {
+                        error!("无法读取字符串字段: {}", column_name);
                         DataValue::Null
                     }
                 },
                 "JSON" => {
-                    if let Ok(val) = row.try_get::<Option<JsonValue>, _>(column_name) {
-                        match val {
-                            Some(json_val) => crate::types::json_value_to_data_value(json_val),
+                    debug!("准备读取JSON字段: {}", column_name);
+                    if let Ok(value) = row.try_get::<Option<JsonValue>, _>(column_name) {
+                        let result = match value {
+                            Some(json) => DataValue::Json(json),
                             None => DataValue::Null,
-                        }
+                        };
+                        debug!("成功读取JSON字段 {}: {:?}", column_name, result);
+                        result
                     } else {
+                        error!("无法读取JSON字段: {}", column_name);
                         DataValue::Null
                     }
                 },
                 "DATETIME" | "TIMESTAMP" => {
-                    if let Ok(val) = row.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(column_name) {
-                        match val {
+                    debug!("准备读取日期时间字段: {}", column_name);
+                    if let Ok(value) = row.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(column_name) {
+                        let result = match value {
                             Some(dt) => DataValue::DateTime(dt),
                             None => DataValue::Null,
-                        }
+                        };
+                        debug!("成功读取日期时间字段 {}: {:?}", column_name, result);
+                        result
                     } else {
+                        error!("无法读取日期时间字段: {}", column_name);
                         DataValue::Null
                     }
                 },
                 _ => {
+                    debug!("处理未知类型字段: {} (类型: {})", column_name, column_type);
                     // 对于未知类型，尝试作为字符串处理
                     if let Ok(value) = row.try_get::<Option<String>, _>(column_name) {
-                        match value {
+                        let result = match value {
                             Some(s) => DataValue::String(s),
                             None => DataValue::Null,
-                        }
+                        };
+                        debug!("成功读取未知类型字段 {}: {:?}", column_name, result);
+                        result
                     } else {
+                        error!("无法读取未知类型字段: {}", column_name);
                         DataValue::Null
                     }
                 }
             };
             
-            map.insert(column_name.to_string(), data_value);
+            data_map.insert(column_name.to_string(), data_value);
         }
         
-        Ok(map)
+        Ok(data_map)
     }
 
 
@@ -177,8 +385,28 @@ impl MysqlAdapter {
         
         let mut results = Vec::new();
         for row in rows {
-            let data_map = self.row_to_data_map(&row)?;
-            results.push(DataValue::Object(data_map));
+            // 使用 catch_unwind 捕获可能的 panic，防止连接池崩溃
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.row_to_data_map(&row)
+            })) {
+                Ok(Ok(data_map)) => {
+                    results.push(DataValue::Object(data_map));
+                },
+                Ok(Err(e)) => {
+                    error!("行数据转换失败: {}", e);
+                    // 创建一个包含错误信息的对象，而不是跳过这一行
+                    let mut error_map = HashMap::new();
+                    error_map.insert("error".to_string(), DataValue::String(format!("数据转换失败: {}", e)));
+                    results.push(DataValue::Object(error_map));
+                },
+                Err(panic_info) => {
+                    error!("行数据转换时发生 panic: {:?}", panic_info);
+                    // 创建一个包含 panic 信息的对象
+                    let mut error_map = HashMap::new();
+                    error_map.insert("error".to_string(), DataValue::String("数据转换时发生内部错误".to_string()));
+                    results.push(DataValue::Object(error_map));
+                }
+            }
         }
         
         Ok(results)
@@ -276,6 +504,7 @@ impl DatabaseAdapter for MysqlAdapter {
             }
             
             let (sql, params) = SqlQueryBuilder::new()
+                .database_type(crate::adapter::query_builder::DatabaseType::MySQL)
                 .insert(data.clone())
                 .from(table)
                 .build()?;
@@ -316,6 +545,7 @@ impl DatabaseAdapter for MysqlAdapter {
             };
             
             let (sql, params) = SqlQueryBuilder::new()
+                .database_type(crate::adapter::query_builder::DatabaseType::MySQL)
                 .select(&["*"])
                 .from(table)
                 .where_condition(condition)
@@ -340,6 +570,7 @@ impl DatabaseAdapter for MysqlAdapter {
     ) -> QuickDbResult<Vec<DataValue>> {
         if let DatabaseConnection::MySQL(pool) = connection {
             let mut builder = SqlQueryBuilder::new()
+                .database_type(crate::adapter::query_builder::DatabaseType::MySQL)
                 .select(&["*"])
                 .from(table)
                 .where_conditions(conditions);
@@ -373,6 +604,7 @@ impl DatabaseAdapter for MysqlAdapter {
     ) -> QuickDbResult<Vec<DataValue>> {
         if let DatabaseConnection::MySQL(pool) = connection {
             let mut builder = SqlQueryBuilder::new()
+                .database_type(crate::adapter::query_builder::DatabaseType::MySQL)
                 .select(&["*"])
                 .from(table)
                 .where_condition_groups(condition_groups);
@@ -408,6 +640,7 @@ impl DatabaseAdapter for MysqlAdapter {
     ) -> QuickDbResult<u64> {
         if let DatabaseConnection::MySQL(pool) = connection {
             let (sql, params) = SqlQueryBuilder::new()
+                .database_type(crate::adapter::query_builder::DatabaseType::MySQL)
                 .update(data.clone())
                 .from(table)
                 .where_conditions(conditions)
@@ -436,6 +669,7 @@ impl DatabaseAdapter for MysqlAdapter {
             };
             
             let (sql, params) = SqlQueryBuilder::new()
+                .database_type(crate::adapter::query_builder::DatabaseType::MySQL)
                 .update(data.clone())
                 .from(table)
                 .where_condition(condition)
@@ -458,6 +692,7 @@ impl DatabaseAdapter for MysqlAdapter {
     ) -> QuickDbResult<u64> {
         if let DatabaseConnection::MySQL(pool) = connection {
             let (sql, params) = SqlQueryBuilder::new()
+                .database_type(crate::adapter::query_builder::DatabaseType::MySQL)
                 .delete()
                 .from(table)
                 .where_conditions(conditions)
@@ -485,6 +720,7 @@ impl DatabaseAdapter for MysqlAdapter {
             };
             
             let (sql, params) = SqlQueryBuilder::new()
+                .database_type(crate::adapter::query_builder::DatabaseType::MySQL)
                 .delete()
                 .from(table)
                 .where_condition(condition)
@@ -507,6 +743,7 @@ impl DatabaseAdapter for MysqlAdapter {
     ) -> QuickDbResult<u64> {
         if let DatabaseConnection::MySQL(pool) = connection {
             let (sql, params) = SqlQueryBuilder::new()
+                .database_type(crate::adapter::query_builder::DatabaseType::MySQL)
                 .select(&["COUNT(*) as count"])
                 .from(table)
                 .where_conditions(conditions)

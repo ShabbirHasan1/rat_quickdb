@@ -30,7 +30,10 @@ impl SqliteAdapter {
             // 尝试获取不同类型的值
             let data_value = if let Ok(value) = row.try_get::<Option<String>, _>(column_name) {
                 // 使用通用的JSON字符串检测和反序列化方法
-                crate::types::parse_optional_json_string_to_data_value(value)
+                match value {
+                    Some(s) => crate::types::parse_json_string_to_data_value(s),
+                    None => DataValue::Null,
+                }
             } else if let Ok(value) = row.try_get::<Option<i64>, _>(column_name) {
                 match value {
                     Some(i) => DataValue::Int(i),

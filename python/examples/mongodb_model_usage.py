@@ -180,6 +180,44 @@ def demonstrate_field_creation():
     print(f"  是否必填: {tags_field.is_required}")
     print(f"  字段描述: {tags_field.description}")
     
+    print("\n=== MongoDB 原生数组字段支持演示 ===")
+    
+    # MongoDB 原生支持的数组字段类型
+    # 字符串数组 - MongoDB 原生支持
+    tags_array = array_field(
+        FieldType.string(),
+        description="标签数组 - MongoDB原生数组存储"
+    )
+    print(f"字符串数组字段: ArrayField(String)")
+    
+    # 整数数组 - MongoDB 原生支持
+    scores_array = array_field(
+        FieldType.integer(),
+        description="分数数组 - MongoDB原生数组存储"
+    )
+    print(f"整数数组字段: ArrayField(Integer)")
+    
+    # 布尔数组 - MongoDB 原生支持
+    flags_array = array_field(
+        FieldType.boolean(),
+        description="标志数组 - MongoDB原生数组存储"
+    )
+    print(f"布尔数组字段: ArrayField(Boolean)")
+    
+    # JSON字段示例 - MongoDB 灵活存储
+    metadata_json = json_field(
+        required=False,
+        description="元数据 - MongoDB灵活JSON存储"
+    )
+    print(f"JSON字段示例: JsonField")
+    
+    print("\n=== MongoDB 数组字段优势 ===")
+    print("1. 原生数组支持，无需序列化")
+    print("2. 支持数组元素查询和索引")
+    print("3. 支持嵌套文档数组")
+    print("4. 支持混合类型数组")
+    print("5. 高效的数组操作（$push, $pull, $addToSet等）")
+    
     return {
         '_id': id_field,
         'username': username_field,
@@ -188,7 +226,11 @@ def demonstrate_field_creation():
         'created_at': created_at_field,
         'author_id': author_field,
         'metadata': metadata_field,
-        'tags': tags_field
+        'tags': tags_field,
+        'tags_array': tags_array,
+        'scores_array': scores_array,
+        'flags_array': flags_array,
+        'metadata_json': metadata_json
     }
 
 
@@ -642,6 +684,53 @@ def cleanup_mongodb_test_data(demo_manager):
         demo_manager.shutdown()
 
 
+def cleanup_existing_collections():
+    """清理现有的测试集合"""
+    print("🧹 清理现有的MongoDB测试集合...")
+    try:
+        # 创建临时桥接器进行清理
+        temp_bridge = create_db_queue_bridge()
+        
+        # 添加数据库连接
+        response = temp_bridge.add_mongodb_database(
+            alias="mongodb_cleanup",
+            host="db0.0ldm0s.net",
+            port=27017,
+            database="testdb",
+            username="testdb",
+            password="yash2vCiBA&B#h$#i&gb@IGSTh&cP#QC^",
+            auth_source="testdb",
+            direct_connection=True,
+            max_connections=5,
+            min_connections=1,
+            connection_timeout=5,
+            idle_timeout=30,
+            max_lifetime=120
+        )
+        
+        result = json.loads(response)
+        if result.get("success"):
+            # 删除测试集合中的文档
+            collections_to_clean = ["odm_test_collection", "mongodb_users"]
+            for collection in collections_to_clean:
+                try:
+                    delete_response = temp_bridge.delete_collection(collection, "mongodb_cleanup")
+                    delete_result = json.loads(delete_response)
+                    if delete_result.get("success"):
+                        print(f"  ✅ 清理集合 {collection} 成功")
+                    else:
+                        print(f"  ⚠️ 清理集合 {collection} 失败: {delete_result.get('error')}")
+                except Exception as e:
+                    print(f"  ⚠️ 清理集合 {collection} 时出错: {e}")
+        else:
+            print(f"  ⚠️ 无法连接到MongoDB进行清理: {result.get('error')}")
+            
+    except Exception as e:
+        print(f"  ⚠️ 清理过程中出错: {e}")
+    
+    print("  清理完成")
+
+
 @with_graceful_shutdown(ShutdownConfig(verbose_logging=True))
 def main():
     """主函数"""
@@ -652,6 +741,9 @@ def main():
     signal.signal(signal.SIGTERM, signal_handler)
     
     print("=== RAT QuickDB Python MongoDB ODM绑定演示 ===")
+    
+    # 清理现有的测试集合
+    cleanup_existing_collections()
     
     bridge = None
     demo_manager = None

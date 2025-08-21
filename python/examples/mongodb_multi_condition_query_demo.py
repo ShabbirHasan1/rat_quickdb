@@ -88,6 +88,46 @@ class MongoDbMultiConditionQueryDemo(GracefulShutdownMixin):
         timestamp = int(time.time() * 1000)
         self.collection_name = f"demo_users_{timestamp}"
         
+    def _cleanup_existing_collections(self):
+        """清理现有的测试集合"""
+        print("🧹 清理现有的测试集合...")
+        try:
+            # 创建临时桥接器进行清理
+            temp_bridge = create_db_queue_bridge()
+            
+            # 添加数据库连接
+            response = temp_bridge.add_mongodb_database(
+                alias="mongodb_cleanup",
+                host="db0.0ldm0s.net",
+                port=27017,
+                database="testdb",
+                username="testdb",
+                password="yash2vCiBA&B#h$#i&gb@IGSTh&cP#QC^",
+                auth_source="testdb",
+                direct_connection=True,
+                max_connections=2,
+                min_connections=1,
+                connection_timeout=5,
+                idle_timeout=30,
+                max_lifetime=120
+            )
+            
+            result = json.loads(response)
+            if result.get("success"):
+                # 清理可能存在的测试集合
+                collections_to_clean = ["demo_users", "test_users", "users", self.collection_name]
+                for collection in collections_to_clean:
+                    try:
+                        temp_bridge.drop_table(collection, "mongodb_cleanup")
+                        print(f"✅ 已清理集合: {collection}")
+                    except Exception as e:
+                        print(f"⚠️ 清理集合 {collection} 时出错: {e}")
+            else:
+                print(f"⚠️ 无法连接到MongoDB进行清理: {result.get('error')}")
+                
+        except Exception as e:
+            print(f"⚠️ 清理现有集合时出错: {e}")
+        
     def setup_database(self):
         """设置MongoDB数据库和测试数据"""
         print("🔧 设置MongoDB数据库...")
@@ -169,7 +209,7 @@ class MongoDbMultiConditionQueryDemo(GracefulShutdownMixin):
         # 插入测试数据（MongoDB格式）
         test_users = [
             {
-                "_id": "user_001",
+                "id": "user_001",
                 "name": "张三", 
                 "age": 25, 
                 "city": "北京", 
@@ -185,7 +225,7 @@ class MongoDbMultiConditionQueryDemo(GracefulShutdownMixin):
                 "is_active": True
             },
             {
-                "_id": "user_002",
+                "id": "user_002",
                 "name": "李四", 
                 "age": 30, 
                 "city": "上海", 
@@ -201,7 +241,7 @@ class MongoDbMultiConditionQueryDemo(GracefulShutdownMixin):
                 "is_active": True
             },
             {
-                "_id": "user_003",
+                "id": "user_003",
                 "name": "王五", 
                 "age": 28, 
                 "city": "广州", 
@@ -217,7 +257,7 @@ class MongoDbMultiConditionQueryDemo(GracefulShutdownMixin):
                 "is_active": True
             },
             {
-                "_id": "user_004",
+                "id": "user_004",
                 "name": "赵六", 
                 "age": 35, 
                 "city": "深圳", 
@@ -233,7 +273,7 @@ class MongoDbMultiConditionQueryDemo(GracefulShutdownMixin):
                 "is_active": True
             },
             {
-                "_id": "user_005",
+                "id": "user_005",
                 "name": "钱七", 
                 "age": 22, 
                 "city": "杭州", 
@@ -249,7 +289,7 @@ class MongoDbMultiConditionQueryDemo(GracefulShutdownMixin):
                 "is_active": True
             },
             {
-                "_id": "user_006",
+                "id": "user_006",
                 "name": "孙八", 
                 "age": 40, 
                 "city": "成都", 
@@ -265,7 +305,7 @@ class MongoDbMultiConditionQueryDemo(GracefulShutdownMixin):
                 "is_active": True
             },
             {
-                "_id": "user_007",
+                "id": "user_007",
                 "name": "周九", 
                 "age": 26, 
                 "city": "西安", 
@@ -281,7 +321,7 @@ class MongoDbMultiConditionQueryDemo(GracefulShutdownMixin):
                 "is_active": True
             },
             {
-                "_id": "user_008",
+                "id": "user_008",
                 "name": "吴十", 
                 "age": 33, 
                 "city": "南京", 
@@ -304,6 +344,12 @@ class MongoDbMultiConditionQueryDemo(GracefulShutdownMixin):
             result = self.bridge.create(self.collection_name, user_json, "mongodb_demo")
             print(f"插入用户 {user['name']}: {result}")
             
+        # 验证数据是否成功插入
+        print("\n🔍 验证数据插入情况...")
+        verify_query = json.dumps({})
+        verify_result = self.bridge.find(self.collection_name, verify_query, "mongodb_demo")
+        print(f"数据验证查询结果: {verify_result}")
+            
         print("✅ MongoDB数据库设置完成\n")
         print(f"🏷️  集合名称: {self.collection_name}")
         print(f"🌐 MongoDB主机: db0.0ldm0s.net:27017")
@@ -317,13 +363,13 @@ class MongoDbMultiConditionQueryDemo(GracefulShutdownMixin):
         print("🔍 演示MongoDB单个查询条件格式")
         print("格式: {\"field\": \"字段名\", \"operator\": \"操作符\", \"value\": \"值\"}")
         
-        # 示例1: 等值查询（MongoDB _id查询）
+        # 示例1: 等值查询（MongoDB id查询）
         query1 = json.dumps({
-            "field": "_id", 
+            "field": "id", 
             "operator": "Eq", 
             "value": "user_001"
         })
-        print(f"\n查询条件（MongoDB _id查询）: {query1}")
+        print(f"\n查询条件（MongoDB id查询）: {query1}")
         result1 = self.bridge.find(self.collection_name, query1, "mongodb_demo")
         print(f"查询结果: {result1}")
         
@@ -417,11 +463,11 @@ class MongoDbMultiConditionQueryDemo(GracefulShutdownMixin):
         print("\n\n🔍 演示MongoDB简化的键值对格式 (默认使用Eq操作符)")
         print("格式: {\"字段1\": \"值1\", \"字段2\": \"值2\"}")
         
-        # 示例1: 简单等值查询（MongoDB _id）
+        # 示例1: 简单等值查询（MongoDB id）
         query1 = json.dumps({
-            "_id": "user_002"
+            "id": "user_002"
         })
-        print(f"\n查询条件（MongoDB _id查询）: {query1}")
+        print(f"\n查询条件（MongoDB id查询）: {query1}")
         result1 = self.bridge.find(self.collection_name, query1, "mongodb_demo")
         print(f"查询结果: {result1}")
         
@@ -692,6 +738,9 @@ class MongoDbMultiConditionQueryDemo(GracefulShutdownMixin):
         print("🚀 MongoDB多条件查询演示开始\n")
         
         try:
+            # 清理现有的测试集合
+            self._cleanup_existing_collections()
+            
             self.setup_database()
             self.demo_single_condition_query()
             self.demo_multi_condition_array_query()

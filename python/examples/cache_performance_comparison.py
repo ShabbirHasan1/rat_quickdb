@@ -115,6 +115,9 @@ class CachePerformanceTest:
             # 添加不带缓存的数据库
             self._add_non_cached_database()
             
+            # 清理之前的测试数据（删除表）
+            self._cleanup_existing_tables()
+            
             print("✅ 测试环境初始化完成")
             return True
             
@@ -183,6 +186,34 @@ class CachePerformanceTest:
         result = json.loads(response)
         if not result.get("success"):
             raise Exception(f"添加非缓存数据库失败: {result.get('error')}")
+    
+    def _cleanup_existing_tables(self):
+        """清理现有的测试表"""
+        print("🧹 清理现有的测试表...")
+        
+        try:
+            # 删除缓存数据库中的users表数据
+            try:
+                delete_conditions = json.dumps([])
+                response = self.bridge.delete("users", delete_conditions, "cached_db")
+                result = json.loads(response)
+                if result.get("success"):
+                    print("  ✅ 已清理缓存数据库中的users表数据")
+            except Exception as e:
+                print(f"  ⚠️ 清理缓存数据库表数据失败（可能表不存在）: {e}")
+            
+            # 删除非缓存数据库中的users表数据
+            try:
+                delete_conditions = json.dumps([])
+                response = self.bridge.delete("users", delete_conditions, "non_cached_db")
+                result = json.loads(response)
+                if result.get("success"):
+                    print("  ✅ 已清理非缓存数据库中的users表数据")
+            except Exception as e:
+                print(f"  ⚠️ 清理非缓存数据库表数据失败（可能表不存在）: {e}")
+                
+        except Exception as e:
+            print(f"  ⚠️ 清理测试表过程中发生错误: {e}")
     
     def setup_test_data(self) -> bool:
         """设置测试数据"""

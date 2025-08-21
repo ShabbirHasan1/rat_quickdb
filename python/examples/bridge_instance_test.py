@@ -303,6 +303,59 @@ class BridgeInstanceTest:
             print(f"❌ 时序问题测试失败: {e}")
             return False
     
+    def cleanup_existing_collections(self):
+        """清理现有的测试集合"""
+        print("🧹 清理现有的测试集合...")
+        
+        try:
+            # 创建临时bridge用于清理
+            temp_bridge = create_db_queue_bridge()
+            
+            # 尝试添加数据库连接进行清理
+            cache_config = self.create_cache_config()
+            tls_config = self.create_tls_config()
+            zstd_config = self.create_zstd_config(False)
+            
+            # 添加临时数据库连接
+            try:
+                response = temp_bridge.add_mongodb_database(
+                    alias="cleanup_db",
+                    host="db0.0ldm0s.net",
+                    port=27017,
+                    database="testdb",
+                    username="testdb",
+                    password="yash2vCiBA&B#h$#i&gb@IGSTh&cP#QC^",
+                    auth_source="testdb",
+                    direct_connection=True,
+                    max_connections=5,
+                    min_connections=1,
+                    connection_timeout=5,
+                    idle_timeout=60,
+                    max_lifetime=300,
+                    cache_config=None,
+                    tls_config=tls_config,
+                    zstd_config=zstd_config
+                )
+                
+                result = json.loads(response)
+                if result.get("success"):
+                    # 删除可能存在的测试集合数据
+                    collections_to_clean = ["dummy_collection", "test_collection", "users"]
+                    
+                    for collection in collections_to_clean:
+                        try:
+                            delete_conditions = json.dumps([])
+                            temp_bridge.delete(collection, delete_conditions, "cleanup_db")
+                            print(f"  ✅ 已清理集合: {collection}")
+                        except Exception as e:
+                            print(f"  ⚠️ 清理集合 {collection} 失败（可能不存在）: {e}")
+                            
+            except Exception as e:
+                print(f"  ⚠️ 添加清理数据库连接失败: {e}")
+                
+        except Exception as e:
+            print(f"  ⚠️ 清理测试集合过程中发生错误: {e}")
+    
     def run_all_tests(self) -> int:
         """运行所有测试"""
         print("🚀 RatQuickDB Python Bridge实例测试")
@@ -312,6 +365,9 @@ class BridgeInstanceTest:
             print(f"📦 RatQuickDB 版本: {get_version()}")
         except Exception as e:
             print(f"⚠️ 无法获取版本信息: {e}")
+        
+        # 清理现有的测试数据
+        self.cleanup_existing_collections()
         
         success_count = 0
         total_tests = 3

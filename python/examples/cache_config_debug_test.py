@@ -339,6 +339,49 @@ class CacheConfigDebugTest:
             print(f"❌ 场景3测试失败: {e}")
             return False
     
+    def cleanup_existing_collections(self):
+        """清理现有的测试集合"""
+        print("🧹 清理现有的测试集合...")
+        try:
+            # 创建临时桥接器用于清理
+            bridge = create_db_queue_bridge()
+            
+            # 添加临时数据库连接用于清理
+            cache_config = self.create_cache_config()
+            tls_config = self.create_tls_config()
+            zstd_config = self.create_zstd_config(False)
+            
+            bridge.add_mongodb_database(
+                alias="cleanup_temp",
+                host="db0.0ldm0s.net",
+                port=27017,
+                database="testdb",
+                username="testdb",
+                password="yash2vCiBA&B#h$#i&gb@IGSTh&cP#QC^",
+                auth_source="testdb",
+                direct_connection=True,
+                max_connections=2,
+                min_connections=1,
+                connection_timeout=5,
+                idle_timeout=60,
+                max_lifetime=300,
+                cache_config=cache_config,
+                tls_config=tls_config,
+                zstd_config=zstd_config
+            )
+            
+            # 清理测试集合
+            collections_to_clean = ["dummy_collection", "test_collection", "users"]
+            for collection in collections_to_clean:
+                try:
+                    bridge.drop_table(collection, "cleanup_temp")
+                    print(f"✅ 已清理集合: {collection}")
+                except Exception as e:
+                    print(f"⚠️ 清理集合 {collection} 时出错: {e}")
+            
+        except Exception as e:
+            print(f"⚠️ 清理现有集合时出错: {e}")
+    
     def cleanup(self):
         """清理资源"""
         try:
@@ -358,6 +401,9 @@ class CacheConfigDebugTest:
             print(f"📦 RatQuickDB 版本: {get_version()}")
         except Exception as e:
             print(f"⚠️ 无法获取版本信息: {e}")
+        
+        # 清理现有的测试集合
+        self.cleanup_existing_collections()
         
         success_count = 0
         total_tests = 3

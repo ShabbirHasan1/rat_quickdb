@@ -438,67 +438,81 @@ impl SqliteWorker {
         self.is_healthy
     }
     
-    /// 处理数据库操作
+    /// 处理数据库操作（带 panic 捕获）
     async fn handle_operation(&mut self, operation: DatabaseOperation) -> QuickDbResult<()> {
         // 执行健康检查
         self.perform_health_check().await;
         
-        match operation {
+        // 执行数据库操作，使用 Result 来处理错误而不是 panic 捕获
+        let operation_result = match operation {
             DatabaseOperation::Create { table, data, response } => {
                 let result = self.adapter.create(&self.connection, &table, &data).await;
                 let _ = response.send(result);
+                Ok(())
             },
             DatabaseOperation::FindById { table, id, response } => {
                 let result = self.adapter.find_by_id(&self.connection, &table, &id).await;
                 let _ = response.send(result);
+                Ok(())
             },
             DatabaseOperation::Find { table, conditions, options, response } => {
                 let result = self.adapter.find(&self.connection, &table, &conditions, &options).await;
                 let _ = response.send(result);
+                Ok(())
             },
             DatabaseOperation::FindWithGroups { table, condition_groups, options, response } => {
                 let result = self.adapter.find_with_groups(&self.connection, &table, &condition_groups, &options).await;
                 let _ = response.send(result);
+                Ok(())
             },
             DatabaseOperation::Update { table, conditions, data, response } => {
                 let result = self.adapter.update(&self.connection, &table, &conditions, &data).await;
                 let _ = response.send(result);
+                Ok(())
             },
             DatabaseOperation::UpdateById { table, id, data, response } => {
                 let result = self.adapter.update_by_id(&self.connection, &table, &id, &data).await;
                 let _ = response.send(result);
+                Ok(())
             },
             DatabaseOperation::Delete { table, conditions, response } => {
                 let result = self.adapter.delete(&self.connection, &table, &conditions).await;
                 let _ = response.send(result);
+                Ok(())
             },
             DatabaseOperation::DeleteById { table, id, response } => {
                 let result = self.adapter.delete_by_id(&self.connection, &table, &id).await;
                 let _ = response.send(result);
+                Ok(())
             },
             DatabaseOperation::Count { table, conditions, response } => {
                 let result = self.adapter.count(&self.connection, &table, &conditions).await;
                 let _ = response.send(result);
+                Ok(())
             },
             DatabaseOperation::Exists { table, conditions, response } => {
                 let result = self.adapter.exists(&self.connection, &table, &conditions).await;
                 let _ = response.send(result);
+                Ok(())
             },
             DatabaseOperation::CreateTable { table, fields, response } => {
                 let result = self.adapter.create_table(&self.connection, &table, &fields).await;
                 let _ = response.send(result);
+                Ok(())
             },
             DatabaseOperation::CreateIndex { table, index_name, fields, unique, response } => {
                 let result = self.adapter.create_index(&self.connection, &table, &index_name, &fields, unique).await;
                 let _ = response.send(result);
+                Ok(())
             },
             DatabaseOperation::DropTable { table, response } => {
                 let result = self.adapter.drop_table(&self.connection, &table).await;
                 let _ = response.send(result);
+                Ok(())
             },
-        }
+        };
         
-        Ok(())
+        operation_result
     }
 }
 
@@ -789,23 +803,34 @@ impl MultiConnectionManager {
         
         // 处理连接错误和重试逻辑
         if let Err(ref e) = result {
+            let worker_id = worker.id.clone();
             worker.retry_count += 1;
-            if worker.retry_count > self.config.max_retries {
-                error!("工作器 {} 重试次数超限: {}", worker.id, e);
-                // 重新创建连接
+            let retry_count = worker.retry_count;
+            
+            error!("工作器 {} 操作失败 ({}/{}): {}", worker_id, retry_count, self.config.max_retries, e);
+            
+            if retry_count > self.config.max_retries {
+                warn!("工作器 {} 重试次数超限，尝试重新创建连接", worker_id);
+                
+                // 释放对 worker 的借用，然后重新创建连接
+                drop(worker);
+                
+                // 尝试重新创建连接，但不退出程序
                 match self.create_connection_worker(worker_index).await {
                     Ok(new_worker) => {
                         self.workers[worker_index] = new_worker;
                         info!("工作器 {} 连接已重新创建", worker_index);
                     },
                     Err(create_err) => {
-                        error!("重新创建工作器连接失败: {}", create_err);
-                        // 如果无法重新创建连接，程序退出
-                        std::process::exit(1);
+                        error!("重新创建工作器 {} 连接失败: {}", worker_index, create_err);
+                        // 重新获取 worker 引用并重置计数
+                        if let Some(worker) = self.workers.get_mut(worker_index) {
+                            worker.retry_count = 0; // 重置计数，下次再试
+                        }
+                        // 延迟一段时间再重试
+                        tokio::time::sleep(Duration::from_millis(self.config.retry_interval_ms * 2)).await;
                     }
                 }
-            } else {
-                warn!("工作器 {} 操作失败，重试 {}/{}: {}", worker.id, worker.retry_count, self.config.max_retries, e);
             }
         } else {
             // 操作成功，重置重试计数

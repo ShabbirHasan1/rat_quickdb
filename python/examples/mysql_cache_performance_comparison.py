@@ -166,6 +166,44 @@ class MySqlCachePerformanceTest(GracefulShutdownMixin):
         # 注册临时目录
         self.add_temp_dir(self.test_data_dir)
     
+    def _cleanup_existing_tables(self):
+        """清理现有的测试表"""
+        print("🧹 清理现有的测试表...")
+        try:
+            # 创建临时桥接器进行清理
+            temp_bridge = create_db_queue_bridge()
+            
+            # 添加MySQL数据库连接
+            result = temp_bridge.add_mysql_database(
+                alias="mysql_cleanup",
+                host="172.16.0.21",
+                port=3306,
+                database="testdb",
+                username="testdb",
+                password="yash2vCiBA&B#h$#i&gb@IGSTh&cP#QC^",
+                max_connections=5,
+                min_connections=1,
+                connection_timeout=10,
+                idle_timeout=300,
+                max_lifetime=600
+            )
+            
+            result_data = json.loads(result)
+            if result_data.get("success"):
+                # 删除测试表中的数据
+                tables_to_clean = ["test_users", "users", "performance_test", self.table_name]
+                for table in tables_to_clean:
+                    try:
+                        temp_bridge.drop_table(table, "mysql_cleanup")
+                        print(f"✅ 已清理表: {table}")
+                    except Exception as e:
+                        print(f"⚠️ 清理表 {table} 时出错: {e}")
+            else:
+                print(f"⚠️ 无法连接到MySQL进行清理: {result_data.get('error')}")
+                
+        except Exception as e:
+            print(f"⚠️ 清理过程中出错: {e}")
+    
     def initialize(self) -> bool:
         """初始化测试环境"""
         print("🚀 初始化MySQL缓存性能对比测试环境...")
@@ -177,6 +215,9 @@ class MySqlCachePerformanceTest(GracefulShutdownMixin):
             # 创建数据库队列桥接器
             self.bridge = create_db_queue_bridge()
             self.add_database_connection(self.bridge)
+            
+            # 清理现有的测试表
+            self._cleanup_existing_tables()
             
             # 添加带缓存的MySQL数据库
             self._add_cached_mysql_database()

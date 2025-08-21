@@ -62,7 +62,7 @@ async fn main() -> QuickDbResult<()> {
     // 查询所有用户
     println!("\n2.2 查询所有用户");
     let all_users = rat_quickdb::find("users", vec![], None, None).await?;
-    println!("所有用户: {}", all_users);
+    println!("所有用户: {:?}", all_users);
     
     // 条件查询
     println!("\n2.3 条件查询 - 查找技术部员工");
@@ -75,7 +75,7 @@ async fn main() -> QuickDbResult<()> {
     ];
     
     let tech_users = rat_quickdb::find("users", tech_conditions.clone(), None, None).await?;
-    println!("技术部员工: {}", tech_users);
+    println!("技术部员工: {:?}", tech_users);
     
     // 范围查询
     println!("\n2.4 范围查询 - 查找年龄在25-30之间的员工");
@@ -93,7 +93,7 @@ async fn main() -> QuickDbResult<()> {
     ];
     
     let age_filtered_users = rat_quickdb::find("users", age_conditions, None, None).await?;
-    println!("年龄25-30的员工: {}", age_filtered_users);
+    println!("年龄25-30的员工: {:?}", age_filtered_users);
     
     // 排序和分页查询
     println!("\n2.5 排序和分页查询");
@@ -117,7 +117,7 @@ async fn main() -> QuickDbResult<()> {
     };
     
     let sorted_users = rat_quickdb::find("users", vec![], Some(query_options), None).await?;
-    println!("排序分页结果: {}", sorted_users);
+    println!("排序分页结果: {:?}", sorted_users);
     
     // 更新操作
     println!("\n2.6 更新操作 - 给技术部员工加薪");
@@ -354,7 +354,7 @@ async fn demonstrate_multiple_databases() -> QuickDbResult<()> {
     
     // 查询缓存数据
     let cache_query = rat_quickdb::find("cache", vec![], None, Some("cache")).await?;
-    println!("缓存数据查询: {}", cache_query);
+    println!("缓存数据查询: {:?}", cache_query);
     
     // 显示所有数据库的连接池状态
     let manager = get_global_pool_manager();

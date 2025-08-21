@@ -57,8 +57,8 @@ impl MongoAdapter {
         }
     }
 
-    /// 将BSON文档转换为DataValue
-    fn document_to_data_value(&self, doc: &Document) -> QuickDbResult<DataValue> {
+    /// 将BSON文档转换为DataValue映射（不包装在Object中）
+    fn document_to_data_map(&self, doc: &Document) -> QuickDbResult<HashMap<String, DataValue>> {
         let mut data_map = HashMap::new();
         
         for (key, value) in doc {
@@ -71,6 +71,12 @@ impl MongoAdapter {
             }
         }
         
+        Ok(data_map)
+    }
+
+    /// 将BSON文档转换为DataValue（保持兼容性）
+    fn document_to_data_value(&self, doc: &Document) -> QuickDbResult<DataValue> {
+        let data_map = self.document_to_data_map(doc)?;
         Ok(DataValue::Object(data_map))
     }
     
@@ -158,14 +164,19 @@ impl MongoAdapter {
 
     /// 构建MongoDB查询文档
     fn build_query_document(&self, conditions: &[QueryCondition]) -> QuickDbResult<Document> {
+        println!("[MongoDB] 开始构建查询文档，条件数量: {}", conditions.len());
         let mut query_doc = Document::new();
         
-        for condition in conditions {
+        for (index, condition) in conditions.iter().enumerate() {
             let field_name = self.map_field_name(&condition.field);
             let bson_value = self.data_value_to_bson(&condition.value);
             
+            println!("[MongoDB] 条件[{}]: 字段='{}' -> '{}', 操作符={:?}, 原始值={:?}, BSON值={:?}", 
+                   index, condition.field, field_name, condition.operator, condition.value, bson_value);
+            
             match condition.operator {
                 QueryOperator::Eq => {
+                    println!("[MongoDB] 处理Eq操作符: {} = {:?}", field_name, bson_value);
                     query_doc.insert(field_name, bson_value);
                 },
                 QueryOperator::Ne => {
@@ -185,9 +196,13 @@ impl MongoAdapter {
                 },
                 QueryOperator::Contains => {
                     if let Bson::String(s) = bson_value {
-                        query_doc.insert(field_name, doc! { "$regex": s, "$options": "i" });
+                        let regex_doc = doc! { "$regex": s.clone(), "$options": "i" };
+                        println!("[MongoDB] 处理Contains操作符(字符串): {} = {:?}", field_name, regex_doc);
+                        query_doc.insert(field_name, regex_doc);
                     } else {
-                        query_doc.insert(field_name, doc! { "$in": [bson_value] });
+                        let in_doc = doc! { "$in": [bson_value.clone()] };
+                        println!("[MongoDB] 处理Contains操作符(非字符串): {} = {:?}", field_name, in_doc);
+                        query_doc.insert(field_name, in_doc);
                     }
                 },
                 QueryOperator::StartsWith => {
@@ -202,7 +217,11 @@ impl MongoAdapter {
                 },
                 QueryOperator::In => {
                     if let Bson::Array(arr) = bson_value {
-                        query_doc.insert(field_name, doc! { "$in": arr });
+                        let in_doc = doc! { "$in": arr.clone() };
+                        println!("[MongoDB] 处理In操作符: {} = {:?}", field_name, in_doc);
+                        query_doc.insert(field_name, in_doc);
+                    } else {
+                        println!("[MongoDB] In操作符期望数组类型，但得到: {:?}", bson_value);
                     }
                 },
                 QueryOperator::NotIn => {
@@ -229,59 +248,84 @@ impl MongoAdapter {
             }
         }
         
+        println!("[MongoDB] 最终查询文档: {:?}", query_doc);
         Ok(query_doc)
     }
 
     /// 构建条件组合查询文档
     fn build_condition_groups_document(&self, condition_groups: &[QueryConditionGroup]) -> QuickDbResult<Document> {
+        println!("[MongoDB] 开始构建条件组查询文档，组数量: {}", condition_groups.len());
         if condition_groups.is_empty() {
+            println!("[MongoDB] 条件组为空，返回空文档");
             return Ok(Document::new());
         }
         
         if condition_groups.len() == 1 {
             // 单个条件组，直接构建
+            println!("[MongoDB] 单个条件组，直接构建");
             let group = &condition_groups[0];
             return self.build_single_condition_group_document(group);
         }
         
         // 多个条件组，使用 $and 连接
+        println!("[MongoDB] 多个条件组，使用$and连接");
         let mut group_docs = Vec::new();
-        for group in condition_groups {
+        for (index, group) in condition_groups.iter().enumerate() {
+            println!("[MongoDB] 处理条件组[{}]: {:?}", index, group);
             let group_doc = self.build_single_condition_group_document(group)?;
+            println!("[MongoDB] 条件组[{}]生成的文档: {:?}", index, group_doc);
             if !group_doc.is_empty() {
                 group_docs.push(group_doc);
             }
         }
         
-        if group_docs.is_empty() {
-            Ok(Document::new())
+        let final_doc = if group_docs.is_empty() {
+            println!("[MongoDB] 所有条件组都为空，返回空文档");
+            Document::new()
         } else if group_docs.len() == 1 {
-            Ok(group_docs.into_iter().next().unwrap())
+            println!("[MongoDB] 只有一个有效条件组，直接返回");
+            group_docs.into_iter().next().unwrap()
         } else {
-            Ok(doc! { "$and": group_docs })
-        }
+            println!("[MongoDB] 多个有效条件组，使用$and连接");
+            doc! { "$and": group_docs }
+        };
+        
+        println!("[MongoDB] 条件组最终文档: {:?}", final_doc);
+        Ok(final_doc)
     }
     
     /// 构建单个条件组文档
     fn build_single_condition_group_document(&self, group: &QueryConditionGroup) -> QuickDbResult<Document> {
+        println!("[MongoDB] 构建单个条件组文档: {:?}", group);
         match group {
             QueryConditionGroup::Single(condition) => {
-                 self.build_query_document(&[condition.clone()])
+                println!("[MongoDB] 处理单个条件: {:?}", condition);
+                self.build_query_document(&[condition.clone()])
              },
             QueryConditionGroup::Group { conditions, operator } => {
+                println!("[MongoDB] 处理条件组，操作符: {:?}, 条件数量: {}", operator, conditions.len());
                 if conditions.is_empty() {
+                    println!("[MongoDB] 条件组为空");
                     return Ok(Document::new());
                 }
                 
                 if conditions.len() == 1 {
                      // 单个条件组，递归处理
+                     println!("[MongoDB] 条件组只有一个条件，递归处理");
                      return self.build_single_condition_group_document(&conditions[0]);
                  }
                 
                 // 多个条件组，根据逻辑操作符连接
+                println!("[MongoDB] 处理多个条件，使用{:?}操作符", operator);
                  let condition_docs: Result<Vec<Document>, QuickDbError> = conditions
                      .iter()
-                     .map(|condition_group| self.build_single_condition_group_document(condition_group))
+                     .enumerate()
+                     .map(|(i, condition_group)| {
+                         println!("[MongoDB] 处理子条件[{}]: {:?}", i, condition_group);
+                         let doc = self.build_single_condition_group_document(condition_group)?;
+                         println!("[MongoDB] 子条件[{}]生成文档: {:?}", i, doc);
+                         Ok(doc)
+                     })
                      .collect();
                 
                 let condition_docs = condition_docs?;
@@ -289,18 +333,31 @@ impl MongoAdapter {
                     .filter(|doc| !doc.is_empty())
                     .collect();
                 
+                println!("[MongoDB] 有效文档数量: {}", non_empty_docs.len());
+                
                 if non_empty_docs.is_empty() {
+                    println!("[MongoDB] 没有有效文档");
                     return Ok(Document::new());
                 }
                 
                 if non_empty_docs.len() == 1 {
+                    println!("[MongoDB] 只有一个有效文档，直接返回");
                     return Ok(non_empty_docs.into_iter().next().unwrap());
                 }
                 
-                match operator {
-                    LogicalOperator::And => Ok(doc! { "$and": non_empty_docs }),
-                    LogicalOperator::Or => Ok(doc! { "$or": non_empty_docs }),
-                }
+                let result_doc = match operator {
+                    LogicalOperator::And => {
+                        println!("[MongoDB] 使用$and连接文档");
+                        doc! { "$and": non_empty_docs }
+                    },
+                    LogicalOperator::Or => {
+                        println!("[MongoDB] 使用$or连接文档");
+                        doc! { "$or": non_empty_docs }
+                    },
+                };
+                
+                println!("[MongoDB] 条件组最终结果: {:?}", result_doc);
+                Ok(result_doc)
             }
         }
     }
@@ -394,7 +451,7 @@ impl DatabaseAdapter for MongoAdapter {
                 doc.insert(key, self.data_value_to_bson(value));
             }
             
-            debug!("执行MongoDB插入到集合 {}: {:?}", table, doc);
+            println!("执行MongoDB插入到集合 {}: {:?}", table, doc);
             
             let result = collection.insert_one(doc, None)
                 .await
@@ -433,7 +490,7 @@ impl DatabaseAdapter for MongoAdapter {
                 _ => doc! { "_id": self.data_value_to_bson(id) }
             };
             
-            debug!("执行MongoDB根据ID查询: {:?}", query);
+            println!("执行MongoDB根据ID查询: {:?}", query);
             
             let result = collection.find_one(query, None)
                 .await
@@ -442,7 +499,9 @@ impl DatabaseAdapter for MongoAdapter {
                 })?;
             
             if let Some(doc) = result {
-                Ok(Some(self.document_to_data_value(&doc)?))
+                let data_map = self.document_to_data_map(&doc)?;
+                // 直接返回Object，避免双重包装
+                Ok(Some(DataValue::Object(data_map)))
             } else {
                 Ok(None)
             }
@@ -463,9 +522,10 @@ impl DatabaseAdapter for MongoAdapter {
         if let DatabaseConnection::MongoDB(db) = connection {
             let collection = self.get_collection(db, table);
             
+            println!("[MongoDB] 接收到查询条件: {:?}", conditions);
             let query = self.build_query_document(conditions)?;
             
-            debug!("执行MongoDB查询: {:?}", query);
+            println!("[MongoDB] 执行MongoDB查询: {:?}", query);
             
             let mut find_options = mongodb::options::FindOptions::default();
             
@@ -495,15 +555,22 @@ impl DatabaseAdapter for MongoAdapter {
                 })?;
             
             let mut results = Vec::new();
+            let mut doc_count = 0;
             while cursor.advance().await.map_err(|e| QuickDbError::QueryError {
                 message: format!("MongoDB游标遍历失败: {}", e),
             })? {
                 let doc = cursor.deserialize_current().map_err(|e| QuickDbError::QueryError {
                     message: format!("MongoDB文档反序列化失败: {}", e),
                 })?;
-                results.push(self.document_to_data_value(&doc)?);
+                doc_count += 1;
+                println!("[MongoDB] 文档[{}]: {:?}", doc_count, doc);
+                let data_map = self.document_to_data_map(&doc)?;
+                println!("[MongoDB] 转换后的数据[{}]: {:?}", doc_count, data_map);
+                // 直接返回 HashMap 作为 DataValue::Object
+                results.push(DataValue::Object(data_map));
             }
             
+            println!("[MongoDB] 查询完成，共找到 {} 条记录", results.len());
             Ok(results)
         } else {
             Err(QuickDbError::ConnectionError {
@@ -524,7 +591,7 @@ impl DatabaseAdapter for MongoAdapter {
             
             let query = self.build_condition_groups_document(condition_groups)?;
             
-            debug!("执行MongoDB条件组合查询: {:?}", query);
+            println!("执行MongoDB条件组合查询: {:?}", query);
             
             let mut find_options = mongodb::options::FindOptions::default();
             
@@ -560,7 +627,9 @@ impl DatabaseAdapter for MongoAdapter {
                 let doc = cursor.deserialize_current().map_err(|e| QuickDbError::QueryError {
                     message: format!("MongoDB文档反序列化失败: {}", e),
                 })?;
-                results.push(self.document_to_data_value(&doc)?);
+                let data_map = self.document_to_data_map(&doc)?;
+                // 直接返回Object，避免双重包装
+                results.push(DataValue::Object(data_map));
             }
             
             Ok(results)
@@ -584,7 +653,7 @@ impl DatabaseAdapter for MongoAdapter {
             let query = self.build_query_document(conditions)?;
             let update = self.build_update_document(data);
             
-            debug!("执行MongoDB更新: 查询={:?}, 更新={:?}", query, update);
+            println!("执行MongoDB更新: 查询={:?}, 更新={:?}", query, update);
             
             let result = collection.update_many(query, update, None)
                 .await
@@ -628,7 +697,7 @@ impl DatabaseAdapter for MongoAdapter {
             
             let query = self.build_query_document(conditions)?;
             
-            debug!("执行MongoDB删除: {:?}", query);
+            println!("执行MongoDB删除: {:?}", query);
             
             let result = collection.delete_many(query, None)
                 .await
@@ -671,7 +740,7 @@ impl DatabaseAdapter for MongoAdapter {
             
             let query = self.build_query_document(conditions)?;
             
-            debug!("执行MongoDB计数: {:?}", query);
+            println!("执行MongoDB计数: {:?}", query);
             
             let count = collection.count_documents(query, None)
                 .await
@@ -708,7 +777,7 @@ impl DatabaseAdapter for MongoAdapter {
             // 这里我们可以创建集合并设置一些选项
             let options = mongodb::options::CreateCollectionOptions::default();
             
-            debug!("创建MongoDB集合: {}", table);
+            println!("创建MongoDB集合: {}", table);
             
             match db.create_collection(table, options).await {
                 Ok(_) => {},
@@ -755,7 +824,7 @@ impl DatabaseAdapter for MongoAdapter {
                 .options(index_options)
                 .build();
             
-            debug!("创建MongoDB索引: {} 在集合 {}", index_name, table);
+            println!("创建MongoDB索引: {} 在集合 {}", index_name, table);
             
             collection.create_index(index_model, None)
                 .await
@@ -797,7 +866,7 @@ impl DatabaseAdapter for MongoAdapter {
         table: &str,
     ) -> QuickDbResult<()> {
         if let DatabaseConnection::MongoDB(db) = connection {
-            debug!("执行MongoDB删除集合: {}", table);
+            println!("执行MongoDB删除集合: {}", table);
             
             let collection = db.collection::<mongodb::bson::Document>(table);
             collection.drop(None).await

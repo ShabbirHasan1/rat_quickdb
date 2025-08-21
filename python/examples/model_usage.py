@@ -30,8 +30,12 @@ try:
         reference_field,
         array_field,
         json_field,
+        float_field,
+        list_field,
+        dict_field,
         # 类型定义
         FieldDefinition,
+        FieldType,
         IndexDefinition,
         ModelMeta,
     )
@@ -112,7 +116,52 @@ def demonstrate_field_creation():
     print(f"  是否必填: {author_field.is_required}")
     print(f"  字段描述: {author_field.description}")
     
-    print("\n7. 创建JSON字段:")
+    print("\n7. 创建浮点数字段:")
+    score_field = float_field(
+        required=True,
+        min_value=0.0,
+        max_value=100.0,
+        description="分数字段"
+    )
+    print(f"  字段类型: FloatField")
+    print(f"  是否必填: {score_field.is_required}")
+    print(f"  字段描述: {score_field.description}")
+    
+    print("\n8. 创建数组字段:")
+    tags_field = array_field(
+        item_type=FieldType.string(max_length=None, min_length=None),
+        required=False,
+        description="标签数组字段"
+    )
+    print(f"  字段类型: ArrayField")
+    print(f"  是否必填: {tags_field.is_required}")
+    print(f"  字段描述: {tags_field.description}")
+    
+    print("\n9. 创建列表字段:")
+    items_field = list_field(
+        item_type=FieldType.string(max_length=None, min_length=None),
+        required=False,
+        description="项目列表字段"
+    )
+    print(f"  字段类型: ListField")
+    print(f"  是否必填: {items_field.is_required}")
+    print(f"  字段描述: {items_field.description}")
+    
+    print("\n10. 创建字典字段:")
+    profile_fields = {
+        "name": string_field(required=True, description="姓名"),
+        "age": integer_field(required=True, min_value=0, max_value=150, description="年龄")
+    }
+    profile_field = dict_field(
+        fields=profile_fields,
+        required=False,
+        description="用户档案字段"
+    )
+    print(f"  字段类型: DictField")
+    print(f"  是否必填: {profile_field.is_required}")
+    print(f"  字段描述: {profile_field.description}")
+    
+    print("\n11. 创建JSON字段:")
     metadata_field = json_field(
         required=False,
         description="元数据字段"
@@ -128,6 +177,10 @@ def demonstrate_field_creation():
         'is_active': active_field,
         'created_at': created_at_field,
         'author_id': author_field,
+        'score': score_field,
+        'tags': tags_field,
+        'items': items_field,
+        'profile': profile_field,
         'metadata': metadata_field
     }
 
@@ -283,7 +336,96 @@ def demonstrate_field_builder_pattern():
     print(f"    唯一: {score_field.is_unique}")
     print(f"    描述: {score_field.description}")
     
-    return {'email': email_field, 'score': score_field}
+    print("\n=== 数组字段类型演示 ===")
+    
+    # 浮点数字段示例
+    float_field_example = float_field(
+        required=True,
+        min_value=0.0,
+        max_value=100.0,
+        description="浮点数字段示例"
+    )
+    print(f"  浮点数字段示例: {float_field_example.description}")
+    
+    # 数组字段示例 - 字符串数组
+    string_array_field = array_field(
+        item_type=FieldType.string(max_length=None, min_length=None),
+        required=True,
+        description="字符串数组字段示例 - 存储标签、分类等"
+    )
+    print(f"  字符串数组字段示例: {string_array_field.description}")
+    
+    # 数组字段示例 - 整数数组
+    integer_array_field = array_field(
+        item_type=FieldType.integer(min_value=None, max_value=None),
+        required=False,
+        description="整数数组字段示例 - 存储分数、评级等"
+    )
+    print(f"  整数数组字段示例: {integer_array_field.description}")
+    
+    # 数组字段示例 - 浮点数数组
+    float_array_field = array_field(
+        item_type=FieldType.float(min_value=None, max_value=None),
+        required=False,
+        description="浮点数数组字段示例 - 存储坐标、权重等"
+    )
+    print(f"  浮点数数组字段示例: {float_array_field.description}")
+    
+    # 数组字段示例 - 布尔数组
+    boolean_array_field = array_field(
+        item_type=FieldType.boolean(),
+        required=False,
+        description="布尔数组字段示例 - 存储开关状态等"
+    )
+    print(f"  布尔数组字段示例: {boolean_array_field.description}")
+    
+    # 列表字段示例 - 混合类型列表
+    list_field_example = list_field(
+        item_type=FieldType.string(max_length=None, min_length=None),
+        required=False,
+        description="混合类型列表字段示例 - 可存储不同类型的数据"
+    )
+    print(f"  列表字段示例: {list_field_example.description}")
+    
+    # 字典字段示例 - 嵌套对象
+    dict_fields = {
+        "name": string_field(required=True, description="姓名"),
+        "age": integer_field(required=True, min_value=0, max_value=150, description="年龄"),
+        "score": float_field(required=False, min_value=0.0, max_value=100.0, description="分数"),
+        "active": boolean_field(required=False, description="是否激活")
+    }
+    dict_field_example = dict_field(
+        fields=dict_fields,
+        required=False,
+        description="嵌套对象字段示例 - 结构化数据存储"
+    )
+    print(f"  字典字段示例: {dict_field_example.description}")
+    
+    # JSON字段示例
+    json_field_example = json_field(
+        required=False,
+        description="JSON字段示例 - 灵活的非结构化数据存储"
+    )
+    print(f"  JSON字段示例: {json_field_example.description}")
+    
+    print("\n=== 数组字段在不同数据库中的存储方式 ===")
+    print("  MongoDB: 使用原生数组支持")
+    print("  PostgreSQL: 使用原生数组类型")
+    print("  MySQL: 使用JSON格式存储")
+    print("  SQLite: 使用JSON格式存储")
+    
+    return {
+        'email': email_field, 
+        'score': score_field,
+        'float_example': float_field_example,
+        'string_array': string_array_field,
+        'integer_array': integer_array_field,
+        'float_array': float_array_field,
+        'boolean_array': boolean_array_field,
+        'list_example': list_field_example,
+        'dict_example': dict_field_example,
+        'json_example': json_field_example
+    }
 
 
 def demonstrate_version_info():
@@ -342,12 +484,95 @@ def demonstrate_performance_test():
     print(f"  创建50个索引耗时: {duration:.4f} 秒")
     print(f"  平均每个索引创建时间: {duration/50:.6f} 秒")
     
-    return len(fields), len(indexes)
+    # 测试数组字段创建性能
+    print("\n3. 数组字段创建性能测试:")
+    start_time = time.time()
+    
+    array_fields = []
+    array_types = [
+        FieldType.string(max_length=None, min_length=None),
+        FieldType.integer(min_value=None, max_value=None),
+        FieldType.float(min_value=None, max_value=None),
+        FieldType.boolean()
+    ]
+    for i in range(40):
+        array_field_obj = array_field(
+            item_type=array_types[i % len(array_types)],
+            required=i % 3 == 0,
+            description=f"测试数组字段{i}"
+        )
+        array_fields.append(array_field_obj)
+    
+    end_time = time.time()
+    duration = end_time - start_time
+    print(f"  创建40个数组字段耗时: {duration:.4f} 秒")
+    print(f"  平均每个数组字段创建时间: {duration/40:.6f} 秒")
+    
+    # 测试复杂字段创建性能
+    print("\n4. 复杂字段创建性能测试:")
+    start_time = time.time()
+    
+    complex_fields = []
+    for i in range(20):
+        # 创建嵌套字典字段
+        nested_fields = {
+            "id": integer_field(required=True, description=f"ID字段{i}"),
+            "name": string_field(required=True, max_length=100, description=f"名称字段{i}"),
+            "tags": array_field(item_type=FieldType.string(max_length=None, min_length=None), required=False, description=f"标签字段{i}"),
+            "metadata": json_field(required=False, description=f"元数据字段{i}")
+        }
+        complex_field = dict_field(
+            fields=nested_fields,
+            required=False,
+            description=f"复杂嵌套字段{i}"
+        )
+        complex_fields.append(complex_field)
+    
+    end_time = time.time()
+    duration = end_time - start_time
+    print(f"  创建20个复杂字段耗时: {duration:.4f} 秒")
+    print(f"  平均每个复杂字段创建时间: {duration/20:.6f} 秒")
+    
+    return len(fields), len(indexes), len(array_fields), len(complex_fields)
+
+
+def cleanup_existing_tables():
+    """清理现有的测试表"""
+    print("🧹 清理现有的测试表...")
+    try:
+        # 创建临时桥接器用于清理
+        bridge = create_db_queue_bridge()
+        
+        # 添加SQLite数据库连接用于清理
+        bridge.add_sqlite_database(
+            alias="cleanup_temp",
+            path="./odm_demo.db",
+            max_connections=5,
+            min_connections=1,
+            connection_timeout=30,
+            idle_timeout=600,
+            max_lifetime=3600
+        )
+        
+        # 清理可能存在的测试表
+        tables_to_clean = ["users", "test_table", "demo_table", "model_test"]
+        for table in tables_to_clean:
+            try:
+                bridge.drop_table(table, "cleanup_temp")
+                print(f"✅ 已清理表: {table}")
+            except Exception as e:
+                print(f"⚠️ 清理表 {table} 时出错: {e}")
+        
+    except Exception as e:
+        print(f"⚠️ 清理现有表时出错: {e}")
 
 
 def main():
     """主函数"""
     print("=== RAT QuickDB Python ODM绑定演示 ===")
+    
+    # 清理现有的测试表
+    cleanup_existing_tables()
     
     try:
         # 显示版本信息
@@ -369,13 +594,15 @@ def main():
         bridge = demonstrate_database_operations()
         
         # 演示性能测试
-        field_count, index_count = demonstrate_performance_test()
+        field_count, index_count, array_field_count, complex_field_count = demonstrate_performance_test()
         
         print(f"\n=== 演示完成 ===")
         print(f"总共创建了 {len(fields)} 个模型字段")
         print(f"总共创建了 {len(indexes)} 个模型索引")
         print(f"性能测试创建了 {field_count} 个字段和 {index_count} 个索引")
+        print(f"性能测试创建了 {array_field_count} 个数组字段和 {complex_field_count} 个复杂字段")
         print(f"数据库桥接器状态: {'已连接' if bridge else '未连接'}")
+        print(f"构建器模式字段数量: {len(builder_fields)}")
         
     except KeyboardInterrupt:
         print("\n演示被用户中断")

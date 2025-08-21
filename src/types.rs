@@ -665,10 +665,11 @@ pub fn parse_json_string_to_data_value(value: String) -> DataValue {
 /// 
 /// # 返回值
 /// * 如果值为None，返回DataValue::Null
+/// * 如果字符串以'['或'{'开头且能成功解析为JSON，返回对应的DataValue::Array或DataValue::Object
 /// * 否则返回DataValue::String
 pub fn parse_optional_json_string_to_data_value(value: Option<String>) -> DataValue {
     match value {
-        Some(s) => DataValue::String(s),
+        Some(s) => parse_json_string_to_data_value(s),
         None => DataValue::Null,
     }
 }

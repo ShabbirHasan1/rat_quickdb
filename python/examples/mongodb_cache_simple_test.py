@@ -110,6 +110,53 @@ class MongoDbCacheSimpleTest:
         timestamp = int(time.time() * 1000)
         self.collection_name = f"simple_test_users_{timestamp}"
     
+    def _cleanup_existing_collections(self):
+        """清理现有的测试集合"""
+        print("🧹 清理现有的测试集合...")
+        try:
+            # 创建临时数据库连接用于清理 - 不使用缓存避免锁冲突
+            cache_config = None  # 不使用缓存，避免与后续的缓存数据库产生锁冲突
+            tls_config = PyTlsConfig()
+            tls_config.enable()
+            
+            ca_cert_path = self.get_ca_cert_path()
+            if ca_cert_path:
+                tls_config.ca_cert_path = ca_cert_path
+            
+            zstd_config = PyZstdConfig()
+            zstd_config.disable()  # 清理时禁用压缩，提高速度
+            
+            self.bridge.add_mongodb_database(
+                alias="cleanup_temp",
+                host="db0.0ldm0s.net",
+                port=27017,
+                database="testdb",
+                username="testdb",
+                password="yash2vCiBA&B#h$#i&gb@IGSTh&cP#QC^",
+                auth_source="testdb",
+                direct_connection=True,
+                max_connections=2,
+                min_connections=1,
+                connection_timeout=5,
+                idle_timeout=60,
+                max_lifetime=300,
+                cache_config=cache_config,  # 不使用缓存
+                tls_config=tls_config,
+                zstd_config=zstd_config
+            )
+            
+            # 清理可能存在的测试集合
+            collections_to_clean = ["simple_test_users", "test_users", "users", self.collection_name]
+            for collection in collections_to_clean:
+                try:
+                    self.bridge.drop_table(collection, "cleanup_temp")
+                    print(f"✅ 已清理集合: {collection}")
+                except Exception as e:
+                    print(f"⚠️ 清理集合 {collection} 时出错: {e}")
+            
+        except Exception as e:
+            print(f"⚠️ 清理现有集合时出错: {e}")
+    
     def initialize(self) -> bool:
         """初始化测试环境"""
         print("🚀 初始化MongoDB缓存简化测试环境...")
@@ -120,6 +167,9 @@ class MongoDbCacheSimpleTest:
             
             # 创建数据库队列桥接器
             self.bridge = create_db_queue_bridge()
+            
+            # 清理现有的测试集合
+            self._cleanup_existing_collections()
             
             # 添加带缓存的MongoDB数据库
             self._add_cached_mongodb_database()

@@ -296,6 +296,8 @@ author_field = reference_field(
 
 #### 查询格式
 
+> **智能查询路由**: `find` 方法支持自动检测查询类型。当查询包含 `operator` 和 `conditions` 字段时，会自动使用条件组合查询逻辑；否则使用普通查询条件解析。这样您只需要使用一个 `find` 方法就能处理所有类型的查询。
+
 **1. 单个查询条件格式**
 ```python
 import json
@@ -339,7 +341,7 @@ query = json.dumps({
         {"field": "salary", "operator": "Gt", "value": 15000}
     ]
 })
-results = bridge.find_with_groups("users", query)
+results = bridge.find("users", query)
 ```
 
 **5. 混合 AND/OR 查询**
@@ -364,7 +366,7 @@ query = json.dumps({
         }
     ]
 })
-results = bridge.find_with_groups("users", query)
+results = bridge.find("users", query)
 ```
 
 ## 示例

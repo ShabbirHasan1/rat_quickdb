@@ -584,6 +584,31 @@ pub fn list_field(
 
 /// 创建字典字段（基于Object类型）
 #[pyfunction]
+pub fn float_field(
+    required: Option<bool>,
+    unique: Option<bool>,
+    min_value: Option<f64>,
+    max_value: Option<f64>,
+    description: Option<String>,
+) -> PyFieldDefinition {
+    let field_type = PyFieldType::float(min_value, max_value);
+    let mut field_def = PyFieldDefinition::new(&field_type);
+    
+    if required.unwrap_or(false) {
+        field_def = field_def.required();
+    }
+    if unique.unwrap_or(false) {
+        field_def = field_def.unique();
+    }
+    if let Some(desc) = description {
+        field_def = field_def.set_description(desc);
+    }
+    
+    field_def
+}
+
+/// 创建字典字段定义
+#[pyfunction]
 pub fn dict_field(
     fields: &PyDict,
     required: Option<bool>,
