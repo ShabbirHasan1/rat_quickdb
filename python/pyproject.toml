@@ -12,7 +12,6 @@ keywords = ["database", "orm", "sqlite", "postgresql", "mysql", "mongodb", "rust
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
     "Programming Language :: Python :: 3",
@@ -26,9 +25,9 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/0ldm0s/rat"
-Repository = "https://github.com/0ldm0s/rat"
-Documentation = "https://github.com/0ldm0s/rat/tree/master/rat_quickdb"
+Homepage = "https://git.sukiyaki.su/0ldm0s/rat_quickdb"
+Repository = "https://git.sukiyaki.su/0ldm0s/rat_quickdb"
+Documentation = "https://git.sukiyaki.su/0ldm0s/rat_quickdb/src/branch/master/python/README.md"
 
 [tool.maturin]
 module-name = "rat_quickdb_py"
