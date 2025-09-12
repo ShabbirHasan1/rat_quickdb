@@ -125,8 +125,6 @@ impl CacheManager {
                     CacheStrategy::Fifo => EvictionStrategy::Fifo,
                     CacheStrategy::Custom(_) => EvictionStrategy::Lru, // 默认使用LRU
                 },
-                enable_smart_transfer: true,
-                pool_size: 1000,
             })
             .l2_config(rat_memcache::config::L2Config {
                 enable_l2_cache: config.l2_config.is_some(),
@@ -212,7 +210,8 @@ impl CacheManager {
     pub fn generate_query_cache_key(&self, table: &str, conditions: &[QueryCondition], options: &QueryOptions) -> String {
         let query_signature = self.build_query_signature(options);
         let conditions_signature = self.build_conditions_signature(conditions);
-        let key = format!("{}:{}:query:{}:{}", CACHE_KEY_PREFIX, table, conditions_signature, query_signature);
+        // 添加版本标识避免脏数据问题
+        let key = format!("{}:{}:query:{}:{}:{}", CACHE_KEY_PREFIX, table, conditions_signature, query_signature, self.config.version);
         debug!("生成查询缓存键: table={}, key={}", table, key);
         key
     }
@@ -273,7 +272,7 @@ impl CacheManager {
                 condition.field, 
                 condition.operator, 
                 match &condition.value {
-                     DataValue::String(s) => s.chars().take(10).collect::<String>(),
+                     DataValue::String(s) => s.clone(),  // 修复：不截断字符串，使用完整值
                      DataValue::Int(n) => n.to_string(),
                      DataValue::Float(f) => f.to_string(),
                      DataValue::Bool(b) => b.to_string(),
@@ -301,7 +300,7 @@ impl CacheManager {
                         condition.field, 
                         condition.operator, 
                         match &condition.value {
-                             DataValue::String(s) => s.chars().take(10).collect::<String>(),
+                             DataValue::String(s) => s.clone(),  // 修复：不截断字符串，使用完整值
                              DataValue::Int(n) => n.to_string(),
                              DataValue::Float(f) => f.to_string(),
                              DataValue::Bool(b) => b.to_string(),
@@ -623,8 +622,10 @@ impl CacheManager {
     /// ```
     pub async fn clear_by_pattern(&self, pattern: &str) -> Result<usize> {
         if !self.config.enabled {
+            info!("缓存已禁用，跳过模式清理: pattern={}", pattern);
             return Ok(0);
         }
+        info!("开始清理匹配模式的缓存: pattern={}", pattern);
 
         let mut cleared_count = 0;
         let table_keys = self.table_keys.read().await;
@@ -640,7 +641,7 @@ impl CacheManager {
                     } else {
                         keys_to_remove.push(key.clone());
                         cleared_count += 1;
-                        debug!("已删除匹配模式的缓存键: key={}, pattern={}", key, pattern);
+                        info!("已删除匹配模式的缓存键: table={}, key={}, pattern={}", table_name, key, pattern);
                     }
                 }
             }

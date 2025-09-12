@@ -884,6 +884,14 @@ pub struct CacheConfig {
     pub ttl_config: TtlConfig,
     /// 压缩配置
     pub compression_config: CompressionConfig,
+    /// 缓存版本标识，变更此值可清理所有缓存
+    #[serde(default = "default_cache_version")]
+    pub version: String,
+}
+
+/// 默认缓存版本
+fn default_cache_version() -> String {
+    "v1".to_string()
 }
 
 /// 缓存策略
@@ -1006,6 +1014,7 @@ impl Default for CacheConfig {
             l2_config: None,
             ttl_config: TtlConfig::default(),
             compression_config: CompressionConfig::default(),
+            version: default_cache_version(),
         }
     }
 }

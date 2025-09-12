@@ -199,8 +199,46 @@ impl MysqlAdapter {
                 },
                 // 处理UNSIGNED整数类型
                 "INT UNSIGNED" | "BIGINT UNSIGNED" | "SMALLINT UNSIGNED" | "TINYINT UNSIGNED" => {
-                    // 首先尝试作为字符串读取，避免字节序问题
-                    if let Ok(val) = row.try_get::<Option<String>, _>(column_name) {
+                    // 对于LAST_INSERT_ID()，MySQL返回的是unsigned long long，但sqlx可能会将其作为i64处理
+                    // 我们应该优先尝试i64，因为MySQL的LAST_INSERT_ID()通常在合理范围内
+                    
+                    // 1. 首先尝试i64，因为MySQL的自增ID通常不会超过i64::MAX
+                    if let Ok(val) = row.try_get::<Option<i64>, _>(column_name) {
+                        match val {
+                            Some(i) => {
+                                // 如果i64为负数，这可能是类型转换错误，尝试u64
+                                if i < 0 {
+                                    if let Ok(u_val) = row.try_get::<Option<u64>, _>(column_name) {
+                                        if let Some(u) = u_val {
+                                            DataValue::Int(u as i64)
+                                        } else {
+                                            DataValue::Null
+                                        }
+                                    } else {
+                                        DataValue::Null
+                                    }
+                                } else {
+                                    DataValue::Int(i)
+                                }
+                            },
+                            None => DataValue::Null,
+                        }
+                    }
+                    // 2. 尝试u64
+                    else if let Ok(val) = row.try_get::<Option<u64>, _>(column_name) {
+                        match val {
+                            Some(u) => {
+                                if u <= i64::MAX as u64 {
+                                    DataValue::Int(u as i64)
+                                } else {
+                                    DataValue::String(u.to_string())
+                                }
+                            },
+                            None => DataValue::Null,
+                        }
+                    }
+                    // 3. 尝试作为字符串读取，避免字节序问题
+                    else if let Ok(val) = row.try_get::<Option<String>, _>(column_name) {
                         match val {
                             Some(s) => {
                                 if let Ok(u) = s.parse::<u64>() {
@@ -215,22 +253,6 @@ impl MysqlAdapter {
                                     DataValue::String(s)
                                 }
                             },
-                            None => DataValue::Null,
-                        }
-                    } else if let Ok(val) = row.try_get::<Option<u64>, _>(column_name) {
-                        match val {
-                            Some(u) => {
-                                if u <= i64::MAX as u64 {
-                                    DataValue::Int(u as i64)
-                                } else {
-                                    DataValue::String(u.to_string())
-                                }
-                            },
-                            None => DataValue::Null,
-                        }
-                    } else if let Ok(val) = row.try_get::<Option<i64>, _>(column_name) {
-                        match val {
-                            Some(i) => DataValue::Int(i),
                             None => DataValue::Null,
                         }
                     } else {
@@ -509,21 +531,93 @@ impl DatabaseAdapter for MysqlAdapter {
                 .from(table)
                 .build()?;
             
-            let affected_rows = self.execute_update(pool, &sql, &params).await?;
+            // 使用事务确保插入和获取ID在同一个连接中
+            let mut tx = pool.begin().await
+                .map_err(|e| QuickDbError::QueryError {
+                    message: format!("开始事务失败: {}", e),
+                })?;
             
-            // 获取插入的行ID
-            let last_id_sql = "SELECT LAST_INSERT_ID() as id";
-            let id_results = self.execute_query(pool, last_id_sql, &[]).await?;
+            let affected_rows = {
+                let mut query = sqlx::query(&sql);
+                // 绑定参数
+                for param in &params {
+                    query = match param {
+                        DataValue::String(s) => query.bind(s),
+                        DataValue::Int(i) => query.bind(*i),
+                        DataValue::Float(f) => query.bind(*f),
+                        DataValue::Bool(b) => query.bind(*b),
+                        DataValue::DateTime(dt) => query.bind(*dt),
+                        DataValue::Uuid(uuid) => query.bind(*uuid),
+                        DataValue::Json(json) => query.bind(json.to_string()),
+                        DataValue::Bytes(bytes) => query.bind(bytes.as_slice()),
+                        DataValue::Null => query.bind(Option::<String>::None),
+                        DataValue::Array(arr) => {
+                            let json_values: Vec<serde_json::Value> = arr.iter()
+                                .map(|v| v.to_json_value())
+                                .collect();
+                            query.bind(serde_json::to_string(&json_values).unwrap_or_default())
+                        },
+                        DataValue::Object(obj) => {
+                            let json_map: serde_json::Map<String, serde_json::Value> = obj.iter()
+                                .map(|(k, v)| (k.clone(), v.to_json_value()))
+                                .collect();
+                            query.bind(serde_json::to_string(&json_map).unwrap_or_default())
+                        },
+                    };
+                }
+                
+                query.execute(&mut *tx).await
+                    .map_err(|e| QuickDbError::QueryError {
+                        message: format!("执行插入失败: {}", e),
+                    })?
+                    .rows_affected()
+            };
             
-            if let Some(result) = id_results.first() {
-                Ok(result.clone())
+            debug!("插入操作影响的行数: {}", affected_rows);
+            
+            // 在同一个事务中查询LAST_INSERT_ID()
+            let last_id_row = sqlx::query("SELECT LAST_INSERT_ID() as id")
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|e| QuickDbError::QueryError {
+                    message: format!("获取LAST_INSERT_ID失败: {}", e),
+                })?;
+            
+            // 调试：输出事务中的ID查询结果
+            println!("[DEBUG] 事务中的LAST_INSERT_ID结果: {:?}", last_id_row);
+            
+            // 提交事务
+            tx.commit().await
+                .map_err(|e| QuickDbError::QueryError {
+                    message: format!("提交事务失败: {}", e),
+                })?;
+            
+            // MySQL的LAST_INSERT_ID()返回的是u64
+            let last_id: u64 = last_id_row.try_get("id")
+                .map_err(|e| QuickDbError::QueryError {
+                    message: format!("解析LAST_INSERT_ID失败: {}", e),
+                })?;
+            
+            debug!("获取到的LAST_INSERT_ID: {}", last_id);
+            println!("[DEBUG] 解析后的LAST_INSERT_ID (u64): {}", last_id);
+            
+            // 构造返回的DataValue
+            let mut result_map = std::collections::HashMap::new();
+            // 将u64转换为i64，因为DataValue::Int使用i64
+            // MySQL自增ID通常在i64范围内，如果超出则使用字符串
+            let id_value = if last_id <= i64::MAX as u64 {
+                let id_as_i64 = last_id as i64;
+                println!("[DEBUG] 转换为i64的ID: {}", id_as_i64);
+                DataValue::Int(id_as_i64)
             } else {
-                Ok(DataValue::Object({
-                    let mut map = std::collections::HashMap::new();
-                    map.insert("affected_rows".to_string(), DataValue::Int(affected_rows as i64));
-                    map
-                }))
-            }
+                println!("[DEBUG] ID超出i64范围，使用字符串: {}", last_id);
+                DataValue::String(last_id.to_string())
+            };
+            result_map.insert("id".to_string(), id_value.clone());
+            result_map.insert("affected_rows".to_string(), DataValue::Int(affected_rows as i64));
+            
+            println!("[DEBUG] 最终返回的DataValue: {:?}", DataValue::Object(result_map.clone()));
+            Ok(DataValue::Object(result_map))
         } else {
             Err(QuickDbError::ConnectionError {
                 message: "连接类型不匹配，期望MySQL连接".to_string(),
@@ -788,7 +882,8 @@ impl DatabaseAdapter for MysqlAdapter {
             
             // 检查是否已经有id字段，如果没有则添加默认的id主键
             if !fields.contains_key("id") {
-                field_definitions.push("id BIGINT AUTO_INCREMENT PRIMARY KEY".to_string());
+                // 使用BIGINT UNSIGNED确保与LAST_INSERT_ID()兼容
+                field_definitions.push("id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY".to_string());
             }
             
             for (name, field_type) in fields {

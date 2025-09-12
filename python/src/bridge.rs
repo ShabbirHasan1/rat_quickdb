@@ -392,6 +392,7 @@ impl PyDbQueueBridge {
         &self,
         alias: String,
         path: String,
+        create_if_missing: Option<bool>,
         max_connections: Option<u32>,
         min_connections: Option<u32>,
         connection_timeout: Option<u64>,
@@ -420,11 +421,13 @@ impl PyDbQueueBridge {
         let pool_config = pool_config_builder.build()
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("构建连接池配置失败: {}", e)))?;
         
+        let create_if_missing_value = create_if_missing.unwrap_or(true);
+        
         let mut db_config_builder = DatabaseConfigBuilder::new()
             .db_type(DatabaseType::SQLite)
             .connection(ConnectionConfig::SQLite { 
                 path,
-                create_if_missing: true,
+                create_if_missing: create_if_missing_value,
             })
             .pool(pool_config)
             .alias(alias.clone())
@@ -1100,7 +1103,9 @@ impl PyDbQueueBridgeAsync {
         let alias_ref = alias.as_deref();
         let created_id = odm_manager.create(collection, data, alias_ref).await?;
         
-        let json_str = serde_json::to_string(&created_id)
+        // 使用 to_json_value() 避免带类型标签的序列化
+        let json_value = created_id.to_json_value();
+        let json_str = serde_json::to_string(&json_value)
             .map_err(|e| QuickDbError::SerializationError { message: format!("序列化结果失败: {}", e) })?;
         Ok(json_str)
     }

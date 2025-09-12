@@ -9,6 +9,8 @@ description = "Python bindings for RAT QuickDB - A high-performance cross-databa
 name = "rat_quickdb_py"
 crate-type = ["cdylib"]
 
+build = "build.rs"
+
 [dependencies]
 # 恢复对主库的依赖，启用 python-bindings 特性
 rat_quickdb = { path = "..", default-features = false }

@@ -1,6 +1,6 @@
 //! RatQuickDB 基本使用示例
 //! 
-//! 本示例展示了如何使用 RatQuickDB 进行基本的数据库操作，
+//! 本示例展示了如何使用 RatQuickDB 进行基本的数据库操作,
 //! 包括连接配置、CRUD操作、多数据库管理等功能。
 
 use rat_quickdb::*;

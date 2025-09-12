@@ -122,6 +122,7 @@ impl CachePerformanceTest {
                 algorithm: CompressionAlgorithm::Zstd,
                 threshold_bytes: 1024,
             },
+            version: "v1".to_string(),
         };
 
         DatabaseConfig {
