@@ -8,3 +8,4 @@
 /**/*.db
 /**/*.so
 /python/debug_cache
+/.vscode
