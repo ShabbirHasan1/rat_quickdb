@@ -99,7 +99,7 @@ impl DatabaseAdapter for CachedDatabaseAdapter {
         result
     }
 
-    /// 查找记录 - 先检查缓存，缓存未命中时查询数据库并缓存结果
+    /// 查找记录 - 内部统一使用 find_with_groups 实现
     async fn find(
         &self,
         connection: &DatabaseConnection,
@@ -107,31 +107,21 @@ impl DatabaseAdapter for CachedDatabaseAdapter {
         conditions: &[QueryCondition],
         options: &QueryOptions,
     ) -> QuickDbResult<Vec<DataValue>> {
-        // 先检查缓存
-        match self.cache_manager.get_cached_query_result(table, options).await {
-            Ok(Some(cached_result)) => {
-                debug!("查询缓存命中: 表={}", table);
-                return Ok(cached_result);
-            }
-            Ok(None) => {
-                debug!("查询缓存未命中: 表={}", table);
-            }
-            Err(e) => {
-                warn!("查询缓存失败: {}, 继续查询数据库", e);
-            }
-        }
+        // 将简单条件转换为条件组合（AND逻辑）
+        let condition_groups = if conditions.is_empty() {
+            vec![]
+        } else {
+            let group_conditions = conditions.iter()
+                .map(|c| QueryConditionGroup::Single(c.clone()))
+                .collect();
+            vec![QueryConditionGroup::Group {
+                operator: LogicalOperator::And,
+                conditions: group_conditions,
+            }]
+        };
         
-        // 缓存未命中或查询失败，查询数据库
-        let result = self.inner.find(connection, table, conditions, options).await;
-        
-        // 查询成功时缓存结果
-        if let Ok(ref records) = result {
-            if let Err(e) = self.cache_manager.cache_query_result(table, options, records).await {
-                warn!("缓存查询结果失败: {}", e);
-            }
-        }
-        
-        result
+        // 统一使用 find_with_groups 实现
+        self.find_with_groups(connection, table, &condition_groups, options).await
     }
 
     /// 使用条件组合查找记录 - 先检查缓存，缓存未命中时查询数据库并缓存结果

@@ -519,64 +519,21 @@ impl DatabaseAdapter for MongoAdapter {
         conditions: &[QueryCondition],
         options: &QueryOptions,
     ) -> QuickDbResult<Vec<DataValue>> {
-        if let DatabaseConnection::MongoDB(db) = connection {
-            let collection = self.get_collection(db, table);
-            
-            println!("[MongoDB] 接收到查询条件: {:?}", conditions);
-            let query = self.build_query_document(conditions)?;
-            
-            println!("[MongoDB] 执行MongoDB查询: {:?}", query);
-            
-            let mut find_options = mongodb::options::FindOptions::default();
-            
-            // 添加排序
-            if !options.sort.is_empty() {
-                let mut sort_doc = Document::new();
-                for sort_field in &options.sort {
-                    let sort_value = match sort_field.direction {
-                        SortDirection::Asc => 1,
-                        SortDirection::Desc => -1,
-                    };
-                    sort_doc.insert(&sort_field.field, sort_value);
-                }
-                find_options.sort = Some(sort_doc);
-            }
-            
-            // 添加分页
-            if let Some(pagination) = &options.pagination {
-                find_options.limit = Some(pagination.limit as i64);
-                find_options.skip = Some(pagination.skip);
-            }
-            
-            let mut cursor = collection.find(query, find_options)
-                .await
-                .map_err(|e| QuickDbError::QueryError {
-                    message: format!("MongoDB查询失败: {}", e),
-                })?;
-            
-            let mut results = Vec::new();
-            let mut doc_count = 0;
-            while cursor.advance().await.map_err(|e| QuickDbError::QueryError {
-                message: format!("MongoDB游标遍历失败: {}", e),
-            })? {
-                let doc = cursor.deserialize_current().map_err(|e| QuickDbError::QueryError {
-                    message: format!("MongoDB文档反序列化失败: {}", e),
-                })?;
-                doc_count += 1;
-                println!("[MongoDB] 文档[{}]: {:?}", doc_count, doc);
-                let data_map = self.document_to_data_map(&doc)?;
-                println!("[MongoDB] 转换后的数据[{}]: {:?}", doc_count, data_map);
-                // 直接返回 HashMap 作为 DataValue::Object
-                results.push(DataValue::Object(data_map));
-            }
-            
-            println!("[MongoDB] 查询完成，共找到 {} 条记录", results.len());
-            Ok(results)
+        // 将简单条件转换为条件组合（AND逻辑）
+        let condition_groups = if conditions.is_empty() {
+            vec![]
         } else {
-            Err(QuickDbError::ConnectionError {
-                message: "连接类型不匹配，期望MongoDB连接".to_string(),
-            })
-        }
+            let group_conditions = conditions.iter()
+                .map(|c| QueryConditionGroup::Single(c.clone()))
+                .collect();
+            vec![QueryConditionGroup::Group {
+                operator: LogicalOperator::And,
+                conditions: group_conditions,
+            }]
+        };
+        
+        // 统一使用 find_with_groups 实现
+        self.find_with_groups(connection, table, &condition_groups, options).await
     }
 
     async fn find_with_groups(

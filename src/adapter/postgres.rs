@@ -365,35 +365,21 @@ impl DatabaseAdapter for PostgresAdapter {
         conditions: &[QueryCondition],
         options: &QueryOptions,
     ) -> QuickDbResult<Vec<DataValue>> {
-        if let DatabaseConnection::PostgreSQL(pool) = connection {
-            let mut builder = SqlQueryBuilder::new()
-                .database_type(super::query_builder::DatabaseType::PostgreSQL)
-                .select(&["*"])
-                .from(table)
-                .where_conditions(conditions);
-            
-            // 添加排序
-            if !options.sort.is_empty() {
-                for sort_field in &options.sort {
-                    builder = builder.order_by(&sort_field.field, sort_field.direction.clone());
-                }
-            }
-            
-            // 添加分页
-            if let Some(pagination) = &options.pagination {
-                builder = builder.limit(pagination.limit).offset(pagination.skip);
-            }
-            
-            let (sql, params) = builder.build()?;
-            
-            debug!("执行PostgreSQL查询: {}", sql);
-            
-            self.execute_query(pool, &sql, &params).await
+        // 将简单条件转换为条件组合（AND逻辑）
+        let condition_groups = if conditions.is_empty() {
+            vec![]
         } else {
-            Err(QuickDbError::ConnectionError {
-                message: "连接类型不匹配，期望PostgreSQL连接".to_string(),
-            })
-        }
+            let group_conditions = conditions.iter()
+                .map(|c| QueryConditionGroup::Single(c.clone()))
+                .collect();
+            vec![QueryConditionGroup::Group {
+                operator: LogicalOperator::And,
+                conditions: group_conditions,
+            }]
+        };
+        
+        // 统一使用 find_with_groups 实现
+        self.find_with_groups(connection, table, &condition_groups, options).await
     }
 
     async fn find_with_groups(

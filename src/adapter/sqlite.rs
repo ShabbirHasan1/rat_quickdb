@@ -198,45 +198,21 @@ impl DatabaseAdapter for SqliteAdapter {
         conditions: &[QueryCondition],
         options: &QueryOptions,
     ) -> QuickDbResult<Vec<DataValue>> {
-        let pool = match connection {
-            DatabaseConnection::SQLite(pool) => pool,
-            _ => return Err(QuickDbError::ConnectionError {
-                message: "Invalid connection type for SQLite".to_string(),
-            }),
+        // 将简单条件转换为条件组合（AND逻辑）
+        let condition_groups = if conditions.is_empty() {
+            vec![]
+        } else {
+            let group_conditions = conditions.iter()
+                .map(|c| QueryConditionGroup::Single(c.clone()))
+                .collect();
+            vec![QueryConditionGroup::Group {
+                operator: LogicalOperator::And,
+                conditions: group_conditions,
+            }]
         };
-        {
-            let (sql, params) = SqlQueryBuilder::new()
-                .select(&["*"])
-                .from(table)
-                .where_conditions(conditions)
-                .limit(options.pagination.as_ref().map(|p| p.limit).unwrap_or(1000))
-                .offset(options.pagination.as_ref().map(|p| p.skip).unwrap_or(0))
-                .build()?;
-            
-            let mut query = sqlx::query(&sql);
-            for param in &params {
-                match param {
-                    DataValue::String(s) => { query = query.bind(s); },
-                    DataValue::Int(i) => { query = query.bind(i); },
-                    DataValue::Float(f) => { query = query.bind(f); },
-                    DataValue::Bool(b) => { query = query.bind(b); },
-                    _ => { query = query.bind(param.to_string()); },
-                }
-            }
-            
-            let rows = query.fetch_all(pool).await
-                .map_err(|e| QuickDbError::QueryError {
-                    message: format!("执行SQLite查询失败: {}", e),
-                })?;
-            
-            let mut results = Vec::new();
-            for row in rows {
-                let data_map = self.row_to_data_map(&row)?;
-                results.push(DataValue::Object(data_map));
-            }
-            
-            Ok(results)
-        }
+        
+        // 统一使用 find_with_groups 实现
+        self.find_with_groups(connection, table, &condition_groups, options).await
     }
 
     async fn find_with_groups(

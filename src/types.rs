@@ -1426,7 +1426,7 @@ mod tests {
     #[test]
     fn test_data_value_type_name() {
         assert_eq!(DataValue::Null.type_name(), "null");
-        assert_eq!(DataValue::Bool(true).type_name(), "bool");
+        assert_eq!(DataValue::Bool(true).type_name(), "boolean");
         assert_eq!(DataValue::String("test".to_string()).type_name(), "string");
     }
     

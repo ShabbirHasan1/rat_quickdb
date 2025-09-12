@@ -44,6 +44,15 @@ pub trait OdmOperations {
         alias: Option<&str>,
     ) -> QuickDbResult<Vec<DataValue>>;
     
+    /// 使用条件组合查找记录（支持复杂OR/AND逻辑）
+    async fn find_with_groups(
+        &self,
+        collection: &str,
+        condition_groups: Vec<QueryConditionGroup>,
+        options: Option<QueryOptions>,
+        alias: Option<&str>,
+    ) -> QuickDbResult<Vec<DataValue>>;
+    
     /// 更新记录
     async fn update(
         &self,
@@ -113,6 +122,13 @@ pub enum OdmRequest {
     Find {
         collection: String,
         conditions: Vec<QueryCondition>,
+        options: Option<QueryOptions>,
+        alias: Option<String>,
+        response: oneshot::Sender<QuickDbResult<Vec<DataValue>>>,
+    },
+    FindWithGroups {
+        collection: String,
+        condition_groups: Vec<QueryConditionGroup>,
         options: Option<QueryOptions>,
         alias: Option<String>,
         response: oneshot::Sender<QuickDbResult<Vec<DataValue>>>,
@@ -211,6 +227,10 @@ impl AsyncOdmManager {
                 },
                 OdmRequest::Find { collection, conditions, options, alias, response } => {
                     let result = Self::handle_find(&collection, conditions, options, alias).await;
+                    let _ = response.send(result);
+                },
+                OdmRequest::FindWithGroups { collection, condition_groups, options, alias, response } => {
+                    let result = Self::handle_find_with_groups(&collection, condition_groups, options, alias).await;
                     let _ = response.send(result);
                 },
                 OdmRequest::Update { collection, conditions, updates, alias, response } => {
@@ -368,6 +388,53 @@ impl AsyncOdmManager {
         let operation = DatabaseOperation::Find {
             table: collection.to_string(),
             conditions,
+            options: options.unwrap_or_default(),
+            response: response_tx,
+        };
+        
+        connection_pool.operation_sender.send(operation)
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "连接池操作通道已关闭".to_string(),
+            })?;
+        
+        // 等待响应
+        response_rx.await
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "等待连接池响应超时".to_string(),
+            })?
+    }
+    
+    /// 处理分组查询请求
+    async fn handle_find_with_groups(
+        collection: &str,
+        condition_groups: Vec<QueryConditionGroup>,
+        options: Option<QueryOptions>,
+        alias: Option<String>,
+    ) -> QuickDbResult<Vec<DataValue>> {
+        let manager = get_global_pool_manager();
+        let actual_alias = match alias {
+            Some(a) => a,
+            None => {
+                manager.get_default_alias().await
+                    .unwrap_or_else(|| "default".to_string())
+            }
+        };
+        debug!("处理分组查询请求: collection={}, alias={}", collection, actual_alias);
+        
+        let manager = get_global_pool_manager();
+        let connection_pools = manager.get_connection_pools();
+        let connection_pool = connection_pools.get(&actual_alias)
+            .ok_or_else(|| QuickDbError::AliasNotFound {
+                alias: actual_alias.clone(),
+            })?;
+        
+        // 创建oneshot通道用于接收响应
+        let (response_tx, response_rx) = oneshot::channel();
+        
+        // 发送DatabaseOperation::FindWithGroups请求到连接池
+        let operation = DatabaseOperation::FindWithGroups {
+            table: collection.to_string(),
+            condition_groups,
             options: options.unwrap_or_default(),
             response: response_tx,
         };
@@ -774,6 +841,34 @@ impl OdmOperations for AsyncOdmManager {
             })?
     }
     
+    async fn find_with_groups(
+        &self,
+        collection: &str,
+        condition_groups: Vec<QueryConditionGroup>,
+        options: Option<QueryOptions>,
+        alias: Option<&str>,
+    ) -> QuickDbResult<Vec<DataValue>> {
+        let (sender, receiver) = oneshot::channel();
+        
+        let request = OdmRequest::FindWithGroups {
+            collection: collection.to_string(),
+            condition_groups,
+            options,
+            alias: alias.map(|s| s.to_string()),
+            response: sender,
+        };
+        
+        self.request_sender.send(request)
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "ODM后台任务已停止".to_string(),
+            })?;
+        
+        receiver.await
+            .map_err(|_| QuickDbError::ConnectionError {
+                message: "ODM请求处理失败".to_string(),
+            })?
+    }
+    
     async fn update(
         &self,
         collection: &str,
@@ -980,6 +1075,17 @@ pub async fn find(
 ) -> QuickDbResult<Vec<DataValue>> {
     let manager = get_odm_manager().await;
     manager.find(collection, conditions, options, alias).await
+}
+
+/// 分组查询便捷函数
+pub async fn find_with_groups(
+    collection: &str,
+    condition_groups: Vec<QueryConditionGroup>,
+    options: Option<QueryOptions>,
+    alias: Option<&str>,
+) -> QuickDbResult<Vec<DataValue>> {
+    let manager = get_odm_manager().await;
+    manager.find_with_groups(collection, condition_groups, options, alias).await
 }
 
 /// 便捷函数：更新记录

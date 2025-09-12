@@ -662,31 +662,21 @@ impl DatabaseAdapter for MysqlAdapter {
         conditions: &[QueryCondition],
         options: &QueryOptions,
     ) -> QuickDbResult<Vec<DataValue>> {
-        if let DatabaseConnection::MySQL(pool) = connection {
-            let mut builder = SqlQueryBuilder::new()
-                .database_type(crate::adapter::query_builder::DatabaseType::MySQL)
-                .select(&["*"])
-                .from(table)
-                .where_conditions(conditions);
-            
-            // 添加排序
-            for sort_field in &options.sort {
-                builder = builder.order_by(&sort_field.field, sort_field.direction.clone());
-            }
-            
-            // 添加分页
-            if let Some(pagination) = &options.pagination {
-                builder = builder.limit(pagination.limit).offset(pagination.skip);
-            }
-            
-            let (sql, params) = builder.build()?;
-            
-            self.execute_query(pool, &sql, &params).await
+        // 将简单条件转换为条件组合（AND逻辑）
+        let condition_groups = if conditions.is_empty() {
+            vec![]
         } else {
-            Err(QuickDbError::ConnectionError {
-                message: "连接类型不匹配，期望MySQL连接".to_string(),
-            })
-        }
+            let group_conditions = conditions.iter()
+                .map(|c| QueryConditionGroup::Single(c.clone()))
+                .collect();
+            vec![QueryConditionGroup::Group {
+                operator: crate::types::LogicalOperator::And,
+                conditions: group_conditions,
+            }]
+        };
+        
+        // 统一使用 find_with_groups 实现
+        self.find_with_groups(connection, table, &condition_groups, options).await
     }
 
     async fn find_with_groups(
