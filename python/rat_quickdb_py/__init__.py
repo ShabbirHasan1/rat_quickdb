@@ -12,8 +12,16 @@ __version__ = "0.1.3"
 # 从Rust编译的模块中导入主要类
 # 这些类由maturin在构建时自动注册
 try:
-    from .rust_bridge import PyDbQueueBridge, create_db_queue_bridge
-    __all__ = ["PyDbQueueBridge", "create_db_queue_bridge"]
+    from .rat_quickdb_py import (
+        PyDbQueueBridge, create_db_queue_bridge,
+        init_logging, init_logging_with_level,
+        log_info, log_error, log_warn, log_debug, log_trace
+    )
+    __all__ = [
+        "PyDbQueueBridge", "create_db_queue_bridge",
+        "init_logging", "init_logging_with_level",
+        "log_info", "log_error", "log_warn", "log_debug", "log_trace"
+    ]
 except ImportError:
     # 如果Rust模块不可用（例如在开发环境中），提供友好的错误信息
     __all__ = []
@@ -23,5 +31,8 @@ except ImportError:
         ImportWarning
     )
 
-# 便捷的别名
-DatabaseBridge = PyDbQueueBridge
+# 便捷的别名 (仅在成功导入时定义)
+try:
+    DatabaseBridge = PyDbQueueBridge
+except NameError:
+    DatabaseBridge = None

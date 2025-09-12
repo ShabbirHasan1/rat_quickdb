@@ -1,0 +1,17 @@
+# 禁止在此目录下运行 maturin develop
+
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "rat-quickdb-INVALID-DO-NOT-USE"
+description = "错误：请勿使用！正确的编译目录是 python/ 子目录"
+authors = [{name = "0ldm0s", email = "oldmos@gmail.com"}]
+requires-python = ">=3.8"
+
+[tool.maturin]
+# 故意设置为无效配置
+module-name = "invalid_module_name"
+python-source = "non_existent_directory"
+features = ["pyo3/extension-module"]

@@ -71,15 +71,31 @@ pub use odm::{create, find_by_id, find, update, update_by_id, delete, delete_by_
 // Python API 导出（仅在启用 python-bindings 特性时）
 // 注意：Python绑定相关的导出已移至专门的Python绑定库中
 
-// 初始化日志
-use zerg_creep::{info, init_logger};
+// 日志系统导入
+use zerg_creep::{info, init_logger, init_logger_with_level, LevelFilter};
+
 
 /// 初始化rat_quickdb库
 /// 
-/// 这个函数会初始化日志系统
-pub fn init() {
-    init_logger();
-    info!("rat_quickdb库已初始化");
+/// 这个函数会初始化rat_quickdb库，可以选择性地初始化日志系统
+/// 
+/// 参数:
+/// - init_logging: 是否初始化日志系统，设为false时由上层应用显式初始化
+pub fn init(init_logging: bool) {
+    if init_logging {
+        zerg_creep::init_logger();
+        info!("rat_quickdb库已初始化（包含日志系统）");
+    }
+    // 不初始化日志时不输出任何信息，由上层应用管理
+}
+
+/// 初始化rat_quickdb库并设置日志级别
+/// 
+/// 参数:
+/// - level: 日志级别过滤器
+pub fn init_with_log_level(level: zerg_creep::LevelFilter) {
+    zerg_creep::init_logger_with_level(level);
+    info!("rat_quickdb库已初始化，日志级别: {:?}", level);
 }
 
 /// 库版本信息

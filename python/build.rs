@@ -3,6 +3,25 @@ use std::fs;
 use std::path::Path;
 
 fn main() {
+    // 检查是否在根目录下运行maturin（错误的做法）
+    let current_dir = env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
+    let dir_name = current_dir.file_name().unwrap_or_default();
+    
+    // 如果当前目录是rat_quickdb，说明在根目录下运行（错误）
+    if dir_name == "rat_quickdb" {
+        panic!("
+🚨 错误：不能在 rat_quickdb 根目录下运行 maturin develop！
+
+📁 正确的编译目录：python/
+✅ 正确的命令：cd python && maturin develop
+
+❌ 错误的编译位置：rat_quickdb/
+❌ 这会导致生成错误的包名和配置
+
+RAT QuickDB Python 绑定位于 python/ 子目录中。
+        ");
+    }
+    
     println!("cargo:rerun-if-changed=build.rs");
     
     // 获取包名和版本
@@ -16,8 +35,13 @@ fn main() {
         fs::create_dir_all(python_package_dir).expect("Failed to create Python package directory");
     }
     
-    // 生成 __init__.py 文件
+    // 删除旧的__init__.py文件（如果存在）
     let init_py_path = python_package_dir.join("__init__.py");
+    if init_py_path.exists() {
+        fs::remove_file(&init_py_path).expect("Failed to remove old __init__.py");
+    }
+    
+    // 生成 __init__.py 文件
     let init_py_content = format!(
 r#"""
 """
@@ -33,8 +57,16 @@ __version__ = "{}"
 # 从Rust编译的模块中导入主要类
 # 这些类由maturin在构建时自动注册
 try:
-    from .rust_bridge import PyDbQueueBridge, create_db_queue_bridge
-    __all__ = ["PyDbQueueBridge", "create_db_queue_bridge"]
+    from .rat_quickdb_py import (
+        PyDbQueueBridge, create_db_queue_bridge,
+        init_logging, init_logging_with_level,
+        log_info, log_error, log_warn, log_debug, log_trace
+    )
+    __all__ = [
+        "PyDbQueueBridge", "create_db_queue_bridge",
+        "init_logging", "init_logging_with_level",
+        "log_info", "log_error", "log_warn", "log_debug", "log_trace"
+    ]
 except ImportError:
     # 如果Rust模块不可用（例如在开发环境中），提供友好的错误信息
     __all__ = []
@@ -44,8 +76,11 @@ except ImportError:
         ImportWarning
     )
 
-# 便捷的别名
-DatabaseBridge = PyDbQueueBridge
+# 便捷的别名 (仅在成功导入时定义)
+try:
+    DatabaseBridge = PyDbQueueBridge
+except NameError:
+    DatabaseBridge = None
 "#,
         package_name, version, version
     );
