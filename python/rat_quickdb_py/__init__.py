@@ -4,10 +4,10 @@ rat_quickdb_py - RAT QuickDB Python Bindings
 
 跨数据库ORM库的Python绑定，支持SQLite、PostgreSQL、MySQL、MongoDB的统一接口
 
-Version: 0.1.5
+Version: 0.1.6
 """
 
-__version__ = "0.1.5"
+__version__ = "0.1.6"
 
 # 从Rust编译的模块中导入主要类
 # 这些类由maturin在构建时自动注册
