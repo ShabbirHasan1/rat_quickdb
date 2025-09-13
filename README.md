@@ -28,41 +28,50 @@ rat_quickdb = "0.1.6"
 
 ```rust
 use rat_quickdb::*;
+use std::collections::HashMap;
 
 #[tokio::main]
 async fn main() -> QuickDbResult<()> {
     // 初始化库
     init(true);
-    
-    // 添加数据库连接
+
+    // 添加SQLite数据库连接
     let config = sqlite_config(":memory:")
         .alias("main")
         .pool_config(default_pool_config())
         .build();
-    
+
     add_database(config).await?;
-    
-    // 获取连接
-    let conn = get_connection("main").await?;
-    
-    // 执行查询
-    let result = conn.query("SELECT 1").await?;
-    
+
+    // 创建用户表
+    let mut user_data = HashMap::new();
+    user_data.insert("id".to_string(), DataValue::String("1".to_string()));
+    user_data.insert("name".to_string(), DataValue::String("张三".to_string()));
+    user_data.insert("email".to_string(), DataValue::String("zhangsan@example.com".to_string()));
+
+    // 创建用户记录
+    create("users", user_data, Some("main")).await?;
+
+    // 查询用户
+    let user = find_by_id("users", "1", Some("main")).await?;
+    println!("找到用户: {:?}", user);
+
     Ok(())
 }
 ```
 
-### 模型定义
+### 模型定义和使用
 
 ```rust
 use rat_quickdb::*;
 use serde::{Deserialize, Serialize};
+use chrono::{DateTime, Utc};
 
 #[derive(Debug, Serialize, Deserialize, Model)]
 #[model(table_name = "users")]
 struct User {
     #[model(primary_key)]
-    id: i64,
+    id: String,
     name: String,
     email: String,
     created_at: DateTime<Utc>,
@@ -71,30 +80,32 @@ struct User {
 #[tokio::main]
 async fn main() -> QuickDbResult<()> {
     init(true);
-    
+
     // 添加数据库
     let config = sqlite_config("test.db")
         .alias("main")
         .build();
     add_database(config).await?;
-    
-    // 获取模型管理器
-    let user_manager = ModelManager::<User>::new("main");
-    
+
     // 创建用户
     let user = User {
-        id: 1,
+        id: "1".to_string(),
         name: "张三".to_string(),
         email: "zhangsan@example.com".to_string(),
         created_at: Utc::now(),
     };
-    
-    user_manager.create(&user).await?;
-    
+
+    // 序列化并保存用户
+    let user_data = user.to_data_map()?;
+    create("users", user_data, Some("main")).await?;
+
     // 查询用户
-    let found_user = user_manager.find_by_id(1).await?;
-    println!("找到用户: {:?}", found_user);
-    
+    let found_user = find_by_id("users", "1", Some("main")).await?;
+    if let Some(user_data) = found_user {
+        let user: User = User::from_data_value(user_data)?;
+        println!("找到用户: {:?}", user);
+    }
+
     Ok(())
 }
 ```
@@ -134,16 +145,40 @@ let config = mongodb_config("mongodb://localhost:27017")
     .build();
 ```
 
-## 核心模块
+## 核心API
 
-- **pool**: 连接池管理
-- **manager**: 全局数据库管理器
-- **odm**: 对象文档映射
-- **model**: 模型定义和操作
-- **adapter**: 数据库适配器
-- **task_queue**: 异步任务队列
-- **cache**: 缓存管理
-- **id_generator**: ID生成器
+### 数据库管理
+- `add_database(config)` - 添加数据库配置
+- `remove_database(alias)` - 移除数据库配置
+- `get_aliases()` - 获取所有数据库别名
+- `set_default_alias(alias)` - 设置默认数据库别名
+
+### ODM操作（主要接口）
+- `create(collection, data, alias)` - 创建记录
+- `find_by_id(collection, id, alias)` - 根据ID查找
+- `find(collection, conditions, options, alias)` - 查询记录
+- `update(collection, id, data, alias)` - 更新记录
+- `delete(collection, id, alias)` - 删除记录
+- `count(collection, query, alias)` - 计数
+- `exists(collection, query, alias)` - 检查是否存在
+
+### 模型特征
+所有模型需要实现 `Model` trait，提供：
+- `meta()` - 返回模型元数据
+- `collection_name()` - 集合/表名
+- `database_alias()` - 数据库别名
+- `to_data_map()` - 序列化为数据映射
+- `from_data_value()` - 从数据值反序列化
+
+## 架构说明
+
+rat_quickdb采用无锁队列架构：
+1. **应用层**调用ODM函数（create/find/update等）
+2. **ODM层**将操作封装为消息发送到队列
+3. **连接池工作线程**处理消息并执行实际数据库操作
+4. **结果**通过oneshot通道返回给调用方
+
+这种设计避免了直接持有数据库连接的生命周期问题。
 
 ## 开发状态
 
