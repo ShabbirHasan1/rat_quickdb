@@ -3,8 +3,8 @@
 //! 这个测试程序验证在插入数据时是否能自动创建表
 
 use rat_quickdb::{
-    config::{sqlite_config, default_pool_config, GlobalConfig, GlobalConfigBuilder, AppConfigBuilder, LoggingConfigBuilder, Environment, LogLevel},
-    types::{DataValue},
+    config::{sqlite_config, GlobalConfig, GlobalConfigBuilder, AppConfigBuilder, LoggingConfigBuilder, Environment, LogLevel},
+    types::{DataValue, PoolConfig},
     odm::{get_odm_manager, OdmOperations},
     manager::add_database,
     error::QuickDbResult,
@@ -22,11 +22,8 @@ async fn main() -> QuickDbResult<()> {
     
     info!("开始测试自动建表功能...");
     
-    // 创建连接池配置
-    let pool_config = default_pool_config(1, 5)?;
-    
     // 创建SQLite数据库配置
-    let db_config = sqlite_config("test_db", ":memory:", pool_config)?;
+    let db_config = sqlite_config("test_db", ":memory:", PoolConfig::default())?;
     
     // 添加数据库配置到管理器
     add_database(db_config).await?;

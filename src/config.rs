@@ -977,21 +977,6 @@ pub fn mongodb_config_with_builder<S: Into<String>>(
         .build()
 }
 
-/// 创建默认连接池配置
-/// 
-/// # 参数
-/// 
-/// * `min_connections` - 最小连接数
-/// * `max_connections` - 最大连接数
-pub fn default_pool_config(min_connections: u32, max_connections: u32) -> Result<PoolConfig, QuickDbError> {
-    PoolConfig::builder()
-        .min_connections(min_connections)
-        .max_connections(max_connections)
-        .connection_timeout(30)
-        .idle_timeout(600)
-        .max_lifetime(3600)
-        .build()
-}
 
 // ============================================================================
 // Default 实现

@@ -36,14 +36,10 @@ async fn main() -> QuickDbResult<()> {
     init(true);
 
     // 添加SQLite数据库连接
-    let config = sqlite_config(":memory:")
-        .alias("main")
-        .pool_config(default_pool_config())
-        .build();
-
+    let config = sqlite_config("main", ":memory:", PoolConfig::default())?;
     add_database(config).await?;
 
-    // 创建用户表
+    // 创建用户数据
     let mut user_data = HashMap::new();
     user_data.insert("id".to_string(), DataValue::String("1".to_string()));
     user_data.insert("name".to_string(), DataValue::String("张三".to_string()));
@@ -114,35 +110,58 @@ async fn main() -> QuickDbResult<()> {
 
 ### SQLite
 ```rust
-let config = sqlite_config("test.db")
-    .alias("sqlite_db")
-    .pool_config(default_pool_config())
-    .build();
+use rat_quickdb::config::sqlite_config;
+use rat_quickdb::types::PoolConfig;
+
+let config = sqlite_config("db_alias", "test.db", PoolConfig::default())?;
 ```
 
 ### PostgreSQL
 ```rust
-let config = postgres_config("postgres://user:pass@localhost/db")
-    .alias("pg_db")
-    .pool_config(default_pool_config())
-    .build();
+use rat_quickdb::config::postgres_config;
+use rat_quickdb::types::PoolConfig;
+
+let config = postgres_config(
+    "db_alias",
+    "localhost",
+    5432,
+    "mydatabase",
+    "username",
+    "password",
+    PoolConfig::default()
+)?;
 ```
 
 ### MySQL
 ```rust
-let config = mysql_config("mysql://user:pass@localhost/db")
-    .alias("mysql_db")
-    .pool_config(default_pool_config())
-    .build();
+use rat_quickdb::config::mysql_config;
+use rat_quickdb::types::PoolConfig;
+
+let config = mysql_config(
+    "db_alias",
+    "localhost",
+    3306,
+    "mydatabase",
+    "username",
+    "password",
+    PoolConfig::default()
+)?;
 ```
 
 ### MongoDB
 ```rust
-let config = mongodb_config("mongodb://localhost:27017")
-    .alias("mongo_db")
-    .database("mydb")
-    .pool_config(default_pool_config())
-    .build();
+use rat_quickdb::config::mongodb_config;
+use rat_quickdb::types::PoolConfig;
+
+let config = mongodb_config(
+    "db_alias",
+    "localhost",
+    27017,
+    "mydatabase",
+    None::<String>,  // 用户名（可选）
+    None::<String>,  // 密码（可选）
+    PoolConfig::default()
+)?;
 ```
 
 ## 核心API

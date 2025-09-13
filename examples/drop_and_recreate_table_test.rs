@@ -9,7 +9,7 @@ use rat_quickdb::{
     TableManager, TableSchema, ColumnDefinition, ColumnType, TableCreateOptions,
     FieldType, DataValue, Model, ModelOperations,
     string_field, integer_field, boolean_field, array_field,
-    postgres_config, default_pool_config,
+    postgres_config,
     GlobalConfigBuilder, DatabaseConfigBuilder, PoolConfigBuilder,
     QuickDbResult, QuickDbError,
 };

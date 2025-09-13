@@ -48,8 +48,8 @@ pub use adapter::{DatabaseAdapter, create_adapter};
 pub use config::{
     GlobalConfig, GlobalConfigBuilder, DatabaseConfigBuilder, PoolConfigBuilder,
     AppConfig, AppConfigBuilder, LoggingConfig, LoggingConfigBuilder,
-    Environment, LogLevel, sqlite_config, postgres_config, mysql_config, 
-    mongodb_config, default_pool_config
+    Environment, LogLevel, sqlite_config, postgres_config, mysql_config,
+    mongodb_config
 };
 pub use task_queue::{
     TaskQueueManager, get_global_task_queue, initialize_global_task_queue, 
