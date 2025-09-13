@@ -18,7 +18,7 @@ use zerg_creep::{info, error};
 #[tokio::main]
 async fn main() -> QuickDbResult<()> {
     // 初始化日志
-    init();
+    init(true);
     
     info!("开始测试自动建表功能...");
     

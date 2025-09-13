@@ -89,7 +89,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     zerg_creep::init_logger_with_level(zerg_creep::LevelFilter::Debug).unwrap();
     
     // 初始化rat_quickdb
-    init();
+    init(true);
     
     println!("=== 数组字段示例 ===");
     
