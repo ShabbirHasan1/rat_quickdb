@@ -136,7 +136,7 @@ impl DatabaseAdapter for CachedDatabaseAdapter {
         let cache_key = self.cache_manager.generate_condition_groups_cache_key(table, condition_groups, options);
         
         // 先检查缓存
-        match self.cache_manager.get_cached_query_result(table, options).await {
+        match self.cache_manager.get_cached_condition_groups_result(table, condition_groups, options).await {
             Ok(Some(cached_result)) => {
                 debug!("条件组合查询缓存命中: 表={}, 键={}", table, cache_key);
                 return Ok(cached_result);
@@ -153,7 +153,7 @@ impl DatabaseAdapter for CachedDatabaseAdapter {
         let result = self.inner.find_with_groups(connection, table, condition_groups, options).await?;
         
         // 缓存查询结果
-        if let Err(e) = self.cache_manager.cache_query_result(table, options, &result).await {
+        if let Err(e) = self.cache_manager.cache_condition_groups_result(table, condition_groups, options, &result).await {
             warn!("缓存条件组合查询结果失败: {}", e);
         } else {
             debug!("已缓存条件组合查询结果: 表={}, 键={}, 结果数量={}", table, cache_key, result.len());
