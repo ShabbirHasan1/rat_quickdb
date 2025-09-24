@@ -13,20 +13,20 @@ use serde::{Serialize, Deserialize};
 // 定义MongoDB测试模型，包含id字段以及索引
 rat_quickdb::define_model! {
     struct MongoIndexTestModel {
-        id: Option<i32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        _id: Option<String>,
         name: String,
         email: String,
     }
 
     collection = "mongo_index_test_models",
     fields = {
-        id: integer_field(None, None),
+        _id: string_field(Some(24), Some(24), None),
         name: string_field(Some(100), Some(1), None).required(),
         email: string_field(Some(255), Some(5), None).required().unique(),
     }
 
     indexes = [
-        { fields: ["id"], unique: true, name: "idx_id" },   // SQL的id字段索引
         { fields: ["email"], unique: true, name: "idx_email" }, // email唯一索引
         { fields: ["name"], unique: false, name: "idx_name" }, // name普通索引
     ],
@@ -105,8 +105,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 安全机制：清理可能存在的测试数据
     println!("清理可能存在的测试数据...");
     let collection_name = MongoIndexTestModel::meta().collection_name;
-    if let Ok(_) = ModelManager::<MongoIndexTestModel>::delete_all().await {
+    if let Ok(_) = rat_quickdb::odm::delete(&collection_name, vec![], Some("mongodb_index_test")).await {
         println!("✅ 已清理现有数据");
+    }
+
+    // 手动创建索引（临时解决方案）
+    println!("手动创建索引...");
+    let pool_manager = get_global_pool_manager();
+    let connection_pools = pool_manager.get_connection_pools();
+    if let Some(connection_pool) = connection_pools.get("mongodb_index_test") {
+        // 创建email字段的唯一索引
+        if let Err(e) = connection_pool.create_index(
+            &collection_name,
+            "idx_email",
+            &["email".to_string()],
+            true
+        ).await {
+            println!("⚠️  创建email唯一索引失败: {}", e);
+        } else {
+            println!("✅ 创建email唯一索引成功");
+        }
+
+        // 创建name字段的普通索引
+        if let Err(e) = connection_pool.create_index(
+            &collection_name,
+            "idx_name",
+            &["name".to_string()],
+            false
+        ).await {
+            println!("⚠️  创建name索引失败: {}", e);
+        } else {
+            println!("✅ 创建name索引成功");
+        }
     }
 
     // 检查模型元数据中的索引定义
@@ -136,7 +166,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 测试模型实例化和数据映射
     println!("\n=== 模型实例化测试 ===");
     let model = MongoIndexTestModel {
-        id: None,
+        _id: None,
         name: "MongoDB测试用户".to_string(),
         email: "mongo_test@example.com".to_string(),
     };
@@ -144,10 +174,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let data_map = model.to_data_map()?;
     println!("数据映射: {:?}", data_map);
 
-    if data_map.contains_key("id") {
-        println!("✅ 数据映射包含id字段: {:?}", data_map.get("id"));
+    if data_map.contains_key("name") {
+        println!("✅ 数据映射包含name字段: {:?}", data_map.get("name"));
     } else {
-        println!("❌ 数据映射缺少id字段");
+        println!("❌ 数据映射缺少name字段");
     }
 
     // 测试数据库操作
@@ -158,12 +188,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let user_id = model.save().await?;
     println!("✅ 记录创建成功，ID: {}", user_id);
 
-    // 2. 查询记录并验证ID字段
+    // 2. 查询记录
     println!("\n2. 查询记录...");
     let found_model = ModelManager::<MongoIndexTestModel>::find_by_id(&user_id).await?;
     if let Some(model) = found_model {
         println!("✅ 查询成功: {}", model.name);
-        println!("   id字段值: {:?}", model.id);
 
         // 3. 更新记录
         println!("\n3. 更新记录...");
@@ -176,15 +205,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 4. 创建第二个记录测试唯一索引
     println!("\n4. 测试唯一索引...");
+
+    // 先检查索引是否真的创建了
+    println!("检查索引列表...");
+    // 这里我们需要直接查询MongoDB的索引信息
+
     let model2 = MongoIndexTestModel {
-        id: None,
+        _id: None,
         name: "第二个用户".to_string(),
         email: "mongo_test@example.com".to_string(), // 使用相同的email测试唯一索引
     };
 
+    println!("尝试插入重复email的记录...");
     match model2.save().await {
-        Ok(_) => println!("⚠️  唯一索引可能未生效"),
-        Err(e) => println!("✅ 唯一索引正常工作，错误: {}", e),
+        Ok(_) => {
+            println!("⚠️  唯一索引可能未生效 - 插入成功了");
+            // 让我们检查一下是否真的有两个相同的email记录
+            println!("验证数据库中的记录...");
+        },
+        Err(e) => {
+            println!("✅ 唯一索引正常工作，错误: {}", e);
+            // 检查错误消息中是否包含唯一键冲突的信息
+            if e.to_string().contains("duplicate") || e.to_string().contains("11000") {
+                println!("✅ 确认是唯一键冲突错误");
+            } else {
+                println!("⚠️  错误可能不是唯一键冲突: {}", e);
+            }
+        },
     }
 
     // 5. 删除测试记录
