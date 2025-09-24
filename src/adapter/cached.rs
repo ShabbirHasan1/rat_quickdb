@@ -13,7 +13,7 @@ use serde_json::Value;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::sync::Arc;
-use zerg_creep::{warn, debug};
+use rat_logger::{warn, debug};
 
 /// 带缓存功能的数据库适配器包装器
 pub struct CachedDatabaseAdapter {

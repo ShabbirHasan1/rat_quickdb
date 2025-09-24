@@ -8,7 +8,7 @@ use crate::types::{
     QueryCondition, QueryConditionGroup,
 };
 use rat_memcache::RatMemCacheBuilder;
-use rat_memcache::config::{L1Config, L2Config, TtlConfig, CompressionConfig};
+use rat_memcache::config::{L1Config, L2Config, TtlConfig};
 use rat_memcache::types::EvictionStrategy;
 use anyhow::{anyhow, Result};
 use rat_memcache::{RatMemCache, CacheOptions};
@@ -22,7 +22,7 @@ use std::{
     path::PathBuf,
 };
 use tokio::sync::RwLock;
-use zerg_creep::{info, debug, warn};
+use rat_logger::{info, debug, warn};
 use chrono::{DateTime, Utc};
 use base64;
 use uuid;
@@ -136,21 +136,28 @@ impl CacheManager {
                 write_buffer_size: 64 * 1024 * 1024,
                 max_write_buffer_number: 3,
                 block_cache_size: 16 * 1024 * 1024,
-                enable_compression: config.compression_config.enabled,
+                enable_lz4: config.compression_config.enabled,
+                compression_threshold: config.compression_config.threshold_bytes,
+                compression_max_threshold: config.l2_config.as_ref().map(|c| c.compression_level as usize).unwrap_or(6) * 1024 * 1024,
                 compression_level: config.l2_config.as_ref().map(|c| c.compression_level).unwrap_or(6),
                 background_threads: 2,
                 clear_on_startup: false,
-            })
-            .compression_config(rat_memcache::config::CompressionConfig {
-                enable_lz4: config.compression_config.enabled,
-                compression_threshold: config.compression_config.threshold_bytes,
-                compression_level: config.l2_config.as_ref().map(|c| c.compression_level).unwrap_or(6),
-                auto_compression: true,
-                min_compression_ratio: 0.8,
+                cache_size_mb: config.l2_config.as_ref().map(|c| c.max_disk_mb).unwrap_or(500),
+                max_file_size_mb: config.l2_config.as_ref().map(|c| c.max_disk_mb / 2).unwrap_or(250),
+                smart_flush_enabled: true,
+                smart_flush_base_interval_ms: 100,
+                smart_flush_min_interval_ms: 20,
+                smart_flush_max_interval_ms: 500,
+                smart_flush_write_rate_threshold: 10000,
+                smart_flush_accumulated_bytes_threshold: 4 * 1024 * 1024,
+                cache_warmup_strategy: rat_memcache::config::CacheWarmupStrategy::Recent,
+                zstd_compression_level: None,
+                l2_write_strategy: "write_through".to_string(),
+                l2_write_threshold: 1024,
+                l2_write_ttl_threshold: 3600,
             })
             .ttl_config(rat_memcache::config::TtlConfig {
-                default_ttl: Some(config.ttl_config.default_ttl_secs),
-                max_ttl: config.ttl_config.max_ttl_secs,
+                expire_seconds: Some(config.ttl_config.default_ttl_secs),
                 cleanup_interval: config.ttl_config.check_interval_secs,
                 max_cleanup_entries: 1000,
                 lazy_expiration: true,
@@ -162,11 +169,7 @@ impl CacheManager {
                 read_write_separation: true,
                 batch_size: 1000,
                 enable_warmup: true,
-                stats_interval: 60,
-                enable_background_stats: true,
-                l2_write_strategy: "WriteThrough".to_string(),
-                l2_write_threshold: 1024,
-                l2_write_ttl_threshold: 3600,
+                large_value_threshold: 10240,
             })
             .logging_config(rat_memcache::config::LoggingConfig {
                 level: "INFO".to_string(),
@@ -175,6 +178,11 @@ impl CacheManager {
                 enable_performance_logs: true,
                 enable_audit_logs: true,
                 enable_cache_logs: true,
+                enable_logging: true,
+                enable_async: false,
+                batch_size: 2048,
+                batch_interval_ms: 25,
+                buffer_size: 16384,
             });
 
         let cache = builder

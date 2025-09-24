@@ -12,11 +12,11 @@ use crate::model::FieldType;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
-use zerg_creep::{info, error, warn, debug};
+use rat_logger::{info, error, warn, debug};
 use sqlx::{MySql, Pool, Row, Column, TypeInfo};
 use sqlx::mysql::MySqlRow;
 use serde_json::Value as JsonValue;
-// 移除不存在的zerg_creep::prelude导入
+// 移除不存在的rat_logger::prelude导入
 
 /// MySQL适配器
 #[derive(Debug, Clone)]

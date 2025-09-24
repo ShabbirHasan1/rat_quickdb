@@ -72,7 +72,7 @@ pub use odm::{create, find_by_id, find, update, update_by_id, delete, delete_by_
 // 注意：Python绑定相关的导出已移至专门的Python绑定库中
 
 // 日志系统导入
-use zerg_creep::{info, init_logger, init_logger_with_level, LevelFilter};
+use rat_logger::{LoggerBuilder, LevelFilter, info};
 
 
 /// 初始化rat_quickdb库
@@ -83,7 +83,10 @@ use zerg_creep::{info, init_logger, init_logger_with_level, LevelFilter};
 /// - init_logging: 是否初始化日志系统，设为false时由上层应用显式初始化
 pub fn init(init_logging: bool) {
     if init_logging {
-        zerg_creep::init_logger();
+        LoggerBuilder::new()
+            .add_terminal_with_config(rat_logger::handler::term::TermConfig::default())
+            .init()
+            .expect("日志初始化失败");
         info!("rat_quickdb库已初始化（包含日志系统）");
     }
     // 不初始化日志时不输出任何信息，由上层应用管理
@@ -93,8 +96,12 @@ pub fn init(init_logging: bool) {
 /// 
 /// 参数:
 /// - level: 日志级别过滤器
-pub fn init_with_log_level(level: zerg_creep::LevelFilter) {
-    zerg_creep::init_logger_with_level(level);
+pub fn init_with_log_level(level: rat_logger::LevelFilter) {
+    LoggerBuilder::new()
+        .with_level(level)
+        .add_terminal_with_config(rat_logger::handler::term::TermConfig::default())
+        .init()
+        .expect("日志初始化失败");
     info!("rat_quickdb库已初始化，日志级别: {:?}", level);
 }
 

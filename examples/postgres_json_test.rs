@@ -7,12 +7,12 @@ use rat_quickdb::manager::{get_global_pool_manager, add_database};
 use rat_quickdb::odm::{AsyncOdmManager, OdmOperations};
 use serde_json::json;
 use std::collections::HashMap;
-use zerg_creep::{info, warn, error};
+use rat_logger::{info, warn, error};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 初始化日志系统
-    zerg_creep::init_logger();
+    rat_logger::LoggerBuilder::new().add_terminal_with_config(rat_logger::handler::term::TermConfig::default()).init().expect("日志初始化失败");
     
     info!("开始 PostgreSQL JSON 测试");
     

@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::marker::PhantomData;
-use zerg_creep::{debug, error, info, warn};
+use rat_logger::{debug, error, info, warn};
 
 /// 支持直接转换为 DataValue 的 trait
 /// 避免 JSON 序列化的性能开销

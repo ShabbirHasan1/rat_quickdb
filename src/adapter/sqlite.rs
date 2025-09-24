@@ -11,7 +11,7 @@ use crate::table::{TableManager, TableSchema, ColumnType};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
-use zerg_creep::{info, error, warn, debug};
+use rat_logger::{info, error, warn, debug};
 
 use sqlx::{Row, sqlite::SqliteRow, Column};
 

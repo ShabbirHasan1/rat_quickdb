@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use tokio::time::sleep;
 use serde_json::json;
 use uuid::Uuid;
-use zerg_creep::{info, warn, error, debug};
+use rat_logger::{info, warn, error, debug};
 
 /// 测试数据结构
 #[derive(Debug, Clone)]
@@ -605,7 +605,7 @@ async fn cleanup_test_files() {
 #[tokio::main]
 async fn main() -> QuickDbResult<()> {
     // 初始化日志系统
-    zerg_creep::init_logger();
+    rat_logger::LoggerBuilder::new().add_terminal_with_config(rat_logger::handler::term::TermConfig::default()).init().expect("日志初始化失败");
     
     info!("开始PostgreSQL缓存性能对比测试");
     

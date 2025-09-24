@@ -7,7 +7,7 @@ use pyo3::types::{PyDict, PyList};
 use rat_quickdb::model::{FieldType, FieldDefinition, ModelMeta, IndexDefinition};
 use rat_quickdb::types::DataValue;
 use std::collections::HashMap;
-use zerg_creep::{debug, error, info, warn};
+use rat_logger::{debug, error, info, warn};
 
 /// Python 字段类型包装器
 #[pyclass(name = "FieldType")]

@@ -7,13 +7,13 @@ use rat_quickdb::{
     manager::PoolManager,
     error::{QuickDbResult, QuickDbError},
 };
-use zerg_creep::{info, error};
+use rat_logger::{info, error};
 
 /// 测试缓存配置失败时的行为
 #[tokio::main]
 async fn main() -> QuickDbResult<()> {
     // 初始化日志
-    zerg_creep::init_logger().expect("日志初始化失败");
+    rat_logger::LoggerBuilder::new().add_terminal_with_config(rat_logger::handler::term::TermConfig::default()).init().expect("日志初始化失败").expect("日志初始化失败");
     
     info!("开始测试缓存配置失败时的行为");
     

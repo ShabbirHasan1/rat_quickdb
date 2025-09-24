@@ -21,7 +21,7 @@ crossbeam = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 uuid = { version = "1.0", features = ["v4"] }
-zerg_creep = { path = "../../zerg_creep" }
+rat_logger = "0.2.8"
 # 暂时保持其他依赖注释状态
 # bytes = "1.0"
 # serde = { version = "1.0", features = ["derive"] }

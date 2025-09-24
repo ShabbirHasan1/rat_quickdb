@@ -12,7 +12,7 @@ use async_trait::async_trait;
 
 use std::collections::HashMap;
 use mongodb::{bson::{doc, Document, Bson}, Collection};
-use zerg_creep::{info, error, warn, debug};
+use rat_logger::{info, error, warn, debug};
 
 /// MongoDB适配器
 pub struct MongoAdapter;

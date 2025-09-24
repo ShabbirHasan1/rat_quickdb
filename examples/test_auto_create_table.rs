@@ -13,7 +13,7 @@ use rat_quickdb::{
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio;
-use zerg_creep::{info, error};
+use rat_logger::{info, error};
 
 #[tokio::main]
 async fn main() -> QuickDbResult<()> {

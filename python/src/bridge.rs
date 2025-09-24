@@ -25,7 +25,7 @@ use std::time::Duration;
 use tokio::runtime::Runtime;
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
-use zerg_creep::{debug, error, info, warn};
+use rat_logger::{debug, error, info, warn};
 
 /// Python数据库队列桥接器
 /// 提供异步数据库操作的Python接口

@@ -14,7 +14,7 @@ use rat_quickdb::{
 };
 use std::collections::HashMap;
 use tokio::sync::oneshot;
-use zerg_creep::{info, warn, error};
+use rat_logger::{info, warn, error};
 
 /// 创建带缓存的MongoDB数据库配置
 fn create_cached_mongodb_config(alias: &str) -> DatabaseConfig {
@@ -183,7 +183,7 @@ async fn trigger_adapter_creation(pool_manager: &PoolManager, db_alias: &str) ->
 #[tokio::main]
 async fn main() -> QuickDbResult<()> {
     // 初始化日志
-    zerg_creep::init_logger().expect("日志初始化失败");
+    rat_logger::LoggerBuilder::new().add_terminal_with_config(rat_logger::handler::term::TermConfig::default()).init().expect("日志初始化失败").expect("日志初始化失败");
     
     info!("=== MongoDB缓存配置隔离性测试 ===");
     

@@ -7,7 +7,7 @@ use rat_quickdb::{
     Model, ModelManager, ModelOperations, FieldType, DatabaseConfig, ConnectionConfig, PoolConfig, IdStrategy,
     init, add_database, DataValue, DatabaseType, QueryCondition
 };
-use zerg_creep;
+use rat_logger;
 use serde::{Serialize, Deserialize};
 use std::collections::HashMap;
 use tokio;
@@ -86,7 +86,11 @@ rat_quickdb::define_model! {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 初始化日志为debug级别
-    zerg_creep::init_logger_with_level(zerg_creep::LevelFilter::Debug).unwrap();
+    rat_logger::LoggerBuilder::new()
+        .with_level(rat_logger::LevelFilter::Debug)
+        .add_terminal_with_config(rat_logger::handler::term::TermConfig::default())
+        .init()
+        .unwrap();
     
     // 初始化rat_quickdb
     init(true);

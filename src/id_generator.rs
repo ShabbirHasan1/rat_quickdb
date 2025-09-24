@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
-use zerg_creep::{info, warn, error};
+use rat_logger::{info, warn, error};
 
 /// ID 生成器
 #[derive(Clone, Debug)]

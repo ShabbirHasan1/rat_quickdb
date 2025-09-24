@@ -35,7 +35,7 @@ struct User {
 #[tokio::main]
 async fn main() -> QuickDbResult<()> {
     // 初始化日志
-    zerg_creep::init_logger();
+    rat_logger::LoggerBuilder::new().add_terminal_with_config(rat_logger::handler::term::TermConfig::default()).init().expect("日志初始化失败");
     
     println!("=== ID生成器和缓存功能演示 ===");
     

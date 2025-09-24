@@ -9,7 +9,7 @@ use rat_quickdb::{
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio;
-use zerg_creep::info;
+use rat_logger::info;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct TestUser {
@@ -28,7 +28,7 @@ impl TestUser {
 
 #[tokio::main]
 async fn main() -> QuickDbResult<()> {
-    zerg_creep::init_logger();
+    rat_logger::LoggerBuilder::new().add_terminal_with_config(rat_logger::handler::term::TermConfig::default()).init().expect("日志初始化失败");
     
     info!("=== MySQL ID 返回测试 ===");
     

@@ -6,7 +6,7 @@ use rat_quickdb::manager::{get_global_pool_manager, health_check, shutdown};
 use std::collections::HashMap;
 use chrono::Utc;
 use tokio::time::{sleep, Duration};
-use zerg_creep::{info, debug, warn};
+use rat_logger::{info, debug, warn};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

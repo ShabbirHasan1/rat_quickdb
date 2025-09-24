@@ -10,7 +10,7 @@ use crate::adapter::DatabaseAdapter;
 use crate::PoolManager;
 use super::schema::{TableSchema, ColumnDefinition, ColumnType};
 use super::version::{VersionManager, SchemaVersion, MigrationScriptType};
-use zerg_creep::info;
+use rat_logger::info;
 
 
 /// 表管理器

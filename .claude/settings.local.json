@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "additionalDirectories": [
+      "/Users/0ldm0s/workspaces/rust/logger/rat_logger/",
+      "/Users/0ldm0s/workspaces/rust/rat/rat_memcache/"
+    ]
+  }
+}

@@ -8,7 +8,7 @@ use std::time::Duration;
 use std::collections::HashMap;
 use tokio::sync::{mpsc, Mutex};
 use dashmap::DashMap;
-use zerg_creep::{info, warn, error, debug};
+use rat_logger::{info, warn, error, debug};
 
 use crate::error::{QuickDbResult, QuickDbError};
 use crate::pool::{ConnectionPool, DatabaseOperation};

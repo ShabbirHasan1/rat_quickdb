@@ -3,7 +3,7 @@ use tokio::sync::{mpsc, oneshot};
 use rat_quickdb::manager::{add_database, get_global_pool_manager};
 use rat_quickdb::types::{DataValue, QueryCondition, QueryConditionGroup, QueryOptions, DatabaseConfig};
 use rat_quickdb::{QuickDbError, QuickDbResult};
-use zerg_creep::{debug, error, info};
+use rat_logger::{debug, error, info};
 use crate::message::{PyDbRequest, PyDbResponse};
 
 /// 异步数据库队列桥接器

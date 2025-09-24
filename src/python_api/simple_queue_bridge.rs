@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use serde_json;
 use uuid::Uuid;
 use std::collections::HashMap;
-use zerg_creep::{info, warn, error};
+use rat_logger::{info, warn, error};
 
 use crate::types::{DataValue, QueryCondition, QueryOperator};
 

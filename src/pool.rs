@@ -12,7 +12,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
 use uuid::Uuid;
 use serde_json::Value;
-use zerg_creep::{debug, info, warn, error};
+use rat_logger::{debug, info, warn, error};
 
 use crate::types::*;
 use crate::error::{QuickDbError, QuickDbResult};

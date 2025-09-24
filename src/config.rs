@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
-use zerg_creep::{info, warn, error};
+use rat_logger::{info, warn, error};
 
 /// 全局配置管理器
 /// 

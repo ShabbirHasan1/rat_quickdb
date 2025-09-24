@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
-use zerg_creep::{info, warn, error};
+use rat_logger::{info, warn, error};
 
 use crate::error::{QuickDbResult, QuickDbError};
 use crate::PoolManager;

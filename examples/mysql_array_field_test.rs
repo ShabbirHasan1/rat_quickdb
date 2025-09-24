@@ -3,7 +3,7 @@ use rat_quickdb::{
     Model, ModelManager, ModelOperations, FieldType, DatabaseConfig, ConnectionConfig, PoolConfig, IdStrategy,
     init, add_database, DataValue, DatabaseType, QueryCondition
 };
-use zerg_creep::{self, info, error};
+use rat_logger::{self, info, error};
 use serde::{Serialize, Deserialize};
 use std::collections::HashMap;
 use tokio;
@@ -81,7 +81,7 @@ rat_quickdb::define_model! {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 初始化日志
-    zerg_creep::init_logger();
+    rat_logger::LoggerBuilder::new().add_terminal_with_config(rat_logger::handler::term::TermConfig::default()).init().expect("日志初始化失败");
     
     info!("开始MySQL数组字段测试");
     

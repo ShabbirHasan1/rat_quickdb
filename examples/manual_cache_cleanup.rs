@@ -17,7 +17,7 @@ use rat_quickdb::{Environment, LogLevel};
 // 不再需要直接使用 rat_memcache，因为缓存功能已集成到 rat_quickdb 中
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use zerg_creep::{info, warn, error};
+use rat_logger::{info, warn, error};
 use chrono::Utc;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,7 +31,7 @@ struct User {
 #[tokio::main]
 async fn main() -> QuickDbResult<()> {
     // 初始化日志
-    zerg_creep::init_logger();
+    rat_logger::LoggerBuilder::new().add_terminal_with_config(rat_logger::handler::term::TermConfig::default()).init().expect("日志初始化失败");
     
     // 初始化数据库
     let db_config = rat_quickdb::config::DatabaseConfigBuilder::new()

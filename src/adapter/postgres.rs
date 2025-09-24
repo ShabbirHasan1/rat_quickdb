@@ -11,9 +11,9 @@ use crate::table::{TableManager, TableSchema, ColumnType};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
-use zerg_creep::{info, error, warn, debug};
+use rat_logger::{info, error, warn, debug};
 use sqlx::{Row, Column, TypeInfo};
-// 移除不存在的zerg_creep::prelude导入
+// 移除不存在的rat_logger::prelude导入
 
 /// PostgreSQL适配器
 pub struct PostgresAdapter;

@@ -11,7 +11,7 @@ use rat_quickdb::{
     init,
 };
 use std::collections::HashMap;
-use zerg_creep::{info, error};
+use rat_logger::{info, error};
 
 #[tokio::main]
 async fn main() -> QuickDbResult<()> {

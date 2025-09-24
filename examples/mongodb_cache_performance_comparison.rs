@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use tokio::time::sleep;
 use serde_json::json;
 use uuid::Uuid;
-use zerg_creep::{info, warn, error, debug};
+use rat_logger::{info, warn, error, debug};
 
 /// 测试数据结构
 #[derive(Debug, Clone)]
@@ -631,8 +631,11 @@ async fn cleanup_test_files() {
 
 #[tokio::main]
 async fn main() -> QuickDbResult<()> {
-    // 初始化 zerg_creep 日志系统，设置为 debug 级别
-    zerg_creep::init_logger_with_level(zerg_creep::LevelFilter::Debug)
+    // 初始化 rat_logger 日志系统，设置为 debug 级别
+    rat_logger::LoggerBuilder::new()
+        .with_level(rat_logger::LevelFilter::Debug)
+        .add_terminal_with_config(rat_logger::handler::term::TermConfig::default())
+        .init()
         .expect("初始化日志系统失败");
     
     // 清理之前的测试文件

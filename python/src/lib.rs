@@ -1,5 +1,5 @@
 use pyo3::prelude::*;
-use zerg_creep::{init_logger, init_logger_with_level, LevelFilter, info, error, warn, debug, trace};
+use rat_logger::{LoggerBuilder, LevelFilter, info, error, warn, debug, trace};
 
 // 模块声明
 mod config;
@@ -36,7 +36,10 @@ fn get_name() -> String {
 /// 初始化日志系统（使用默认级别）
 #[pyfunction]
 fn init_logging() -> PyResult<()> {
-    init_logger();
+    LoggerBuilder::new()
+        .add_terminal_with_config(rat_logger::handler::term::TermConfig::default())
+        .init()
+        .expect("日志初始化失败");
     Ok(())
 }
 
@@ -56,7 +59,11 @@ fn init_logging_with_level(level: &str) -> PyResult<()> {
             format!("Invalid log level: {}. Must be one of: trace, debug, info, warn, error", level)
         )),
     };
-    init_logger_with_level(level_filter);
+    LoggerBuilder::new()
+        .with_level(level_filter)
+        .add_terminal_with_config(rat_logger::handler::term::TermConfig::default())
+        .init()
+        .expect("日志初始化失败");
     Ok(())
 }
 

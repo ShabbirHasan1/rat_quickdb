@@ -11,7 +11,7 @@ use dashmap::DashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::time::{interval, Duration};
-use zerg_creep::{info, warn, error, debug};
+use rat_logger::{info, warn, error, debug};
 
 /// 连接池管理器 - 管理多个数据库连接池
 #[derive(Debug)]
