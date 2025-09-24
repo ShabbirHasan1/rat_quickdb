@@ -11,7 +11,7 @@ use rat_logger::{info, debug, warn};
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 初始化日志
-    rat_quickdb::init(true);
+    rat_quickdb::init();
     
     info!("开始TTL过期回退机制测试");
     

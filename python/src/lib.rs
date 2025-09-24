@@ -34,6 +34,8 @@ fn get_name() -> String {
 }
 
 /// 初始化日志系统（使用默认级别）
+///
+/// 注意：此函数为可选，调用者也可以自行初始化日志系统
 #[pyfunction]
 fn init_logging() -> PyResult<()> {
     LoggerBuilder::new()
@@ -44,9 +46,11 @@ fn init_logging() -> PyResult<()> {
 }
 
 /// 初始化日志系统并设置级别
-/// 
+///
 /// 参数:
 /// - level: 日志级别，可选值为 "trace", "debug", "info", "warn", "error"
+///
+/// 注意：此函数为可选，调用者也可以自行初始化日志系统
 #[pyfunction]
 fn init_logging_with_level(level: &str) -> PyResult<()> {
     let level_filter = match level.to_lowercase().as_str() {

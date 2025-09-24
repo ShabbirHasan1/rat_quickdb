@@ -72,37 +72,26 @@ pub use odm::{create, find_by_id, find, update, update_by_id, delete, delete_by_
 // 注意：Python绑定相关的导出已移至专门的Python绑定库中
 
 // 日志系统导入
-use rat_logger::{LoggerBuilder, LevelFilter, info};
+use rat_logger::info;
 
 
 /// 初始化rat_quickdb库
-/// 
-/// 这个函数会初始化rat_quickdb库，可以选择性地初始化日志系统
-/// 
-/// 参数:
-/// - init_logging: 是否初始化日志系统，设为false时由上层应用显式初始化
-pub fn init(init_logging: bool) {
-    if init_logging {
-        LoggerBuilder::new()
-            .add_terminal_with_config(rat_logger::handler::term::TermConfig::default())
-            .init()
-            .expect("日志初始化失败");
-        info!("rat_quickdb库已初始化（包含日志系统）");
-    }
-    // 不初始化日志时不输出任何信息，由上层应用管理
+///
+/// 这个函数会初始化rat_quickdb库
+///
+/// 注意：日志系统由调用者自行初始化，本库不再自动初始化日志
+pub fn init() {
+    // 库的基本初始化逻辑
+    // 日志系统由调用者负责初始化
 }
 
-/// 初始化rat_quickdb库并设置日志级别
-/// 
-/// 参数:
-/// - level: 日志级别过滤器
-pub fn init_with_log_level(level: rat_logger::LevelFilter) {
-    LoggerBuilder::new()
-        .with_level(level)
-        .add_terminal_with_config(rat_logger::handler::term::TermConfig::default())
-        .init()
-        .expect("日志初始化失败");
-    info!("rat_quickdb库已初始化，日志级别: {:?}", level);
+/// 初始化rat_quickdb库
+///
+/// 注意：此函数已弃用，请使用init()
+/// 日志系统由调用者自行初始化
+#[deprecated(since = "0.2.0", note = "请使用init()，日志系统由调用者自行初始化")]
+pub fn init_with_log_level(_level: rat_logger::LevelFilter) {
+    init();
 }
 
 /// 库版本信息

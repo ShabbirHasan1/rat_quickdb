@@ -91,9 +91,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .add_terminal_with_config(rat_logger::handler::term::TermConfig::default())
         .init()
         .unwrap();
-    
+
     // 初始化rat_quickdb
-    init(true);
+    init();
     
     println!("=== 数组字段示例 ===");
     

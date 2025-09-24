@@ -18,7 +18,7 @@ use rat_logger::{info, error};
 #[tokio::main]
 async fn main() -> QuickDbResult<()> {
     // 初始化日志
-    init(true);
+    init();
     
     info!("开始测试自动建表功能...");
     
