@@ -102,6 +102,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pool_manager = get_global_pool_manager();
     pool_manager.set_default_alias("mongodb_index_test").await?;
 
+    // 安全机制：清理可能存在的测试数据
+    println!("清理可能存在的测试数据...");
+    let collection_name = MongoIndexTestModel::meta().collection_name;
+    if let Ok(_) = ModelManager::<MongoIndexTestModel>::delete_all().await {
+        println!("✅ 已清理现有数据");
+    }
+
     // 检查模型元数据中的索引定义
     let meta = MongoIndexTestModel::meta();
     println!("模型元数据信息：");
