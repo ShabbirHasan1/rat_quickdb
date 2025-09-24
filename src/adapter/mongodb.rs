@@ -60,17 +60,13 @@ impl MongoAdapter {
     /// 将BSON文档转换为DataValue映射（不包装在Object中）
     fn document_to_data_map(&self, doc: &Document) -> QuickDbResult<HashMap<String, DataValue>> {
         let mut data_map = HashMap::new();
-        
+
         for (key, value) in doc {
             let data_value = self.bson_to_data_value(value)?;
-            // 将MongoDB的_id字段转换为统一的id字段，体现ODM优势
-            if key == "_id" {
-                data_map.insert("id".to_string(), data_value);
-            } else {
-                data_map.insert(key.clone(), data_value);
-            }
+            // 保持原始字段名，包括MongoDB的_id字段
+            data_map.insert(key.clone(), data_value);
         }
-        
+
         Ok(data_map)
     }
 
@@ -166,14 +162,37 @@ impl MongoAdapter {
     fn build_query_document(&self, conditions: &[QueryCondition]) -> QuickDbResult<Document> {
         println!("[MongoDB] 开始构建查询文档，条件数量: {}", conditions.len());
         let mut query_doc = Document::new();
-        
+
         for (index, condition) in conditions.iter().enumerate() {
             let field_name = self.map_field_name(&condition.field);
-            let bson_value = self.data_value_to_bson(&condition.value);
-            
-            println!("[MongoDB] 条件[{}]: 字段='{}' -> '{}', 操作符={:?}, 原始值={:?}, BSON值={:?}", 
+
+            // 特殊处理_id字段的ObjectId格式
+            let bson_value = if field_name == "_id" {
+                if let DataValue::String(id_str) = &condition.value {
+                    // 处理ObjectId格式：ObjectId("xxx") 或直接是ObjectId字符串
+                    let actual_id = if id_str.starts_with("ObjectId(\"") && id_str.ends_with("\")") {
+                        // 提取ObjectId字符串部分
+                        &id_str[10..id_str.len()-2]
+                    } else {
+                        id_str
+                    };
+
+                    // 尝试解析为ObjectId
+                    if let Ok(object_id) = mongodb::bson::oid::ObjectId::parse_str(actual_id) {
+                        Bson::ObjectId(object_id)
+                    } else {
+                        Bson::String(actual_id.to_string())
+                    }
+                } else {
+                    self.data_value_to_bson(&condition.value)
+                }
+            } else {
+                self.data_value_to_bson(&condition.value)
+            };
+
+            println!("[MongoDB] 条件[{}]: 字段='{}' -> '{}', 操作符={:?}, 原始值={:?}, BSON值={:?}",
                    index, condition.field, field_name, condition.operator, condition.value, bson_value);
-            
+
             match condition.operator {
                 QueryOperator::Eq => {
                     println!("[MongoDB] 处理Eq操作符: {} = {:?}", field_name, bson_value);
@@ -460,7 +479,7 @@ impl DatabaseAdapter for MongoAdapter {
                 })?;
             
             let mut result_map = HashMap::new();
-            result_map.insert("id".to_string(), DataValue::String(result.inserted_id.to_string()));
+            result_map.insert("_id".to_string(), DataValue::String(result.inserted_id.to_string()));
             Ok(DataValue::Object(result_map))
         } else {
             Err(QuickDbError::ConnectionError {
@@ -480,11 +499,19 @@ impl DatabaseAdapter for MongoAdapter {
             
             let query = match id {
                 DataValue::String(id_str) => {
+                    // 处理ObjectId格式：ObjectId("xxx") 或直接是ObjectId字符串
+                    let actual_id = if id_str.starts_with("ObjectId(\"") && id_str.ends_with("\")") {
+                        // 提取ObjectId字符串部分
+                        &id_str[10..id_str.len()-2]
+                    } else {
+                        id_str
+                    };
+
                     // 尝试解析为ObjectId，如果失败则作为字符串查询
-                    if let Ok(object_id) = mongodb::bson::oid::ObjectId::parse_str(id_str) {
+                    if let Ok(object_id) = mongodb::bson::oid::ObjectId::parse_str(actual_id) {
                         doc! { "_id": object_id }
                     } else {
-                        doc! { "_id": id_str }
+                        doc! { "_id": actual_id }
                     }
                 },
                 _ => doc! { "_id": self.data_value_to_bson(id) }

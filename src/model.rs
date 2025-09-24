@@ -1103,11 +1103,18 @@ macro_rules! define_model {
             fn to_data_map_direct(&self) -> $crate::error::QuickDbResult<std::collections::HashMap<String, $crate::types::DataValue>> {
                 use $crate::model::ToDataValue;
                 let mut data_map = std::collections::HashMap::new();
-                
+
                 $(
                     data_map.insert(stringify!($field).to_string(), self.$field.to_data_value());
                 )*
-                
+
+                // 移除为None的_id字段，让MongoDB自动生成
+                if let Some(id_value) = data_map.get("_id") {
+                    if matches!(id_value, $crate::types::DataValue::Null) {
+                        data_map.remove("_id");
+                    }
+                }
+
                 Ok(data_map)
             }
         }
@@ -1132,8 +1139,8 @@ macro_rules! define_model {
                     $crate::types::DataValue::Int(id) => Ok(id.to_string()),
                     $crate::types::DataValue::Uuid(id) => Ok(id.to_string()),
                     $crate::types::DataValue::Object(obj) => {
-                        // 如果返回的是对象，尝试提取id字段
-                        if let Some(id_value) = obj.get("id") {
+                        // 如果返回的是对象，尝试提取_id字段（MongoDB）或id字段（SQL）
+                        if let Some(id_value) = obj.get("_id").or_else(|| obj.get("id")) {
                             match id_value {
                                 $crate::types::DataValue::String(id) => Ok(id.clone()),
                                 $crate::types::DataValue::Int(id) => Ok(id.to_string()),
