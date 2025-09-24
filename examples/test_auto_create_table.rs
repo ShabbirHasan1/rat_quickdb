@@ -10,14 +10,20 @@ use rat_quickdb::{
     error::QuickDbResult,
     init,
 };
+use rat_logger::{LoggerBuilder, handler::term::TermConfig, LevelFilter};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio;
 use rat_logger::{info, error};
 
 #[tokio::main]
-async fn main() -> QuickDbResult<()> {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 初始化日志
+    LoggerBuilder::new()
+        .with_level(LevelFilter::Info)
+        .add_terminal_with_config(TermConfig::default())
+        .init()?;
+
     init();
     
     info!("开始测试自动建表功能...");
@@ -59,7 +65,8 @@ async fn main() -> QuickDbResult<()> {
     let user_id2 = odm.create("users", user_data2, Some("test_db")).await?;
     info!("第二个用户创建成功，ID: {}", user_id2);
     
-    info!("自动建表功能测试完成！!");
+    info!("自动建表功能测试完成！");
+    println!("✅ 自动建表功能测试完成！");
     
     Ok(())
 }

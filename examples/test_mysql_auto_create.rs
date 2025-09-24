@@ -65,9 +65,8 @@ async fn main() -> QuickDbResult<()> {
     // 获取ODM管理器
     let odm = get_odm_manager().await;
     
-    // 准备测试数据（包含id字段）
+    // 准备测试数据（不包含id字段，让数据库自动生成）
     let mut user_data = HashMap::new();
-    user_data.insert("id".to_string(), DataValue::Int(100));
     user_data.insert("name".to_string(), DataValue::String("张三".to_string()));
     user_data.insert("email".to_string(), DataValue::String("zhangsan@example.com".to_string()));
     user_data.insert("age".to_string(), DataValue::Int(25));
@@ -76,9 +75,11 @@ async fn main() -> QuickDbResult<()> {
     info!("插入用户数据: {:?}", user_data);
     
     // 插入数据，这应该会自动创建表
+    info!("正在插入用户数据...");
     match odm.create("users", user_data, None).await {
         Ok(result) => {
             info!("用户创建成功，结果: {:?}", result);
+            println!("✅ 用户创建成功，ID: {:?}", result);
         }
         Err(e) => {
             error!("用户创建失败: {:?}", e);

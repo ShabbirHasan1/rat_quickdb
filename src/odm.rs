@@ -308,8 +308,20 @@ impl AsyncOdmManager {
                 message: "等待连接池响应超时".to_string(),
             })??;
         
-        // 直接返回 DataValue 结果
-        Ok(result)
+        // 从返回的Object中提取id字段
+        match result {
+            DataValue::Object(map) => {
+                if let Some(id_value) = map.get("id") {
+                    Ok(id_value.clone())
+                } else {
+                    Err(QuickDbError::QueryError {
+                        message: "创建操作返回的数据中缺少id字段".to_string(),
+                    })
+                }
+            },
+            // 如果返回的不是Object，可能是其他数据库的直接ID值，直接返回
+            other => Ok(other),
+        }
     }
     
     /// 处理根据ID查询请求

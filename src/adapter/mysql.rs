@@ -178,9 +178,8 @@ impl MysqlAdapter {
             let column_type = column.type_info().name();
             
             // 调试：输出列类型信息
-            debug!("开始处理MySQL列 '{}' 的类型: '{}'", column_name, column_type);
-            println!("[DEBUG] 开始处理MySQL列 '{}' 的类型: '{}'", column_name, column_type);
-            
+            info!("开始处理MySQL列 '{}' 的类型: '{}'", column_name, column_type);
+              
             // 根据MySQL类型转换值
             let data_value = match column_type {
                 "INT" | "BIGINT" | "SMALLINT" | "TINYINT" => {
@@ -584,8 +583,8 @@ impl DatabaseAdapter for MysqlAdapter {
                 })?;
             
             // 调试：输出事务中的ID查询结果
-            println!("[DEBUG] 事务中的LAST_INSERT_ID结果: {:?}", last_id_row);
-            
+            info!("事务中的LAST_INSERT_ID结果: {:?}", last_id_row);
+
             // 提交事务
             tx.commit().await
                 .map_err(|e| QuickDbError::QueryError {
@@ -598,8 +597,8 @@ impl DatabaseAdapter for MysqlAdapter {
                     message: format!("解析LAST_INSERT_ID失败: {}", e),
                 })?;
             
-            debug!("获取到的LAST_INSERT_ID: {}", last_id);
-            println!("[DEBUG] 解析后的LAST_INSERT_ID (u64): {}", last_id);
+            info!("获取到的LAST_INSERT_ID: {}", last_id);
+            info!("转换为i64的ID: {}", last_id as i64);
             
             // 构造返回的DataValue
             let mut result_map = std::collections::HashMap::new();
@@ -607,16 +606,14 @@ impl DatabaseAdapter for MysqlAdapter {
             // MySQL自增ID通常在i64范围内，如果超出则使用字符串
             let id_value = if last_id <= i64::MAX as u64 {
                 let id_as_i64 = last_id as i64;
-                println!("[DEBUG] 转换为i64的ID: {}", id_as_i64);
                 DataValue::Int(id_as_i64)
             } else {
-                println!("[DEBUG] ID超出i64范围，使用字符串: {}", last_id);
                 DataValue::String(last_id.to_string())
             };
             result_map.insert("id".to_string(), id_value.clone());
             result_map.insert("affected_rows".to_string(), DataValue::Int(affected_rows as i64));
-            
-            println!("[DEBUG] 最终返回的DataValue: {:?}", DataValue::Object(result_map.clone()));
+
+            info!("最终返回的DataValue: {:?}", DataValue::Object(result_map.clone()));
             Ok(DataValue::Object(result_map))
         } else {
             Err(QuickDbError::ConnectionError {
