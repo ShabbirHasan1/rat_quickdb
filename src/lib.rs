@@ -49,7 +49,7 @@ pub use config::{
     GlobalConfig, GlobalConfigBuilder, DatabaseConfigBuilder, PoolConfigBuilder,
     AppConfig, AppConfigBuilder, LoggingConfig, LoggingConfigBuilder,
     Environment, LogLevel, sqlite_config, postgres_config, mysql_config,
-    mongodb_config
+    mongodb_config, mongodb_config_with_builder
 };
 pub use task_queue::{
     TaskQueueManager, get_global_task_queue, initialize_global_task_queue, 

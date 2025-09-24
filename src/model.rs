@@ -1160,22 +1160,82 @@ macro_rules! define_model {
             
             /// 更新模型
             pub async fn update(&self, updates: std::collections::HashMap<String, $crate::types::DataValue>) -> $crate::error::QuickDbResult<bool> {
-                // 这里需要模型有ID字段才能更新
-                // 实际实现中需要根据具体的ID字段来处理
-                Err($crate::error::QuickDbError::ValidationError {
-                    field: "update".to_string(),
-                    message: "更新功能需要模型有ID字段".to_string()
-                })
+                // 尝试从模型中获取ID字段，兼容 MongoDB 的 _id 和 SQL 的 id
+                let data_map = self.to_data_map()?;
+                let (id_field_name, id_value) = data_map.get("_id")
+                    .map(|v| ("_id", v))
+                    .or_else(|| data_map.get("id").map(|v| ("id", v)))
+                    .ok_or_else(|| $crate::error::QuickDbError::ValidationError {
+                        field: "id".to_string(),
+                        message: "模型缺少ID字段（id 或 _id），无法更新".to_string()
+                    })?;
+
+                // 将ID转换为字符串
+                let id_str = match id_value {
+                    $crate::types::DataValue::String(s) => s.clone(),
+                    $crate::types::DataValue::Int(i) => i.to_string(),
+                    $crate::types::DataValue::Uuid(u) => u.to_string(),
+                    // MongoDB 的 ObjectId 可能存储在 Object 中
+                    $crate::types::DataValue::Object(obj) => {
+                        if let Some($crate::types::DataValue::String(oid)) = obj.get("$oid") {
+                            oid.clone()
+                        } else {
+                            return Err($crate::error::QuickDbError::ValidationError {
+                                field: id_field_name.to_string(),
+                                message: format!("不支持的MongoDB ObjectId格式: {:?}", obj)
+                            });
+                        }
+                    }
+                    _ => return Err($crate::error::QuickDbError::ValidationError {
+                        field: id_field_name.to_string(),
+                        message: format!("不支持的ID类型: {:?}", id_value)
+                    })
+                };
+
+                let collection_name = Self::collection_name();
+                let database_alias = Self::database_alias();
+
+                $crate::odm::update_by_id(&collection_name, &id_str, updates, database_alias.as_deref()).await
             }
             
             /// 删除模型
             pub async fn delete(&self) -> $crate::error::QuickDbResult<bool> {
-                // 这里需要模型有ID字段才能删除
-                // 实际实现中需要根据具体的ID字段来处理
-                Err($crate::error::QuickDbError::ValidationError {
-                    field: "delete".to_string(),
-                    message: "删除功能需要模型有ID字段".to_string()
-                })
+                // 尝试从模型中获取ID字段，兼容 MongoDB 的 _id 和 SQL 的 id
+                let data_map = self.to_data_map()?;
+                let (id_field_name, id_value) = data_map.get("_id")
+                    .map(|v| ("_id", v))
+                    .or_else(|| data_map.get("id").map(|v| ("id", v)))
+                    .ok_or_else(|| $crate::error::QuickDbError::ValidationError {
+                        field: "id".to_string(),
+                        message: "模型缺少ID字段（id 或 _id），无法删除".to_string()
+                    })?;
+
+                // 将ID转换为字符串
+                let id_str = match id_value {
+                    $crate::types::DataValue::String(s) => s.clone(),
+                    $crate::types::DataValue::Int(i) => i.to_string(),
+                    $crate::types::DataValue::Uuid(u) => u.to_string(),
+                    // MongoDB 的 ObjectId 可能存储在 Object 中
+                    $crate::types::DataValue::Object(obj) => {
+                        if let Some($crate::types::DataValue::String(oid)) = obj.get("$oid") {
+                            oid.clone()
+                        } else {
+                            return Err($crate::error::QuickDbError::ValidationError {
+                                field: id_field_name.to_string(),
+                                message: format!("不支持的MongoDB ObjectId格式: {:?}", obj)
+                            });
+                        }
+                    }
+                    _ => return Err($crate::error::QuickDbError::ValidationError {
+                        field: id_field_name.to_string(),
+                        message: format!("不支持的ID类型: {:?}", id_value)
+                    })
+                };
+
+                let collection_name = Self::collection_name();
+                let database_alias = Self::database_alias();
+
+                $crate::odm::delete_by_id(&collection_name, &id_str, database_alias.as_deref()).await
             }
         }
     };

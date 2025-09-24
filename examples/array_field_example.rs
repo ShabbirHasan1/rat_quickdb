@@ -5,7 +5,8 @@
 use rat_quickdb::{
     array_field, list_field, string_field, integer_field, float_field, boolean_field, datetime_field, dict_field,
     Model, ModelManager, ModelOperations, FieldType, DatabaseConfig, ConnectionConfig, PoolConfig, IdStrategy,
-    init, add_database, DataValue, DatabaseType, QueryCondition
+    init, add_database, DataValue, DatabaseType, QueryCondition,
+    mongodb_config_with_builder, MongoDbConnectionBuilder, TlsConfig, ZstdConfig
 };
 use rat_logger;
 use serde::{Serialize, Deserialize};
@@ -122,26 +123,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n--- 测试 SQLite 数据库 ---");
     test_array_fields(Some("sqlite_db")).await?;
     
-    // 配置 MongoDB 数据库连接（如果可用）
-    let mongo_config = DatabaseConfig {
-        db_type: DatabaseType::MongoDB,
-        connection: ConnectionConfig::MongoDB {
-            host: "localhost".to_string(),
-            port: 27017,
-            database: "test_array".to_string(),
-            username: None,
-            password: None,
-            auth_source: None,
-            direct_connection: false,
-            tls_config: None,
-            zstd_config: None,
-            options: None,
-        },
-        pool: PoolConfig::default(),
-        alias: "mongo_db".to_string(),
-        cache: None,
-        id_strategy: IdStrategy::ObjectId,
+    // 配置 MongoDB 数据库连接（使用远程服务器）
+    let pool_config = PoolConfig::builder()
+        .max_connections(10)
+        .min_connections(2)
+        .connection_timeout(5)
+        .idle_timeout(300)
+        .max_lifetime(1800)
+        .build()?;
+
+    // 配置TLS
+    let tls_config = TlsConfig {
+        enabled: true,
+        ca_cert_path: None,
+        client_cert_path: None,
+        client_key_path: None,
+        verify_server_cert: false,
+        verify_hostname: false,
+        min_tls_version: None,
+        cipher_suites: None,
     };
+
+    // 配置ZSTD压缩
+    let zstd_config = ZstdConfig {
+        enabled: true,
+        compression_level: Some(3),
+        compression_threshold: Some(1024),
+    };
+
+    // 使用构建器创建MongoDB连接配置
+    let builder = MongoDbConnectionBuilder::new("db0.0ldm0s.net", 27017, "test_array")
+        .with_auth("test_array", "yash2vCiBA&B#h$#i&gb@IGSTh&cP#QC^")
+        .with_auth_source("test_array")
+        .with_direct_connection(true)
+        .with_tls_config(tls_config)
+        .with_zstd_config(zstd_config)
+        .with_option("retryWrites", "true")
+        .with_option("w", "majority");
+
+    let mongo_config = mongodb_config_with_builder(
+        "mongo_db",
+        builder,
+        pool_config,
+    )?;
     
     // 如果 MongoDB 可用，也测试 MongoDB
     if let Ok(_) = add_database(mongo_config).await {
