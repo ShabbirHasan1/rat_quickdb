@@ -183,7 +183,16 @@ impl CachePerformanceTest {
     /// 设置测试数据
     async fn setup_test_data(&mut self) -> QuickDbResult<()> {
         println!("\n🔧 设置测试数据...");
-        
+
+        // 安全机制：清理可能存在的测试数据
+        println!("  清理可能存在的测试数据...");
+        if let Ok(_) = self.odm.delete("users", vec![], Some("cached_db")).await {
+            println!("  ✅ 已清理缓存数据库");
+        }
+        if let Ok(_) = self.odm.delete("users", vec![], Some("non_cached_db")).await {
+            println!("  ✅ 已清理非缓存数据库");
+        }
+
         let test_users = vec![
             TestUser::new("user1", "张三", "zhangsan@example.com", 25),
             TestUser::new("user2", "李四", "lisi@example.com", 30),
@@ -201,10 +210,11 @@ impl CachePerformanceTest {
                 20 + (i % 30),
             ))
             .collect();
-        
-        // 创建测试数据到缓存数据库
+
+        // 创建测试数据到两个数据库
         for user in test_users.iter().chain(batch_users.iter()) {
             self.odm.create("users", user.to_data_map(), Some("cached_db")).await?;
+            self.odm.create("users", user.to_data_map(), Some("non_cached_db")).await?;
         }
         
         println!("  ✅ 创建了 {} 条测试记录", test_users.len() + batch_users.len());
@@ -276,7 +286,7 @@ impl CachePerformanceTest {
     /// 测试重复查询（缓存命中）
     async fn test_repeated_queries(&mut self) -> QuickDbResult<()> {
         println!("\n🔄 测试重复查询性能（缓存命中测试）...");
-        
+
         let conditions = vec![
             QueryCondition {
                 field: "age".to_string(),
@@ -284,12 +294,21 @@ impl CachePerformanceTest {
                 value: DataValue::Int(20),
             }
         ];
-        
+
         let query_count = 10;
-        
+
+        // 测量不带缓存的查询时间
+        let start = Instant::now();
+        for _ in 0..query_count {
+            let _result = self.odm.find("users", conditions.clone(), None, Some("non_cached_db")).await?;
+            // 短暂延迟以模拟真实场景
+            sleep(Duration::from_millis(5)).await;
+        }
+        let non_cached_duration = start.elapsed();
+
         // 首次查询（建立缓存）
         let _result = self.odm.find("users", conditions.clone(), None, Some("cached_db")).await?;
-        
+
         // 测试重复查询（应该从缓存读取）
         let start = Instant::now();
         for _ in 0..query_count {
@@ -298,22 +317,24 @@ impl CachePerformanceTest {
             sleep(Duration::from_millis(5)).await;
         }
         let cached_duration = start.elapsed();
-        
+
         // 计算平均单次查询时间
         let avg_cached_time = cached_duration / query_count;
-        let estimated_db_time = Duration::from_millis(50); // 估算数据库查询时间
-        
+        let avg_non_cached_time = non_cached_duration / query_count;
+
         let result = PerformanceResult::new(
             format!("重复查询 ({}次)", query_count),
             avg_cached_time,
-            estimated_db_time,
+            avg_non_cached_time,
         ).with_cache_hit_rate(95.0); // 假设95%的缓存命中率
-        
-        println!("  ✅ 总耗时: {:?}", cached_duration);
-        println!("  ✅ 平均单次查询: {:?}", avg_cached_time);
-        println!("  📈 预估性能提升: {:.2}x", result.improvement_ratio);
+
+        println!("  ✅ 不带缓存总耗时: {:?}", non_cached_duration);
+        println!("  ✅ 带缓存总耗时: {:?}", cached_duration);
+        println!("  ✅ 不带缓存平均查询: {:?}", avg_non_cached_time);
+        println!("  ✅ 带缓存平均查询: {:?}", avg_cached_time);
+        println!("  📈 性能提升: {:.2}x", result.improvement_ratio);
         println!("  🎯 缓存命中率: {:.1}%", result.cache_hit_rate.unwrap_or(0.0));
-        
+
         self.results.push(result);
         Ok(())
     }
@@ -415,7 +436,7 @@ impl CachePerformanceTest {
             };
             
             println!(
-                "{:<25} {:<15} {:<15} {:<10.2} {:<10}",
+                "{:<25} {:<15.3} {:<15.3} {:<10.2} {:<10}",
                 result.operation,
                 result.with_cache.as_millis(),
                 result.without_cache.as_millis(),

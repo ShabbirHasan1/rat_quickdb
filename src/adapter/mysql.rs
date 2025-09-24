@@ -582,23 +582,20 @@ impl DatabaseAdapter for MysqlAdapter {
                     message: format!("获取LAST_INSERT_ID失败: {}", e),
                 })?;
             
-            // 调试：输出事务中的ID查询结果
-            info!("事务中的LAST_INSERT_ID结果: {:?}", last_id_row);
-
             // 提交事务
             tx.commit().await
                 .map_err(|e| QuickDbError::QueryError {
                     message: format!("提交事务失败: {}", e),
                 })?;
-            
+
             // MySQL的LAST_INSERT_ID()返回的是u64
             let last_id: u64 = last_id_row.try_get("id")
                 .map_err(|e| QuickDbError::QueryError {
                     message: format!("解析LAST_INSERT_ID失败: {}", e),
                 })?;
-            
-            info!("获取到的LAST_INSERT_ID: {}", last_id);
-            info!("转换为i64的ID: {}", last_id as i64);
+
+            debug!("获取到的LAST_INSERT_ID: {}", last_id);
+            debug!("转换为i64的ID: {}", last_id as i64);
             
             // 构造返回的DataValue
             let mut result_map = std::collections::HashMap::new();
@@ -613,7 +610,7 @@ impl DatabaseAdapter for MysqlAdapter {
             result_map.insert("id".to_string(), id_value.clone());
             result_map.insert("affected_rows".to_string(), DataValue::Int(affected_rows as i64));
 
-            info!("最终返回的DataValue: {:?}", DataValue::Object(result_map.clone()));
+            debug!("最终返回的DataValue: {:?}", DataValue::Object(result_map.clone()));
             Ok(DataValue::Object(result_map))
         } else {
             Err(QuickDbError::ConnectionError {

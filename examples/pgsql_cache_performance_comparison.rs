@@ -243,7 +243,16 @@ impl CachePerformanceTest {
     /// 设置测试数据
     async fn setup_test_data(&mut self) -> QuickDbResult<()> {
         info!("设置PostgreSQL测试数据");
-        
+
+        // 安全机制：清理可能存在的测试数据
+        info!("清理可能存在的测试数据...");
+        if let Ok(_) = self.odm.delete(&self.table_name, vec![], Some("pgsql_cached")).await {
+            info!("✅ 已清理缓存数据库");
+        }
+        if let Ok(_) = self.odm.delete(&self.table_name, vec![], Some("pgsql_non_cached")).await {
+            info!("✅ 已清理非缓存数据库");
+        }
+
         // 创建测试用户数据，为不同数据库使用不同的ID范围避免冲突
         for i in 1..=100 {
             // 为缓存数据库创建用户（使用1000+i的ID）

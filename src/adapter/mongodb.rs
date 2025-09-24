@@ -467,10 +467,14 @@ impl DatabaseAdapter for MongoAdapter {
             let mapped_data = self.map_data_fields(data);
             let mut doc = Document::new();
             for (key, value) in &mapped_data {
+                // 跳过_id字段如果值为Null，让MongoDB自动生成
+                if key == "_id" && matches!(value, DataValue::Null) {
+                    continue;
+                }
                 doc.insert(key, self.data_value_to_bson(value));
             }
-            
-            println!("执行MongoDB插入到集合 {}: {:?}", table, doc);
+
+            info!("执行MongoDB插入到集合 {}: {:?}", table, doc);
             
             let result = collection.insert_one(doc, None)
                 .await

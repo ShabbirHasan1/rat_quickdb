@@ -311,7 +311,10 @@ impl AsyncOdmManager {
         // 从返回的Object中提取id字段
         match result {
             DataValue::Object(map) => {
+                // 优先查找"id"字段（SQL数据库），如果没有则查找"_id"字段（MongoDB）
                 if let Some(id_value) = map.get("id") {
+                    Ok(id_value.clone())
+                } else if let Some(id_value) = map.get("_id") {
                     Ok(id_value.clone())
                 } else {
                     Err(QuickDbError::QueryError {
