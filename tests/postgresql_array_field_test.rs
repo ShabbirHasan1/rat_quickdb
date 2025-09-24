@@ -16,17 +16,26 @@ struct Student {
 
 #[tokio::test]
 async fn test_postgresql_array_field_serialization() {
-    // PostgreSQL 配置
+    // PostgreSQL 配置（使用线上服务器）
     let config = DatabaseConfig {
         db_type: rat_quickdb::types::DatabaseType::PostgreSQL,
         connection: ConnectionConfig::PostgreSQL {
-            host: "localhost".to_string(),
+            host: "172.16.0.23".to_string(),
             port: 5432,
-            database: "test_db".to_string(),
-            username: "postgres".to_string(),
-            password: "password".to_string(),
-            ssl_mode: None,
-            tls_config: None,
+            database: "testdb".to_string(),
+            username: "testdb".to_string(),
+            password: "yash2vCiBA&B#h$#i&gb@IGSTh&cP#QC^".to_string(),
+            ssl_mode: Some("prefer".to_string()),
+            tls_config: Some(rat_quickdb::types::TlsConfig {
+                enabled: true,
+                ca_cert_path: None,
+                client_cert_path: None,
+                client_key_path: None,
+                verify_server_cert: false,
+                verify_hostname: false,
+                min_tls_version: None,
+                cipher_suites: None,
+            }),
         },
         pool: PoolConfig {
             min_connections: 1,

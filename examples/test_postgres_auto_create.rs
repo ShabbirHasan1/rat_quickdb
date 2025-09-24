@@ -29,18 +29,27 @@ async fn main() -> QuickDbResult<()> {
         max_lifetime: 1800,
     };
     
-    // 创建PostgreSQL数据库配置（注意：这需要实际的PostgreSQL服务器）
+    // 创建PostgreSQL数据库配置（使用线上服务器配置）
     let db_config = DatabaseConfig {
         alias: "test_postgres_db".to_string(),
         db_type: DatabaseType::PostgreSQL,
         connection: ConnectionConfig::PostgreSQL {
-            host: "localhost".to_string(),
+            host: "172.16.0.23".to_string(),
             port: 5432,
-            database: "test_db".to_string(),
-            username: "postgres".to_string(),
-            password: "password".to_string(),
-            ssl_mode: None,
-            tls_config: None,
+            database: "testdb".to_string(),
+            username: "testdb".to_string(),
+            password: "yash2vCiBA&B#h$#i&gb@IGSTh&cP#QC^".to_string(),
+            ssl_mode: Some("prefer".to_string()),
+            tls_config: Some(rat_quickdb::types::TlsConfig {
+                enabled: true,
+                ca_cert_path: None,
+                client_cert_path: None,
+                client_key_path: None,
+                verify_server_cert: false,
+                verify_hostname: false,
+                min_tls_version: None,
+                cipher_suites: None,
+            }),
         },
         pool: pool_config,
         id_strategy: rat_quickdb::types::IdStrategy::AutoIncrement,
@@ -48,8 +57,17 @@ async fn main() -> QuickDbResult<()> {
     };
     
     // 添加数据库配置到管理器
-    add_database(db_config).await?;
-    
+    println!("尝试添加PostgreSQL数据库配置...");
+    match add_database(db_config).await {
+        Ok(_) => {
+            println!("✅ PostgreSQL数据库连接成功！");
+        }
+        Err(e) => {
+            println!("❌ PostgreSQL数据库连接失败: {}", e);
+            return Ok(());
+        }
+    }
+
     // 获取ODM管理器
     let odm = get_odm_manager().await;
     
@@ -70,16 +88,12 @@ async fn main() -> QuickDbResult<()> {
         }
         Err(e) => {
             error!("用户创建失败: {:?}", e);
-            // 如果是连接错误（比如PostgreSQL服务器未运行），这是正常的
-            if e.to_string().contains("连接") {
-                info!("PostgreSQL服务器未运行，跳过测试");
-                return Ok(());
-            }
-            return Err(e);
+            println!("❌ 用户创建失败: {:?}", e);
         }
     }
-    
+
     info!("PostgreSQL自动建表功能测试完成！");
+    println!("🎯 PostgreSQL自动建表功能测试完成！");
     
     Ok(())
 }

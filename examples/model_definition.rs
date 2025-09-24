@@ -160,7 +160,13 @@ async fn demonstrate_json_serialization() -> QuickDbResult<()> {
             
             // 查询用户数据
             println!("\n查询用户数据...");
-            match odm_manager.find_by_id("users", &created_id, None).await {
+            let id_str = match &created_id {
+                DataValue::String(s) => s,
+                DataValue::Int(i) => &i.to_string(),
+                DataValue::Uuid(u) => &u.to_string(),
+                _ => panic!("ID类型不支持: {:?}", created_id)
+            };
+            match odm_manager.find_by_id("users", id_str, None).await {
                 Ok(Some(user_json)) => {
                     println!("找到用户: {}", user_json);
                     
@@ -185,7 +191,7 @@ async fn demonstrate_json_serialization() -> QuickDbResult<()> {
                     println!("{}", data_value_json);
                     
                     // 清理测试数据
-                    let _ = odm_manager.delete_by_id("users", &created_id, None).await;
+                    let _ = odm_manager.delete_by_id("users", id_str, None).await;
                 },
                 Ok(None) => println!("用户未找到"),
                 Err(e) => println!("查询用户失败: {}", e),
@@ -246,7 +252,13 @@ async fn demonstrate_basic_crud(odm_manager: &AsyncOdmManager) -> QuickDbResult<
             
             // 查询用户
             println!("\n2. 查询用户...");
-            match odm_manager.find_by_id("users", &created_id, None).await {
+            let id_str = match &created_id {
+                DataValue::String(s) => s,
+                DataValue::Int(i) => &i.to_string(),
+                DataValue::Uuid(u) => &u.to_string(),
+                _ => panic!("ID类型不支持: {:?}", created_id)
+            };
+            match odm_manager.find_by_id("users", id_str, None).await {
                 Ok(Some(found_user_json)) => {
                     println!("找到用户: {}", found_user_json);
                     
@@ -256,14 +268,14 @@ async fn demonstrate_basic_crud(odm_manager: &AsyncOdmManager) -> QuickDbResult<
                     update_data.insert("age".to_string(), DataValue::Int(26));
                     update_data.insert("updated_at".to_string(), DataValue::String(Utc::now().to_rfc3339()));
                     
-                    match odm_manager.update_by_id("users", &created_id, update_data, None).await {
+                    match odm_manager.update_by_id("users", id_str, update_data, None).await {
                         Ok(_) => println!("用户更新成功"),
                         Err(e) => println!("用户更新失败: {}", e),
                     }
                     
                     // 删除用户
                     println!("\n4. 删除用户...");
-                    match odm_manager.delete_by_id("users", &created_id, None).await {
+                    match odm_manager.delete_by_id("users", id_str, None).await {
                         Ok(_) => println!("用户删除成功"),
                         Err(e) => println!("用户删除失败: {}", e),
                     }
@@ -352,7 +364,7 @@ async fn demonstrate_batch_operations(odm_manager: &AsyncOdmManager) -> QuickDbR
     
     // 批量查询（简化示例）
     match odm_manager.find("users", batch_conditions, None, None).await {
-        Ok(result) => println!("查询结果（用户名包含'batch'）: {}", result),
+        Ok(result) => println!("查询结果（用户名包含'batch'）: {:?}", result),
         Err(e) => println!("批量查询失败: {}", e),
     }
     
@@ -646,6 +658,7 @@ async fn main() -> QuickDbResult<()> {
         })
         .pool(pool_config)
         .alias("default")
+        .id_strategy(IdStrategy::Uuid)
         .build()?;
     
     pool_manager.add_database(db_config).await?;
@@ -873,7 +886,7 @@ async fn demonstrate_model_validation(odm_manager: &AsyncOdmManager) -> QuickDbR
     
     match odm_manager.find("articles", article_conditions, None, None).await {
         Ok(articles_json) => {
-            println!("用户关联的文章: {}", articles_json);
+            println!("用户关联的文章: {:?}", articles_json);
             // 可以进一步解析 JSON 来验证数据完整性
         },
         Err(e) => println!("查询用户文章失败: {}", e),
@@ -921,7 +934,7 @@ async fn demonstrate_complex_queries(odm_manager: &AsyncOdmManager) -> QuickDbRe
     
     // 注意：这里的复杂查询需要根据ODM的实际实现进行调整
     match odm_manager.find("users", conditions.clone(), None, None).await {
-        Ok(users_json) => println!("多条件查询结果: {}", users_json),
+        Ok(users_json) => println!("多条件查询结果: {:?}", users_json),
         Err(e) => println!("多条件查询失败: {}", e),
     }
     
@@ -941,7 +954,7 @@ async fn demonstrate_complex_queries(odm_manager: &AsyncOdmManager) -> QuickDbRe
     ];
     
     match odm_manager.find("users", range_conditions, None, None).await {
-        Ok(users_json) => println!("范围查询结果: {}", users_json),
+        Ok(users_json) => println!("范围查询结果: {:?}", users_json),
         Err(e) => println!("范围查询失败: {}", e),
     }
     
@@ -956,7 +969,7 @@ async fn demonstrate_complex_queries(odm_manager: &AsyncOdmManager) -> QuickDbRe
     ];
     
     match odm_manager.find("users", like_conditions, None, None).await {
-        Ok(users_json) => println!("模糊查询结果: {}", users_json),
+        Ok(users_json) => println!("模糊查询结果: {:?}", users_json),
         Err(e) => println!("模糊查询失败: {}", e),
     }
     

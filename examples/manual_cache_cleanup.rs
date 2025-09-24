@@ -108,7 +108,13 @@ async fn main() -> QuickDbResult<()> {
         
         let id = rat_quickdb::odm::create("users", data, Some("main")).await?;
         info!("创建用户: ID={}", id);
-        user_ids.push(id);
+        let id_str = match id {
+            DataValue::String(s) => s,
+            DataValue::Int(i) => i.to_string(),
+            DataValue::Uuid(u) => u.to_string(),
+            _ => panic!("不支持的ID类型: {:?}", id),
+        };
+        user_ids.push(id_str);
     }
     
     // 填充缓存 - 执行一些查询和记录操作

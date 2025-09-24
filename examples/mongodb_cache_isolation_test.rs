@@ -56,6 +56,7 @@ fn create_cached_mongodb_config(alias: &str) -> DatabaseConfig {
         cache: Some(CacheConfig {
             enabled: true,
             strategy: CacheStrategy::Lru,
+            version: "v1".to_string(),
             l1_config: L1CacheConfig {
                 max_capacity: 1000,
                 max_memory_mb: 100,
@@ -183,7 +184,7 @@ async fn trigger_adapter_creation(pool_manager: &PoolManager, db_alias: &str) ->
 #[tokio::main]
 async fn main() -> QuickDbResult<()> {
     // 初始化日志
-    rat_logger::LoggerBuilder::new().add_terminal_with_config(rat_logger::handler::term::TermConfig::default()).init().expect("日志初始化失败").expect("日志初始化失败");
+    rat_logger::LoggerBuilder::new().add_terminal_with_config(rat_logger::handler::term::TermConfig::default()).init().expect("日志初始化失败");
     
     info!("=== MongoDB缓存配置隔离性测试 ===");
     

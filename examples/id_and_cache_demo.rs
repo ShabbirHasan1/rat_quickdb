@@ -147,11 +147,11 @@ async fn demonstrate_snowflake_id_strategy() -> QuickDbResult<()> {
 async fn demonstrate_mongodb_auto_increment() -> QuickDbResult<()> {
     println!("\n--- MongoDB自增ID演示 ---");
     
-    // 注意：此演示需要本地运行 MongoDB 服务
+    // 注意：此演示需要线上 MongoDB 服务
     // 如果 MongoDB 服务未运行，将显示连接错误但不会影响其他功能
-    println!("注意: 此演示需要本地 MongoDB 服务运行在 localhost:27017");
-    
-    // 配置MongoDB数据库
+    println!("注意: 此演示需要线上 MongoDB 服务运行");
+
+    // 配置MongoDB数据库（使用线上服务器配置）
     let pool_config = rat_quickdb::types::PoolConfig::builder()
         .max_connections(10)
         .min_connections(1)
@@ -159,20 +159,44 @@ async fn demonstrate_mongodb_auto_increment() -> QuickDbResult<()> {
         .idle_timeout(600)
         .max_lifetime(3600)
         .build()?;
-        
+
+    // 配置TLS
+    let tls_config = rat_quickdb::types::TlsConfig {
+        enabled: true,
+        ca_cert_path: None,
+        client_cert_path: None,
+        client_key_path: None,
+        verify_server_cert: false,
+        verify_hostname: false,
+        min_tls_version: None,
+        cipher_suites: None,
+    };
+
+    // 配置ZSTD压缩
+    let zstd_config = rat_quickdb::types::ZstdConfig {
+        enabled: true,
+        compression_level: Some(3),
+        compression_threshold: Some(1024),
+    };
+
     let config = DatabaseConfig::builder()
         .db_type(rat_quickdb::types::DatabaseType::MongoDB)
         .connection(ConnectionConfig::MongoDB {
-            host: "localhost".to_string(),
+            host: "db0.0ldm0s.net".to_string(),
             port: 27017,
-            database: "test_db".to_string(),
-            username: None,
-            password: None,
-            auth_source: None,
-            direct_connection: false,
-            tls_config: None,
-            zstd_config: None,
-            options: None,
+            database: "testdb".to_string(),
+            username: Some("testdb".to_string()),
+            password: Some("yash2vCiBA&B#h$#i&gb@IGSTh&cP#QC^".to_string()),
+            auth_source: Some("testdb".to_string()),
+            direct_connection: true,
+            tls_config: Some(tls_config),
+            zstd_config: Some(zstd_config),
+            options: Some({
+                let mut opts = std::collections::HashMap::new();
+                opts.insert("retryWrites".to_string(), "true".to_string());
+                opts.insert("w".to_string(), "majority".to_string());
+                opts
+            }),
         })
         .pool(pool_config)
         .alias("mongo_db")
@@ -199,7 +223,7 @@ async fn demonstrate_mongodb_auto_increment() -> QuickDbResult<()> {
         }
         Err(e) => {
             println!("⚠️ MongoDB 连接失败，跳过演示: {}", e);
-            println!("   请确保 MongoDB 服务正在运行: mongod --dbpath /path/to/data");
+            println!("   请确保 MongoDB 服务正在运行");
         }
     }
     
@@ -230,6 +254,7 @@ async fn demonstrate_cache_functionality() -> QuickDbResult<()> {
             algorithm: CompressionAlgorithm::Lz4,
             threshold_bytes: 1024,
         },
+        version: "v1".to_string(),
     };
     
     let pool_config = PoolConfig {

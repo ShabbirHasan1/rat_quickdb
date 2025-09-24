@@ -58,7 +58,7 @@ rand = "0.8"
 bytes = "1.0"
 
 # 缓存支持
-rat_memcache = { path = "../rat_memcache", features = ["full-features"] }
+rat_memcache = { version = "0.2.1", features = ["full-features"] }
 # 雪花算法ID生成
 snowflake = { version = "1.3" }
 
