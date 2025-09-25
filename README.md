@@ -313,14 +313,16 @@ rat_quickdb采用现代化架构设计：
 ## 🎯 支持的字段类型
 
 - `integer_field` - 整数字段（支持范围和约束）
-- `string_field` - 字符串字段（支持长度限制）
+- `string_field` - 字符串字段（支持长度限制，可设置大长度作为长文本使用）
 - `float_field` - 浮点数字段（支持范围和精度）
 - `boolean_field` - 布尔字段
-- `text_field` - 长文本字段
 - `datetime_field` - 日期时间字段
+- `uuid_field` - UUID字段
 - `json_field` - JSON字段
 - `array_field` - 数组字段
-- `object_field` - 对象字段
+- `list_field` - 列表字段（array_field的别名）
+- `dict_field` - 字典/对象字段（基于Object类型）
+- `reference_field` - 引用字段（外键）
 
 ## 📝 索引支持
 

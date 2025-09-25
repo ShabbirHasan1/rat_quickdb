@@ -313,14 +313,16 @@ rat_quickdbはモダンアーキテクチャ設計を採用：
 ## 🎯 サポートされるフィールドタイプ
 
 - `integer_field` - 整数フィールド（範囲と制約付き）
-- `string_field` - 文字列フィールド（長さ制限付き）
+- `string_field` - 文字列フィールド（長さ制限付き、長い長さを設定してテキストとして使用可能）
 - `float_field` - 浮動小数点数フィールド（範囲と精度付き）
 - `boolean_field` - ブールフィールド
-- `text_field` - 長テキストフィールド
 - `datetime_field` - 日時フィールド
+- `uuid_field` - UUIDフィールド
 - `json_field` - JSONフィールド
 - `array_field` - 配列フィールド
-- `object_field` - オブジェクトフィールド
+- `list_field` - リストフィールド（array_fieldのエイリアス）
+- `dict_field` - 辞書/オブジェクトフィールド（object_fieldの代替）
+- `reference_field` - 参照フィールド（外部キー）
 
 ## 📝 インデックスサポート
 

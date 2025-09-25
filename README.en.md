@@ -313,14 +313,16 @@ Application Layer → Model Operations → ODM Layer → Message Queue → Conne
 ## 🎯 Supported Field Types
 
 - `integer_field` - Integer fields (with range and constraints)
-- `string_field` - String fields (with length limits)
+- `string_field` - String fields (with length limits, can use large length as text replacement)
 - `float_field` - Floating-point number fields (with range and precision)
 - `boolean_field` - Boolean fields
-- `text_field` - Long text fields
 - `datetime_field` - Date-time fields
+- `uuid_field` - UUID fields
 - `json_field` - JSON fields
 - `array_field` - Array fields
-- `object_field` - Object fields
+- `list_field` - List fields (array_field alias)
+- `dict_field` - Dictionary/Object fields (object_field replacement)
+- `reference_field` - Reference fields (foreign keys)
 
 ## 📝 Index Support
 
