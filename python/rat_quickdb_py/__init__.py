@@ -15,7 +15,8 @@ try:
     from .rat_quickdb_py import (
         # 基础函数
         DbQueueBridge, create_db_queue_bridge,
-        init_logging, init_logging_with_level,
+        init_logging, init_logging_with_level, init_logging_advanced,
+        is_logging_initialized,
         log_info, log_error, log_warn, log_debug, log_trace,
         get_version, get_name, get_info,
 
@@ -37,7 +38,8 @@ try:
     __all__ = [
         # 基础函数
         "DbQueueBridge", "create_db_queue_bridge",
-        "init_logging", "init_logging_with_level",
+        "init_logging", "init_logging_with_level", "init_logging_advanced",
+        "is_logging_initialized",
         "log_info", "log_error", "log_warn", "log_debug", "log_trace",
         "get_version", "get_name", "get_info",
 

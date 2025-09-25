@@ -997,19 +997,20 @@ struct PyDbQueueBridgeAsync;
 impl PyDbQueueBridgeAsync {
     /// 守护进程任务
     async fn daemon_task(mut request_receiver: mpsc::UnboundedReceiver<PyDbRequest>) {
-        info!("数据库队列桥接器守护进程已启动");
-        
+        // 不在启动时记录日志，避免隐式初始化日志系统
+        // 遵循主库的设计理念：日志系统由调用者控制
+
         while let Some(request) = request_receiver.recv().await {
-            debug!("收到数据库操作请求: {}", request.operation);
-            
+            // 只在处理实际请求时记录日志
             let response = Self::process_request(&request).await;
-            
+
             if let Err(e) = request.response_sender.send(response) {
-                error!("发送响应失败: {:?}", e);
+                // 即使发送失败也只记录错误，因为错误信息很重要
+                eprintln!("数据库队列桥接器发送响应失败: {:?}", e);
             }
         }
-        
-        info!("数据库队列桥接器守护进程已停止");
+
+        // 不在结束时记录日志，保持与主库一致的设计理念
     }
 
     /// 处理请求

@@ -13,20 +13,20 @@ pub struct PyDbQueueBridgeAsync;
 impl PyDbQueueBridgeAsync {
     /// 守护任务主循环
     pub async fn daemon_task(mut request_receiver: mpsc::UnboundedReceiver<PyDbRequest>) {
-        info!("启动数据库队列守护任务");
+        // 不在启动时记录日志，避免隐式初始化日志系统
+        // 遵循主库的设计理念：日志系统由调用者控制
 
         while let Some(request) = request_receiver.recv().await {
-            debug!("收到请求: operation={}, collection={}", request.operation, request.collection);
-            
             // 直接处理请求，不使用ODM管理器
             let response = Self::process_request(&request).await;
-            
+
             if let Err(e) = request.response_sender.send(response) {
-                error!("发送响应失败: {:?}", e);
+                // 即使发送失败也只记录错误，因为错误信息很重要
+                eprintln!("数据库队列守护任务发送响应失败: {:?}", e);
             }
         }
-        
-        info!("数据库队列守护任务结束");
+
+        // 不在结束时记录日志，保持与主库一致的设计理念
     }
 
     /// 直接处理请求
