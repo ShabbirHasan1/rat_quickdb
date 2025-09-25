@@ -17,8 +17,9 @@
 - **🔗 统一API**: 一致的接口操作不同数据库
 - **🏊 连接池管理**: 高效的连接池和无锁队列架构
 - **⚡ 异步支持**: 基于Tokio的异步运行时
-- **🧠 智能缓存**: 内置缓存支持（基于rat_memcache）
-- **🆔 ID生成**: 雪花算法和MongoDB自增ID生成器
+- **🧠 智能缓存**: 内置缓存支持（基于rat_memcache），支持TTL过期和回退机制
+- **🆔 多种ID生成策略**: AutoIncrement、UUID、Snowflake、ObjectId、Custom前缀
+- **📝 日志控制**: 由调用者完全控制日志初始化，避免库自动初始化冲突
 - **🐍 Python绑定**: 可选Python API支持
 - **📋 任务队列**: 内置异步任务队列系统
 - **🔍 类型安全**: 强类型模型定义和验证
@@ -29,7 +30,7 @@
 
 ```toml
 [dependencies]
-rat_quickdb = "0.1.7"
+rat_quickdb = "0.1.8"
 ```
 
 ## 🚀 快速开始
@@ -38,24 +39,53 @@ rat_quickdb = "0.1.7"
 
 ```rust
 use rat_quickdb::*;
+use rat_quickdb::types::{CacheConfig, CacheStrategy, TtlConfig, L1CacheConfig, CompressionConfig, CompressionAlgorithm};
+use std::collections::HashMap;
 
 #[tokio::main]
 async fn main() -> QuickDbResult<()> {
-    // 初始化库
+    // 初始化库（日志系统由调用者自行初始化）
     init();
 
-    // 添加SQLite数据库连接
-    let config = sqlite_config(
-        "main",
-        ":memory:",
-        PoolConfig::default()
-    )?;
+    // 添加SQLite数据库连接（带缓存配置）
+    let config = DatabaseConfig::builder()
+        .db_type(DatabaseType::SQLite)
+        .connection(ConnectionConfig::SQLite {
+            path: ":memory:".to_string(),
+            create_if_missing: true,
+        })
+        .pool(PoolConfig::default())
+        .alias("main".to_string())
+        .id_strategy(IdStrategy::AutoIncrement)
+        .cache(CacheConfig {
+            enabled: true,
+            strategy: CacheStrategy::Lru,
+            ttl_config: TtlConfig {
+                default_ttl_secs: 300,
+                max_ttl_secs: 3600,
+                check_interval_secs: 60,
+            },
+            l1_config: L1CacheConfig {
+                max_capacity: 1000,
+                max_memory_mb: 64,
+                enable_stats: true,
+            },
+            l2_config: None,
+            compression_config: CompressionConfig {
+                enabled: false,
+                algorithm: CompressionAlgorithm::Lz4,
+                threshold_bytes: 1024,
+            },
+            version: "1".to_string(),
+        })
+        .build()?;
     add_database(config).await?;
 
     // 创建用户数据
     let mut user_data = HashMap::new();
     user_data.insert("name".to_string(), DataValue::String("张三".to_string()));
     user_data.insert("email".to_string(), DataValue::String("zhangsan@example.com".to_string()));
+    user_data.insert("age".to_string(), DataValue::Int(25));
 
     // 创建用户记录
     create("users", user_data, Some("main")).await?;
@@ -128,6 +158,108 @@ async fn main() -> QuickDbResult<()> {
 
     Ok(())
 }
+```
+
+## 🆔 ID生成策略
+
+rat_quickdb支持多种ID生成策略，满足不同场景的需求：
+
+### AutoIncrement（自增ID）
+```rust
+DatabaseConfig::builder()
+    .id_strategy(IdStrategy::AutoIncrement)
+    .build()?
+```
+
+### UUID（通用唯一标识符）
+```rust
+DatabaseConfig::builder()
+    .id_strategy(IdStrategy::Uuid)
+    .build()?
+```
+
+### Snowflake（雪花算法）
+```rust
+DatabaseConfig::builder()
+    .id_strategy(IdStrategy::Snowflake {
+        machine_id: 1,
+        datacenter_id: 1
+    })
+    .build()?
+```
+
+### ObjectId（MongoDB风格）
+```rust
+DatabaseConfig::builder()
+    .id_strategy(IdStrategy::ObjectId)
+    .build()?
+```
+
+### Custom（自定义前缀）
+```rust
+DatabaseConfig::builder()
+    .id_strategy(IdStrategy::Custom("user_".to_string()))
+    .build()?
+```
+
+## 🧠 缓存配置
+
+### 基本缓存配置
+```rust
+use rat_quickdb::types::{CacheConfig, CacheStrategy, TtlConfig, L1CacheConfig};
+
+let cache_config = CacheConfig {
+    enabled: true,
+    strategy: CacheStrategy::Lru,
+    ttl_config: TtlConfig {
+        default_ttl_secs: 300,  // 5分钟缓存
+        max_ttl_secs: 3600,     // 最大1小时
+        check_interval_secs: 60, // 检查间隔
+    },
+    l1_config: L1CacheConfig {
+        max_capacity: 1000,     // 最多1000个条目
+        max_memory_mb: 64,       // 64MB内存限制
+        enable_stats: true,      // 启用统计
+    },
+    l2_config: None,           // 不使用L2磁盘缓存
+    compression_config: CompressionConfig::default(),
+    version: "1".to_string(),
+};
+
+DatabaseConfig::builder()
+    .cache(cache_config)
+    .build()?
+```
+
+### 缓存统计和管理
+```rust
+// 获取缓存统计信息
+let stats = get_cache_stats("default").await?;
+println!("缓存命中率: {:.2}%", stats.hit_rate * 100.0);
+println!("缓存条目数: {}", stats.entries);
+
+// 清理缓存
+clear_cache("default").await?;
+clear_all_caches().await?;
+```
+
+## 📝 日志控制
+
+rat_quickdb现在完全由调用者控制日志初始化：
+
+```rust
+use rat_logger::{Logger, LoggerBuilder, LevelFilter};
+
+// 调用者负责初始化日志系统
+let logger = LoggerBuilder::new()
+    .with_level(LevelFilter::Debug)
+    .with_file("app.log")
+    .build();
+
+logger.init().expect("日志初始化失败");
+
+// 然后初始化rat_quickdb（不再自动初始化日志）
+rat_quickdb::init();
 ```
 
 ## 🔧 数据库配置
@@ -318,11 +450,11 @@ rat_quickdb采用现代化架构设计：
 
 ## 🌟 版本信息
 
-**当前版本**: 0.1.7
+**当前版本**: 0.1.8
 
 **支持Rust版本**: 1.70+
 
-**重要更新**: v0.1.7 添加了自动索引创建功能、LGPL-v3许可证和改进的文档！
+**重要更新**: v0.1.8 完善了ID生成策略、缓存配置和日志控制，验证了所有核心功能！
 
 ## 📄 许可证
 

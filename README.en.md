@@ -17,8 +17,9 @@
 - **🔗 Unified API**: Consistent interface for different databases
 - **🏊 Connection Pool Management**: Efficient connection pool and lock-free queue architecture
 - **⚡ Async Support**: Based on Tokio async runtime
-- **🧠 Smart Caching**: Built-in caching support (based on rat_memcache)
-- **🆔 ID Generation**: Snowflake algorithm and MongoDB auto-increment ID generators
+- **🧠 Smart Caching**: Built-in caching support (based on rat_memcache), with TTL expiration and fallback mechanism
+- **🆔 Multiple ID Generation Strategies**: AutoIncrement, UUID, Snowflake, ObjectId, Custom prefix
+- **📝 Logging Control**: Complete logging initialization control by caller, avoiding library auto-initialization conflicts
 - **🐍 Python Bindings**: Optional Python API support
 - **📋 Task Queue**: Built-in async task queue system
 - **🔍 Type Safety**: Strong type model definitions and validation
@@ -29,7 +30,7 @@ Add dependency in `Cargo.toml`:
 
 ```toml
 [dependencies]
-rat_quickdb = "0.1.7"
+rat_quickdb = "0.1.8"
 ```
 
 ## 🚀 Quick Start
@@ -38,24 +39,53 @@ rat_quickdb = "0.1.7"
 
 ```rust
 use rat_quickdb::*;
+use rat_quickdb::types::{CacheConfig, CacheStrategy, TtlConfig, L1CacheConfig, CompressionConfig, CompressionAlgorithm};
+use std::collections::HashMap;
 
 #[tokio::main]
 async fn main() -> QuickDbResult<()> {
-    // Initialize library
+    // Initialize library (logging system to be initialized by caller)
     init();
 
-    // Add SQLite database connection
-    let config = sqlite_config(
-        "main",
-        ":memory:",
-        PoolConfig::default()
-    )?;
+    // Add SQLite database connection (with cache configuration)
+    let config = DatabaseConfig::builder()
+        .db_type(DatabaseType::SQLite)
+        .connection(ConnectionConfig::SQLite {
+            path: ":memory:".to_string(),
+            create_if_missing: true,
+        })
+        .pool(PoolConfig::default())
+        .alias("main".to_string())
+        .id_strategy(IdStrategy::AutoIncrement)
+        .cache(CacheConfig {
+            enabled: true,
+            strategy: CacheStrategy::Lru,
+            ttl_config: TtlConfig {
+                default_ttl_secs: 300,
+                max_ttl_secs: 3600,
+                check_interval_secs: 60,
+            },
+            l1_config: L1CacheConfig {
+                max_capacity: 1000,
+                max_memory_mb: 64,
+                enable_stats: true,
+            },
+            l2_config: None,
+            compression_config: CompressionConfig {
+                enabled: false,
+                algorithm: CompressionAlgorithm::Lz4,
+                threshold_bytes: 1024,
+            },
+            version: "1".to_string(),
+        })
+        .build()?;
     add_database(config).await?;
 
     // Create user data
     let mut user_data = HashMap::new();
     user_data.insert("name".to_string(), DataValue::String("Zhang San".to_string()));
     user_data.insert("email".to_string(), DataValue::String("zhangsan@example.com".to_string()));
+    user_data.insert("age".to_string(), DataValue::Int(25));
 
     // Create user record
     create("users", user_data, Some("main")).await?;
@@ -128,6 +158,108 @@ async fn main() -> QuickDbResult<()> {
 
     Ok(())
 }
+```
+
+## 🆔 ID Generation Strategies
+
+rat_quickdb supports multiple ID generation strategies for different use cases:
+
+### AutoIncrement (Auto-increment ID)
+```rust
+DatabaseConfig::builder()
+    .id_strategy(IdStrategy::AutoIncrement)
+    .build()?
+```
+
+### UUID (Universally Unique Identifier)
+```rust
+DatabaseConfig::builder()
+    .id_strategy(IdStrategy::Uuid)
+    .build()?
+```
+
+### Snowflake (Snowflake Algorithm)
+```rust
+DatabaseConfig::builder()
+    .id_strategy(IdStrategy::Snowflake {
+        machine_id: 1,
+        datacenter_id: 1
+    })
+    .build()?
+```
+
+### ObjectId (MongoDB Style)
+```rust
+DatabaseConfig::builder()
+    .id_strategy(IdStrategy::ObjectId)
+    .build()?
+```
+
+### Custom (Custom Prefix)
+```rust
+DatabaseConfig::builder()
+    .id_strategy(IdStrategy::Custom("user_".to_string()))
+    .build()?
+```
+
+## 🧠 Cache Configuration
+
+### Basic Cache Configuration
+```rust
+use rat_quickdb::types::{CacheConfig, CacheStrategy, TtlConfig, L1CacheConfig};
+
+let cache_config = CacheConfig {
+    enabled: true,
+    strategy: CacheStrategy::Lru,
+    ttl_config: TtlConfig {
+        default_ttl_secs: 300,  // 5 minutes cache
+        max_ttl_secs: 3600,     // maximum 1 hour
+        check_interval_secs: 60, // check interval
+    },
+    l1_config: L1CacheConfig {
+        max_capacity: 1000,     // maximum 1000 entries
+        max_memory_mb: 64,       // 64MB memory limit
+        enable_stats: true,      // enable statistics
+    },
+    l2_config: None,           // no L2 disk cache
+    compression_config: CompressionConfig::default(),
+    version: "1".to_string(),
+};
+
+DatabaseConfig::builder()
+    .cache(cache_config)
+    .build()?
+```
+
+### Cache Statistics and Management
+```rust
+// Get cache statistics
+let stats = get_cache_stats("default").await?;
+println!("Cache hit rate: {:.2}%", stats.hit_rate * 100.0);
+println!("Cache entries: {}", stats.entries);
+
+// Clear cache
+clear_cache("default").await?;
+clear_all_caches().await?;
+```
+
+## 📝 Logging Control
+
+rat_quickdb now gives complete logging initialization control to the caller:
+
+```rust
+use rat_logger::{Logger, LoggerBuilder, LevelFilter};
+
+// Caller is responsible for initializing the logging system
+let logger = LoggerBuilder::new()
+    .with_level(LevelFilter::Debug)
+    .with_file("app.log")
+    .build();
+
+logger.init().expect("Failed to initialize logging");
+
+// Then initialize rat_quickdb (no longer auto-initializes logging)
+rat_quickdb::init();
 ```
 
 ## 🔧 Database Configuration
@@ -318,11 +450,11 @@ Application Layer → Model Operations → ODM Layer → Message Queue → Conne
 
 ## 🌟 Version Information
 
-**Current Version**: 0.1.7
+**Current Version**: 0.1.8
 
 **Supported Rust Version**: 1.70+
 
-**Important Update**: v0.1.7 adds auto index creation, LGPL-v3 license, and improved documentation!
+**Important Update**: v0.1.8 enhances ID generation strategies, cache configuration, and logging control, with all core features validated!
 
 ## 📄 License
 
