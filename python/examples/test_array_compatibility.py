@@ -9,7 +9,7 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'python'))
 
-import rat_quickdb as rq
+import rat_quickdb_py as rq
 import json
 from datetime import datetime
 

@@ -173,6 +173,15 @@ def test_object_field_for_database(bridge, table_name: str, db_alias: str, db_ty
                     success = False
             else:
                 print(f"  ❌ metadata 字段未正确解析为 dict: {type(metadata)}")
+                # 添加调试信息
+                if db_type.lower() == "mysql":
+                    print(f"  🔍 MySQL metadata 字段调试信息:")
+                    print(f"    原始值: {metadata}")
+                    print(f"    类型: {type(metadata)}")
+                    print(f"    是否字符串: {isinstance(metadata, str)}")
+                    if isinstance(metadata, str):
+                        print(f"    字符串长度: {len(metadata)}")
+                        print(f"    前100字符: {metadata[:100]}")
                 success = False
         else:
             print(f"  ❌ 未找到 metadata 字段")

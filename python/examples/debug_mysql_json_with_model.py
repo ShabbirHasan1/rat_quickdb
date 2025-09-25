@@ -1,0 +1,195 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+MySQL JSON字段调试测试（带ODM模型）
+验证通过注册ODM模型来解决Object字段解析问题
+"""
+
+import sys
+import os
+sys.path.insert(0, os.path.dirname(__file__))
+
+import rat_quickdb_py as rq
+import json
+import time
+
+def debug_mysql_json_with_model():
+    """调试MySQL JSON字段处理（带ODM模型）"""
+    print("🚀 开始MySQL JSON字段调试测试（带ODM模型）")
+
+    try:
+        # 创建数据库桥接器
+        bridge = rq.create_db_queue_bridge()
+        print("✅ 桥接器创建成功")
+
+        # 初始化日志以便查看详细信息
+        try:
+            rq.init_logging_with_level("debug")
+            print("✅ 日志初始化成功")
+        except:
+            print("⚠️ 日志初始化失败")
+
+        # 添加MySQL数据库
+        result = bridge.add_mysql_database(
+            alias="debug_mysql",
+            host="172.16.0.21",
+            port=3306,
+            database="testdb",
+            username="testdb",
+            password="yash2vCiBA&B#h$#i&gb@IGSTh&cP#QC^",
+            max_connections=5,
+            min_connections=1,
+            connection_timeout=30,
+            idle_timeout=600,
+            max_lifetime=3600
+        )
+
+        result_data = json.loads(result)
+        if not result_data.get("success"):
+            print(f"❌ MySQL数据库添加失败: {result_data.get('error')}")
+            return
+
+        print("✅ MySQL数据库添加成功")
+
+        # 创建测试表
+        table_name = f"debug_mysql_json_model_{int(time.time())}"
+
+        # 先注册ODM模型
+        print("📝 注册ODM模型...")
+
+        # 创建字段定义
+        id_field = rq.string_field(
+            name="id",
+            required=True,
+            unique=True,
+            description="主键ID"
+        )
+
+        name_field = rq.string_field(
+            name="name",
+            required=True,
+            description="名称字段"
+        )
+
+        simple_obj_field = rq.json_field(
+            name="simple_obj",
+            required=False,
+            description="简单对象字段"
+        )
+
+        metadata_field = rq.json_field(
+            name="metadata",
+            required=False,
+            description="元数据对象字段"
+        )
+
+        # 创建索引定义
+        id_index = rq.index_definition(
+            fields=["id"],
+            unique=True,
+            name="idx_id"
+        )
+
+        # 创建模型元数据
+        model_meta = rq.model_meta(
+            collection_name=table_name,
+            database_alias="debug_mysql",
+            description="MySQL JSON字段测试模型",
+            fields=[id_field, name_field, simple_obj_field, metadata_field],
+            indexes=[id_index]
+        )
+
+        # 注册模型
+        register_result = bridge.register_model(model_meta)
+        register_data = json.loads(register_result)
+
+        if register_data.get("success"):
+            print("✅ ODM模型注册成功")
+        else:
+            print(f"❌ ODM模型注册失败: {register_data.get('error')}")
+            return
+
+        # 创建测试数据
+        test_data = {
+            "id": "test_001",
+            "name": "ODM模型测试",
+            "simple_obj": {"key": "value", "number": 42},
+            "metadata": {
+                "profile": {
+                    "name": "测试用户",
+                    "settings": {"theme": "dark"}
+                }
+            }
+        }
+
+        print(f"📝 插入测试数据到表 {table_name}...")
+        print(f"   原始数据: {test_data}")
+
+        # 插入数据
+        insert_result = bridge.create(table_name, json.dumps(test_data), "debug_mysql")
+        insert_data = json.loads(insert_result)
+
+        if insert_data.get("success"):
+            print("✅ 数据插入成功")
+            print(f"   返回的ID: {insert_data.get('data')}")
+        else:
+            print(f"❌ 数据插入失败: {insert_data.get('error')}")
+            return
+
+        # 查询数据
+        print("🔍 查询数据...")
+        query_result = bridge.find_by_id(table_name, "test_001", "debug_mysql")
+        query_data = json.loads(query_result)
+
+        if query_data.get("success"):
+            record = query_data.get("data")
+            if record:
+                print("✅ 数据查询成功")
+                print(f"   记录类型: {type(record)}")
+                print(f"   完整记录: {record}")
+
+                # 检查每个字段
+                for field_name, field_value in record.items():
+                    print(f"   字段 '{field_name}': {field_value} (类型: {type(field_value)})")
+
+                    # 如果是字符串，检查是否是JSON格式
+                    if isinstance(field_value, str):
+                        if field_value.startswith('{') or field_value.startswith('['):
+                            print(f"     ❌ 这个字段是JSON字符串但未被解析!")
+                            try:
+                                parsed = json.loads(field_value)
+                                print(f"     解析后: {parsed} (类型: {type(parsed)})")
+                            except json.JSONDecodeError as e:
+                                print(f"     JSON解析失败: {e}")
+                        else:
+                            print(f"     ✅ 普通字符串")
+                    elif isinstance(field_value, dict):
+                        print(f"     ✅ 正确解析为字典")
+                    elif isinstance(field_value, list):
+                        print(f"     ✅ 正确解析为数组")
+                    else:
+                        print(f"     ✅ 其他类型")
+
+            else:
+                print("❌ 查询结果为空")
+        else:
+            print(f"❌ 数据查询失败: {query_data.get('error')}")
+
+        print("\n🎉 MySQL JSON字段调试测试完成")
+
+    except Exception as e:
+        print(f"❌ 测试过程中发生错误: {e}")
+        import traceback
+        traceback.print_exc()
+
+    finally:
+        # 清理
+        try:
+            if 'bridge' in locals():
+                drop_result = bridge.drop_table(table_name, "debug_mysql")
+                print(f"🧹 清理测试表: {json.loads(drop_result).get('success')}")
+        except:
+            pass
+
+if __name__ == "__main__":
+    debug_mysql_json_with_model()
