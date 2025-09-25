@@ -6,43 +6,43 @@
 [![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://rust-lang.org)
 [![Downloads](https://img.shields.io/crates/d/rat_quickdb.svg)](https://crates.io/crates/rat_quickdb)
 
-🚀 强大的跨数据库ORM库，支持SQLite、PostgreSQL、MySQL、MongoDB的统一接口
+🚀 Powerful cross-database ORM library with unified interface for SQLite, PostgreSQL, MySQL, MongoDB
 
-## ✨ 核心特性
+## ✨ Core Features
 
-- **🎯 自动索引创建**: 基于模型定义自动创建表和索引，无需手动干预
-- **🗄️ 多数据库支持**: SQLite、PostgreSQL、MySQL、MongoDB
-- **🔗 统一API**: 一致的接口操作不同数据库
-- **🏊 连接池管理**: 高效的连接池和无锁队列架构
-- **⚡ 异步支持**: 基于Tokio的异步运行时
-- **🧠 智能缓存**: 内置缓存支持（基于rat_memcache）
-- **🆔 ID生成**: 雪花算法和MongoDB自增ID生成器
-- **🐍 Python绑定**: 可选Python API支持
-- **📋 任务队列**: 内置异步任务队列系统
-- **🔍 类型安全**: 强类型模型定义和验证
+- **🎯 Auto Index Creation**: Automatically create tables and indexes based on model definitions, no manual intervention required
+- **🗄️ Multi-Database Support**: SQLite, PostgreSQL, MySQL, MongoDB
+- **🔗 Unified API**: Consistent interface for different databases
+- **🏊 Connection Pool Management**: Efficient connection pool and lock-free queue architecture
+- **⚡ Async Support**: Based on Tokio async runtime
+- **🧠 Smart Caching**: Built-in caching support (based on rat_memcache)
+- **🆔 ID Generation**: Snowflake algorithm and MongoDB auto-increment ID generators
+- **🐍 Python Bindings**: Optional Python API support
+- **📋 Task Queue**: Built-in async task queue system
+- **🔍 Type Safety**: Strong type model definitions and validation
 
-## 📦 安装
+## 📦 Installation
 
-在`Cargo.toml`中添加依赖：
+Add dependency in `Cargo.toml`:
 
 ```toml
 [dependencies]
 rat_quickdb = "0.1.7"
 ```
 
-## 🚀 快速开始
+## 🚀 Quick Start
 
-### 基本使用
+### Basic Usage
 
 ```rust
 use rat_quickdb::*;
 
 #[tokio::main]
 async fn main() -> QuickDbResult<()> {
-    // 初始化库
+    // Initialize library
     init();
 
-    // 添加SQLite数据库连接
+    // Add SQLite database connection
     let config = sqlite_config(
         "main",
         ":memory:",
@@ -50,29 +50,29 @@ async fn main() -> QuickDbResult<()> {
     )?;
     add_database(config).await?;
 
-    // 创建用户数据
+    // Create user data
     let mut user_data = HashMap::new();
-    user_data.insert("name".to_string(), DataValue::String("张三".to_string()));
+    user_data.insert("name".to_string(), DataValue::String("Zhang San".to_string()));
     user_data.insert("email".to_string(), DataValue::String("zhangsan@example.com".to_string()));
 
-    // 创建用户记录
+    // Create user record
     create("users", user_data, Some("main")).await?;
 
-    // 查询用户
+    // Query user
     let user = find_by_id("users", "1", Some("main")).await?;
-    println!("找到用户: {:?}", user);
+    println!("Found user: {:?}", user);
 
     Ok(())
 }
 ```
 
-### 模型定义（推荐方式）
+### Model Definition (Recommended)
 
 ```rust
 use rat_quickdb::*;
 use serde::{Serialize, Deserialize};
 
-// 定义用户模型
+// Define user model
 rat_quickdb::define_model! {
     struct User {
         id: Option<i32>,
@@ -102,33 +102,33 @@ rat_quickdb::define_model! {
 async fn main() -> QuickDbResult<()> {
     init();
 
-    // 添加数据库
+    // Add database
     let config = sqlite_config("main", "test.db", PoolConfig::default())?;
     add_database(config).await?;
 
-    // 创建用户（自动创建表和索引）
+    // Create user (automatically creates tables and indexes)
     let user = User {
         id: None,
-        username: "张三".to_string(),
+        username: "zhangsan".to_string(),
         email: "zhangsan@example.com".to_string(),
         age: 25,
         is_active: true,
     };
 
-    // 保存用户（自动处理所有数据库操作）
+    // Save user (automatically handles all database operations)
     let user_id = user.save().await?;
-    println!("用户创建成功，ID: {}", user_id);
+    println!("User created successfully, ID: {}", user_id);
 
-    // 查询用户
+    // Query user
     if let Some(found_user) = ModelManager::<User>::find_by_id(&user_id).await? {
-        println!("找到用户: {} ({})", found_user.username, found_user.email);
+        println!("Found user: {} ({})", found_user.username, found_user.email);
     }
 
     Ok(())
 }
 ```
 
-## 🔧 数据库配置
+## 🔧 Database Configuration
 
 ### SQLite
 ```rust
@@ -248,106 +248,106 @@ let config = mongodb_config_with_builder(
 add_database(config).await?;
 ```
 
-## 🛠️ 核心API
+## 🛠️ Core API
 
-### 数据库管理
-- `init()` - 初始化库
-- `add_database(config)` - 添加数据库配置
-- `remove_database(alias)` - 移除数据库配置
-- `get_aliases()` - 获取所有数据库别名
-- `set_default_alias(alias)` - 设置默认数据库别名
+### Database Management
+- `init()` - Initialize library
+- `add_database(config)` - Add database configuration
+- `remove_database(alias)` - Remove database configuration
+- `get_aliases()` - Get all database aliases
+- `set_default_alias(alias)` - Set default database alias
 
-### 模型操作（推荐）
+### Model Operations (Recommended)
 ```rust
-// 保存记录
+// Save record
 let user_id = user.save().await?;
 
-// 查询记录
+// Query record
 let found_user = ModelManager::<User>::find_by_id(&user_id).await?;
 let users = ModelManager::<User>::find(conditions, options).await?;
 
-// 更新记录
+// Update record
 let mut updates = HashMap::new();
-updates.insert("username".to_string(), DataValue::String("新名字".to_string()));
+updates.insert("username".to_string(), DataValue::String("new_name".to_string()));
 let updated = user.update(updates).await?;
 
-// 删除记录
+// Delete record
 let deleted = user.delete().await?;
 ```
 
-### ODM操作（底层接口）
-- `create(collection, data, alias)` - 创建记录
-- `find_by_id(collection, id, alias)` - 根据ID查找
-- `find(collection, conditions, options, alias)` - 查询记录
-- `update(collection, id, data, alias)` - 更新记录
-- `delete(collection, id, alias)` - 删除记录
-- `count(collection, query, alias)` - 计数
-- `exists(collection, query, alias)` - 检查是否存在
+### ODM Operations (Low-level)
+- `create(collection, data, alias)` - Create record
+- `find_by_id(collection, id, alias)` - Find by ID
+- `find(collection, conditions, options, alias)` - Query records
+- `update(collection, id, data, alias)` - Update record
+- `delete(collection, id, alias)` - Delete record
+- `count(collection, query, alias)` - Count records
+- `exists(collection, query, alias)` - Check existence
 
-## 🏗️ 架构特点
+## 🏗️ Architecture Features
 
-rat_quickdb采用现代化架构设计：
+rat_quickdb adopts modern architecture design:
 
-1. **无锁队列架构**: 避免直接持有数据库连接的生命周期问题
-2. **模型自动注册**: 首次使用时自动注册模型元数据
-3. **自动索引管理**: 根据模型定义自动创建表和索引
-4. **跨数据库适配**: 统一的接口支持多种数据库类型
-5. **异步消息处理**: 基于Tokio的高效异步处理
+1. **Lock-free Queue Architecture**: Avoids direct database connection lifecycle issues
+2. **Model Auto-registration**: Automatically registers model metadata on first use
+3. **Auto Index Management**: Automatically creates tables and indexes based on model definitions
+4. **Cross-database Adapter**: Unified interface supporting multiple database types
+5. **Async Message Processing**: Efficient async processing based on Tokio
 
-## 🔄 工作流程
+## 🔄 Workflow
 
 ```
-应用层 → 模型操作 → ODM层 → 消息队列 → 连接池 → 数据库
-    ↑                                        ↓
-    └────────────── 结果返回 ←────────────────┘
+Application Layer → Model Operations → ODM Layer → Message Queue → Connection Pool → Database
+    ↑                                                             ↓
+    └───────────────── Result Return ←───────────────────────────┘
 ```
 
-## 📊 性能特性
+## 📊 Performance Features
 
-- **连接池管理**: 智能连接复用和管理
-- **异步操作**: 非阻塞的数据库操作
-- **批量处理**: 支持批量操作优化
-- **缓存集成**: 内置缓存减少数据库访问
-- **压缩支持**: MongoDB支持ZSTD压缩
+- **Connection Pool Management**: Intelligent connection reuse and management
+- **Async Operations**: Non-blocking database operations
+- **Batch Processing**: Supports batch operation optimization
+- **Cache Integration**: Built-in caching reduces database access
+- **Compression Support**: MongoDB supports ZSTD compression
 
-## 🎯 支持的字段类型
+## 🎯 Supported Field Types
 
-- `integer_field` - 整数字段（支持范围和约束）
-- `string_field` - 字符串字段（支持长度限制）
-- `float_field` - 浮点数字段（支持范围和精度）
-- `boolean_field` - 布尔字段
-- `text_field` - 长文本字段
-- `datetime_field` - 日期时间字段
-- `json_field` - JSON字段
-- `array_field` - 数组字段
-- `object_field` - 对象字段
+- `integer_field` - Integer fields (with range and constraints)
+- `string_field` - String fields (with length limits)
+- `float_field` - Floating-point number fields (with range and precision)
+- `boolean_field` - Boolean fields
+- `text_field` - Long text fields
+- `datetime_field` - Date-time fields
+- `json_field` - JSON fields
+- `array_field` - Array fields
+- `object_field` - Object fields
 
-## 📝 索引支持
+## 📝 Index Support
 
-- **唯一索引**: `unique()` 约束
-- **复合索引**: 多字段组合索引
-- **普通索引**: 基础查询优化索引
-- **自动创建**: 基于模型定义自动创建
-- **跨数据库**: 支持所有数据库类型的索引
+- **Unique Indexes**: `unique()` constraints
+- **Composite Indexes**: Multi-field combination indexes
+- **Regular Indexes**: Basic query optimization indexes
+- **Auto Creation**: Automatically created based on model definitions
+- **Cross-database**: Supports all database index types
 
-## 🌟 版本信息
+## 🌟 Version Information
 
-**当前版本**: 0.1.7
+**Current Version**: 0.1.7
 
-**支持Rust版本**: 1.70+
+**Supported Rust Version**: 1.70+
 
-**重要更新**: v0.1.7 添加了自动索引创建功能、LGPL-v3许可证和改进的文档！
+**Important Update**: v0.1.7 adds auto index creation, LGPL-v3 license, and improved documentation!
 
-## 📄 许可证
+## 📄 License
 
-本项目采用 [LGPL-v3](LICENSE) 许可证。
+This project is licensed under the [LGPL-v3](LICENSE) license.
 
-## 🤝 贡献
+## 🤝 Contributing
 
-欢迎提交Issue和Pull Request来改进这个项目！
+Welcome to submit Issues and Pull Requests to improve this project!
 
-## 📞 联系方式
+## 📞 Contact
 
-如有问题或建议，请通过以下方式联系：
-- 创建Issue: [GitHub Issues](https://github.com/your-repo/rat_quickdb/issues)
-- 邮箱: oldmos@gmail.com
+For questions or suggestions, please contact:
+- Create Issue: [GitHub Issues](https://github.com/your-repo/rat_quickdb/issues)
+- Email: oldmos@gmail.com
