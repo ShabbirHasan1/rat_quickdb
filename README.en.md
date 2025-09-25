@@ -8,6 +8,8 @@
 
 🚀 Powerful cross-database ORM library with unified interface for SQLite, PostgreSQL, MySQL, MongoDB
 
+**🌐 Language Versions**: [中文](README.md) | [English](README.en.md) | [日本語](README.ja.md)
+
 ## ✨ Core Features
 
 - **🎯 Auto Index Creation**: Automatically create tables and indexes based on model definitions, no manual intervention required
@@ -134,12 +136,7 @@ async fn main() -> QuickDbResult<()> {
 ```rust
 use rat_quickdb::*;
 
-let pool_config = PoolConfig::builder()
-    .max_connections(10)
-    .min_connections(2)
-    .connection_timeout(30)
-    .idle_timeout(300)
-    .build()?;
+let pool_config = PoolConfig::default();
 
 let config = sqlite_config(
     "sqlite_db",
@@ -154,68 +151,55 @@ add_database(config).await?;
 use rat_quickdb::*;
 
 let pool_config = PoolConfig::default();
-let tls_config = TlsConfig {
-    enabled: true,
-    verify_server_cert: false,
-    verify_hostname: false,
-    ..Default::default()
-};
-
-let config = DatabaseConfig {
-    db_type: DatabaseType::PostgreSQL,
-    connection: ConnectionConfig::PostgreSQL {
-        host: "localhost".to_string(),
-        port: 5432,
-        database: "mydatabase".to_string(),
-        username: "username".to_string(),
-        password: "password".to_string(),
-        ssl_mode: Some("prefer".to_string()),
-        tls_config: Some(tls_config),
-    },
-    pool: pool_config,
-    alias: "postgres_db".to_string(),
-    cache: None,
-    id_strategy: IdStrategy::AutoIncrement,
-};
+let config = postgres_config(
+    "postgres_db",
+    "localhost",
+    5432,
+    "mydatabase",
+    "username",
+    "password",
+    pool_config
+)?;
 add_database(config).await?;
 ```
 
 ### MySQL
 ```rust
 use rat_quickdb::*;
-use std::collections::HashMap;
 
 let pool_config = PoolConfig::default();
-let tls_config = TlsConfig {
-    enabled: true,
-    verify_server_cert: false,
-    verify_hostname: false,
-    ..Default::default()
-};
-
-let mut ssl_opts = HashMap::new();
-ssl_opts.insert("ssl_mode".to_string(), "PREFERRED".to_string());
-
-let config = DatabaseConfig {
-    db_type: DatabaseType::MySQL,
-    connection: ConnectionConfig::MySQL {
-        host: "localhost".to_string(),
-        port: 3306,
-        database: "mydatabase".to_string(),
-        username: "username".to_string(),
-        password: "password".to_string(),
-        ssl_opts: Some(ssl_opts),
-        tls_config: Some(tls_config),
-    },
-    pool: pool_config,
-    alias: "mysql_db".to_string(),
-    cache: None,
-    id_strategy: IdStrategy::AutoIncrement,
-};
+let config = mysql_config(
+    "mysql_db",
+    "localhost",
+    3306,
+    "mydatabase",
+    "username",
+    "password",
+    pool_config
+)?;
 add_database(config).await?;
 ```
 
 ### MongoDB
+
+#### Basic Configuration (using convenience function)
+```rust
+use rat_quickdb::*;
+
+let pool_config = PoolConfig::default();
+let config = mongodb_config(
+    "mongodb_db",
+    "localhost",
+    27017,
+    "mydatabase",
+    Some("username"),
+    Some("password"),
+    pool_config
+)?;
+add_database(config).await?;
+```
+
+#### Advanced Configuration (using builder)
 ```rust
 use rat_quickdb::*;
 
