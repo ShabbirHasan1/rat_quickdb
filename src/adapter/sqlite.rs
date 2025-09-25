@@ -149,17 +149,24 @@ impl DatabaseAdapter for SqliteAdapter {
                     message: format!("执行SQLite插入失败: {}", e),
                 })?;
             
-            // 对于AutoIncrement策略，直接返回自增ID
-            // 注意：这里假设使用AutoIncrement策略，后续需要根据实际策略配置调整
-            let id = result.last_insert_rowid();
-            if id > 0 {
-                Ok(DataValue::Int(id))
+            // 根据插入的数据返回相应的ID
+            // 优先返回数据中的ID字段，如果没有则使用SQLite的rowid
+            if let Some(id_value) = data.get("id") {
+                Ok(id_value.clone())
+            } else if let Some(id_value) = data.get("_id") {
+                Ok(id_value.clone())
             } else {
-                // 如果没有自增ID，返回包含详细信息的对象
-                let mut result_map = HashMap::new();
-                result_map.insert("id".to_string(), DataValue::Int(id));
-                result_map.insert("affected_rows".to_string(), DataValue::Int(result.rows_affected() as i64));
-                Ok(DataValue::Object(result_map))
+                // 如果数据中没有ID字段，返回SQLite的自增ID
+                let id = result.last_insert_rowid();
+                if id > 0 {
+                    Ok(DataValue::Int(id))
+                } else {
+                    // 如果没有自增ID，返回包含详细信息的对象
+                    let mut result_map = HashMap::new();
+                    result_map.insert("id".to_string(), DataValue::Int(id));
+                    result_map.insert("affected_rows".to_string(), DataValue::Int(result.rows_affected() as i64));
+                    Ok(DataValue::Object(result_map))
+                }
             }
     }
 

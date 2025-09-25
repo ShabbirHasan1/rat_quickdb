@@ -4,9 +4,11 @@
 //! 包括连接配置、CRUD操作、多数据库管理等功能。
 
 use rat_quickdb::*;
-use rat_quickdb::manager::{get_global_pool_manager, health_check, shutdown};
+use rat_quickdb::manager::{get_global_pool_manager, health_check, shutdown, get_cache_manager, get_cache_stats};
+use rat_quickdb::types::{CacheConfig, CacheStrategy, TtlConfig, L1CacheConfig, L2CacheConfig, CompressionConfig, CompressionAlgorithm};
 use std::collections::HashMap;
 use chrono::Utc;
+use uuid::Uuid;
 
 #[tokio::main]
 async fn main() -> QuickDbResult<()> {
@@ -14,7 +16,18 @@ async fn main() -> QuickDbResult<()> {
     rat_quickdb::init();
     println!("=== RatQuickDB 基本使用示例 ===");
     println!("库版本: {}", rat_quickdb::get_info());
-    
+
+    // 清理旧的数据库文件
+    let db_files = ["/tmp/test_basic_usage.db"];
+    for db_path in &db_files {
+        if std::path::Path::new(db_path).exists() {
+            std::fs::remove_file(db_path).unwrap_or_else(|e| {
+                eprintln!("警告：删除数据库文件失败 {}: {}", db_path, e);
+            });
+            println!("✅ 已清理旧的数据库文件: {}", db_path);
+        }
+    }
+
     // 1. 配置SQLite数据库
     println!("\n1. 配置SQLite数据库...");
     let sqlite_config = DatabaseConfig::builder()
@@ -32,6 +45,28 @@ async fn main() -> QuickDbResult<()> {
             .build()?)
         .alias("default".to_string())
         .id_strategy(IdStrategy::AutoIncrement) // 添加ID生成策略
+        // 添加真正的内存缓存配置
+        .cache(CacheConfig {
+            enabled: true,
+            strategy: CacheStrategy::Lru,
+            ttl_config: TtlConfig {
+                default_ttl_secs: 300, // 5分钟缓存
+                max_ttl_secs: 3600,    // 最大1小时
+                check_interval_secs: 60,
+            },
+            l1_config: L1CacheConfig {
+                max_capacity: 1000,   // 最多1000个条目
+                max_memory_mb: 64,    // L1缓存64MB内存
+                enable_stats: true,   // 启用统计
+            },
+            l2_config: None, // 不使用L2磁盘缓存
+            compression_config: CompressionConfig {
+                enabled: false,
+                algorithm: CompressionAlgorithm::Lz4,
+                threshold_bytes: 1024,
+            },
+            version: "1".to_string(),
+        })
         .build()?;
     
     // 添加数据库到连接池管理器
@@ -48,10 +83,10 @@ async fn main() -> QuickDbResult<()> {
     // 创建用户数据
     println!("\n2.1 创建用户数据");
     let users_data = vec![
-        create_user_data("张三", "zhangsan@example.com", 25, "技术部"),
-        create_user_data("李四", "lisi@example.com", 30, "产品部"),
-        create_user_data("王五", "wangwu@example.com", 28, "技术部"),
-        create_user_data("赵六", "zhaoliu@example.com", 32, "市场部"),
+        create_user_data(&format!("张三_{}", uuid::Uuid::new_v4().simple()), &format!("zhangsan_{}@example.com", uuid::Uuid::new_v4().simple()), 25, "技术部"),
+        create_user_data(&format!("李四_{}", uuid::Uuid::new_v4().simple()), &format!("lisi_{}@example.com", uuid::Uuid::new_v4().simple()), 30, "产品部"),
+        create_user_data(&format!("王五_{}", uuid::Uuid::new_v4().simple()), &format!("wangwu_{}@example.com", uuid::Uuid::new_v4().simple()), 28, "技术部"),
+        create_user_data(&format!("赵六_{}", uuid::Uuid::new_v4().simple()), &format!("zhaoliu_{}@example.com", uuid::Uuid::new_v4().simple()), 32, "市场部"),
     ];
     
     for (i, user_data) in users_data.iter().enumerate() {
@@ -161,9 +196,9 @@ async fn main() -> QuickDbResult<()> {
     println!("\n4. JSON序列化示例");
     demonstrate_serialization().await?;
     
-    // 5. 多数据库示例（如果需要）
-    println!("\n5. 多数据库配置示例");
-    demonstrate_multiple_databases().await?;
+    // 5. 缓存功能演示
+    println!("\n5. 缓存功能演示");
+    demonstrate_caching().await?;
     
     // 删除记录
     let delete_conditions = vec![
@@ -318,52 +353,87 @@ async fn demonstrate_serialization() -> QuickDbResult<()> {
     Ok(())
 }
 
-/// 演示多数据库配置
-async fn demonstrate_multiple_databases() -> QuickDbResult<()> {
-    println!("配置内存SQLite数据库作为缓存...");
-    
-    // 配置内存SQLite作为缓存数据库
-    let cache_config = DatabaseConfig::builder()
-        .db_type(DatabaseType::SQLite)
-        .connection(ConnectionConfig::SQLite {
-            path: "/tmp/test_cache.db".to_string(),
-            create_if_missing: true,
-        })
-        .pool(PoolConfig::builder()
-            .min_connections(1)
-            .max_connections(5)
-            .connection_timeout(30)
-            .idle_timeout(600)
-            .max_lifetime(3600)
-            .build()?)
-        .alias("cache".to_string())
-        .id_strategy(IdStrategy::AutoIncrement)
-        .build()?;
-    
-    add_database(cache_config).await?;
-    println!("缓存数据库配置完成");
-    
-    // 在缓存数据库中创建一些临时数据
-    let mut cache_data = HashMap::new();
-    cache_data.insert("key".to_string(), DataValue::String("user_session_123".to_string()));
-    cache_data.insert("value".to_string(), DataValue::String("session_data_here".to_string()));
-    cache_data.insert("expires_at".to_string(), DataValue::DateTime(Utc::now() + chrono::Duration::minutes(30)));
-    
-    let cache_result = rat_quickdb::create("cache", cache_data, Some("cache")).await?;
-    println!("缓存数据创建: {}", cache_result);
-    
-    // 查询缓存数据
-    let cache_query = rat_quickdb::find("cache", vec![], None, Some("cache")).await?;
-    println!("缓存数据查询: {:?}", cache_query);
-    
-    // 显示所有数据库的连接池状态
-    let manager = get_global_pool_manager();
-    let aliases = manager.get_aliases();
-    println!("所有数据库连接池状态:");
-    for alias in aliases {
-        let db_type = manager.get_database_type(&alias).unwrap_or(DatabaseType::SQLite);
-        println!("  {}: 数据库类型 {:?}", alias, db_type);
+/// 演示真正的缓存功能
+async fn demonstrate_caching() -> QuickDbResult<()> {
+    println!("演示 rat_memcache 缓存功能...");
+
+    // 获取缓存管理器
+    let cache_manager = match get_cache_manager("default") {
+        Ok(manager) => manager,
+        Err(e) => {
+            println!("获取缓存管理器失败: {}", e);
+            return Ok(());
+        }
+    };
+
+    // 测试数据
+    let mut test_user = HashMap::new();
+    test_user.insert("name".to_string(), DataValue::String("缓存测试用户".to_string()));
+    test_user.insert("email".to_string(), DataValue::String("cache_test@example.com".to_string()));
+    test_user.insert("age".to_string(), DataValue::Int(25));
+
+    // 创建用户并获取ID
+    let user_id = rat_quickdb::create("users", test_user.clone(), None).await?;
+    println!("创建用户成功，ID: {:?}", user_id);
+
+    // 第一次查询（应该从数据库获取）
+    println!("第一次查询用户（从数据库获取）...");
+    let start_time = std::time::Instant::now();
+    let first_query = rat_quickdb::find_by_id("users", &user_id.to_string(), None).await?;
+    let first_duration = start_time.elapsed();
+    println!("第一次查询耗时: {:?}, 结果: {:?}", first_duration, first_query);
+
+    // 第二次查询（应该从缓存获取）
+    println!("第二次查询用户（从缓存获取）...");
+    let start_time = std::time::Instant::now();
+    let second_query = rat_quickdb::find_by_id("users", &user_id.to_string(), None).await?;
+    let second_duration = start_time.elapsed();
+    println!("第二次查询耗时: {:?}, 结果: {:?}", second_duration, second_query);
+
+    // 比较查询性能
+    if second_duration < first_duration {
+        println!("✅ 缓存生效！第二次查询比第一次快 {:?}", first_duration - second_duration);
+    } else {
+        println!("⚠️  缓存效果不明显，两次查询耗时相近");
     }
-    
+
+    // 显示缓存统计信息
+    if let Ok(stats) = get_cache_stats("default").await {
+        println!("缓存统计信息:");
+        println!("  命中次数: {}", stats.hits);
+        println!("  未命中次数: {}", stats.misses);
+        println!("  命中率: {:.2}%", stats.hit_rate * 100.0);
+        println!("  缓存条目数: {}", stats.entries);
+        println!("  内存使用: {} KB", stats.memory_usage_bytes / 1024);
+    }
+
+    // 测试查询结果缓存
+    println!("\n测试查询结果缓存...");
+    let conditions = vec![
+        QueryCondition {
+            field: "department".to_string(),
+            operator: QueryOperator::Eq,
+            value: DataValue::String("技术部".to_string()),
+        }
+    ];
+
+    // 第一次条件查询
+    println!("第一次条件查询技术部员工...");
+    let start_time = std::time::Instant::now();
+    let first_result = rat_quickdb::find("users", conditions.clone(), None, None).await?;
+    let first_duration = start_time.elapsed();
+    println!("第一次条件查询耗时: {:?}, 找到 {} 条记录", first_duration, first_result.len());
+
+    // 第二次相同条件查询（应该从缓存获取）
+    println!("第二次相同条件查询...");
+    let start_time = std::time::Instant::now();
+    let second_result = rat_quickdb::find("users", conditions.clone(), None, None).await?;
+    let second_duration = start_time.elapsed();
+    println!("第二次条件查询耗时: {:?}, 找到 {} 条记录", second_duration, second_result.len());
+
+    if second_duration < first_duration {
+        println!("✅ 查询缓存生效！第二次查询比第一次快 {:?}", first_duration - second_duration);
+    }
+
     Ok(())
 }
