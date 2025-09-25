@@ -109,36 +109,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("✅ 已清理现有数据");
     }
 
-    // 手动创建索引（临时解决方案）
-    println!("手动创建索引...");
-    let pool_manager = get_global_pool_manager();
-    let connection_pools = pool_manager.get_connection_pools();
-    if let Some(connection_pool) = connection_pools.get("mongodb_index_test") {
-        // 创建email字段的唯一索引
-        if let Err(e) = connection_pool.create_index(
-            &collection_name,
-            "idx_email",
-            &["email".to_string()],
-            true
-        ).await {
-            println!("⚠️  创建email唯一索引失败: {}", e);
-        } else {
-            println!("✅ 创建email唯一索引成功");
-        }
-
-        // 创建name字段的普通索引
-        if let Err(e) = connection_pool.create_index(
-            &collection_name,
-            "idx_name",
-            &["name".to_string()],
-            false
-        ).await {
-            println!("⚠️  创建name索引失败: {}", e);
-        } else {
-            println!("✅ 创建name索引成功");
-        }
-    }
-
     // 检查模型元数据中的索引定义
     let meta = MongoIndexTestModel::meta();
     println!("模型元数据信息：");

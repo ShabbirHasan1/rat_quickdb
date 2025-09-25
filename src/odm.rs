@@ -279,17 +279,23 @@ impl AsyncOdmManager {
             }
         };
         debug!("处理创建请求: collection={}, alias={}", collection, actual_alias);
-        
+
+        // 确保表和索引存在（基于注册的模型元数据）
+        if let Err(e) = manager.ensure_table_and_indexes(collection, &actual_alias).await {
+            debug!("自动创建表和索引失败: {}", e);
+            // 不返回错误，让适配器处理自动创建逻辑
+        }
+
         let manager = get_global_pool_manager();
         let connection_pools = manager.get_connection_pools();
         let connection_pool = connection_pools.get(&actual_alias)
             .ok_or_else(|| QuickDbError::AliasNotFound {
                 alias: actual_alias.clone(),
             })?;
-        
+
         // 创建oneshot通道用于接收响应
         let (response_tx, response_rx) = oneshot::channel();
-        
+
         // 发送DatabaseOperation::Create请求到连接池
         let operation = crate::pool::DatabaseOperation::Create {
             table: collection.to_string(),

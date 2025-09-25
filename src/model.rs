@@ -1078,7 +1078,7 @@ macro_rules! define_model {
                 $(
                     fields.insert(stringify!($field_name).to_string(), $field_def);
                 )*
-                
+
                 let mut indexes = Vec::new();
                 $(
                     $(
@@ -1089,14 +1089,26 @@ macro_rules! define_model {
                         });
                     )*
                 )?
-                
-                $crate::model::ModelMeta {
+
+                let model_meta = $crate::model::ModelMeta {
                     collection_name: $collection.to_string(),
                     database_alias: None $(.or(Some($database.to_string())))?,
                     fields,
                     indexes,
                     description: None,
-                }
+                };
+
+                // 自动注册模型元数据（仅在首次调用时注册）
+                static ONCE: std::sync::Once = std::sync::Once::new();
+                ONCE.call_once(|| {
+                    if let Err(e) = $crate::manager::register_model(model_meta.clone()) {
+                        eprintln!("⚠️  模型注册失败: {}", e);
+                    } else {
+                        println!("✅ 模型自动注册成功: {}", model_meta.collection_name);
+                    }
+                });
+
+                model_meta
             }
             
             /// 高性能直接转换实现，避免 JSON 序列化开销

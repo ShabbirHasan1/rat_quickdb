@@ -7,7 +7,9 @@ use crate::pool::{ConnectionPool, PooledConnection, ExtendedPoolConfig};
 use crate::types::{DatabaseConfig, DatabaseType, IdType};
 use crate::id_generator::{IdGenerator, MongoAutoIncrementGenerator};
 use crate::cache::{CacheManager, CacheStats};
+use crate::model::ModelMeta;
 use dashmap::DashMap;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::time::{interval, Duration};
@@ -28,13 +30,15 @@ pub struct PoolManager {
     mongo_auto_increment_generators: Arc<DashMap<String, Arc<MongoAutoIncrementGenerator>>>,
     /// 缓存管理器映射 (别名 -> 缓存管理器)
     cache_managers: Arc<DashMap<String, Arc<CacheManager>>>,
+    /// 模型元数据注册表 (集合名 -> 模型元数据)
+    model_registry: Arc<DashMap<String, ModelMeta>>,
 }
 
 impl PoolManager {
     /// 创建新的连接池管理器
     pub fn new() -> Self {
         info!("创建连接池管理器");
-        
+
         Self {
             pools: Arc::new(DashMap::new()),
             default_alias: Arc::new(RwLock::new(None)),
@@ -42,6 +46,7 @@ impl PoolManager {
             id_generators: Arc::new(DashMap::new()),
             mongo_auto_increment_generators: Arc::new(DashMap::new()),
             cache_managers: Arc::new(DashMap::new()),
+            model_registry: Arc::new(DashMap::new()),
         }
     }
 
@@ -471,6 +476,88 @@ impl PoolManager {
         info!("活跃连接池状态收集完成，共 {} 个连接池", pools_status.len());
         pools_status
     }
+
+    /// 注册模型元数据
+    pub fn register_model(&self, model_meta: ModelMeta) -> QuickDbResult<()> {
+        let collection_name = model_meta.collection_name.clone();
+
+        // 检查是否已注册
+        if self.model_registry.contains_key(&collection_name) {
+            debug!("模型已存在，将更新元数据: {}", collection_name);
+        }
+
+        self.model_registry.insert(collection_name.clone(), model_meta.clone());
+        info!("注册模型元数据: 集合={}, 索引数量={}", collection_name, model_meta.indexes.len());
+
+        Ok(())
+    }
+
+    /// 获取模型元数据
+    pub fn get_model(&self, collection_name: &str) -> Option<ModelMeta> {
+        self.model_registry.get(collection_name).map(|meta| meta.clone())
+    }
+
+    /// 检查模型是否已注册
+    pub fn has_model(&self, collection_name: &str) -> bool {
+        self.model_registry.contains_key(collection_name)
+    }
+
+    /// 获取所有已注册的模型
+    pub fn get_registered_models(&self) -> Vec<(String, ModelMeta)> {
+        self.model_registry
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .collect()
+    }
+
+    /// 创建表和索引（基于注册的模型元数据）
+    pub async fn ensure_table_and_indexes(&self, collection_name: &str, alias: &str) -> QuickDbResult<()> {
+        if let Some(model_meta) = self.get_model(collection_name) {
+            info!("为集合 {} 创建表和索引", collection_name);
+
+            // 获取连接池
+            if let Some(pool) = self.pools.get(alias) {
+                // 创建表（如果不存在）
+                let fields: HashMap<String, crate::model::FieldType> = model_meta.fields.iter()
+                    .map(|(name, field_def)| (name.clone(), field_def.field_type.clone()))
+                    .collect();
+
+                // 检查表是否存在（使用空条件检查）
+                let table_exists = pool.exists(&collection_name, &[]).await?;
+                if !table_exists {
+                    info!("表 {} 不存在，正在创建", collection_name);
+                    pool.create_table(&collection_name, &fields).await?;
+                    info!("✅ 创建表成功: {}", collection_name);
+                }
+
+                // 创建索引
+                for index in &model_meta.indexes {
+                    let default_name = format!("idx_{}", index.fields.join("_"));
+                    let index_name = index.name.as_deref().unwrap_or(&default_name);
+                    info!("创建索引: {} (字段: {:?}, 唯一: {})", index_name, index.fields, index.unique);
+
+                    if let Err(e) = pool.create_index(
+                        &collection_name,
+                        index_name,
+                        &index.fields,
+                        index.unique
+                    ).await {
+                        warn!("创建索引失败: {} (错误: {})", index_name, e);
+                    } else {
+                        info!("✅ 创建索引成功: {}", index_name);
+                    }
+                }
+            } else {
+                return Err(QuickDbError::AliasNotFound {
+                    alias: alias.to_string(),
+                });
+            }
+        } else {
+            debug!("集合 {} 没有注册的模型元数据，跳过表和索引创建", collection_name);
+        }
+
+        Ok(())
+    }
 }
 
 impl Default for PoolManager {
@@ -538,6 +625,26 @@ pub fn get_id_generator(alias: &str) -> QuickDbResult<Arc<IdGenerator>> {
 /// 便捷函数 - 获取MongoDB自增ID生成器
 pub fn get_mongo_auto_increment_generator(alias: &str) -> QuickDbResult<Arc<MongoAutoIncrementGenerator>> {
     get_global_pool_manager().get_mongo_auto_increment_generator(alias)
+}
+
+/// 便捷函数 - 注册模型元数据
+pub fn register_model(model_meta: ModelMeta) -> QuickDbResult<()> {
+    get_global_pool_manager().register_model(model_meta)
+}
+
+/// 便捷函数 - 获取模型元数据
+pub fn get_model(collection_name: &str) -> Option<ModelMeta> {
+    get_global_pool_manager().get_model(collection_name)
+}
+
+/// 便捷函数 - 检查模型是否已注册
+pub fn has_model(collection_name: &str) -> bool {
+    get_global_pool_manager().has_model(collection_name)
+}
+
+/// 便捷函数 - 创建表和索引（基于注册的模型元数据）
+pub async fn ensure_table_and_indexes(collection_name: &str, alias: &str) -> QuickDbResult<()> {
+    get_global_pool_manager().ensure_table_and_indexes(collection_name, alias).await
 }
 
 /// 便捷函数 - 获取缓存管理器

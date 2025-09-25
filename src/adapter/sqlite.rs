@@ -36,7 +36,16 @@ impl SqliteAdapter {
                 }
             } else if let Ok(value) = row.try_get::<Option<i64>, _>(column_name) {
                 match value {
-                    Some(i) => DataValue::Int(i),
+                    Some(i) => {
+                        // 检查是否可能是boolean值（SQLite中boolean存储为0或1）
+                        // 只对已知的boolean字段进行转换，避免误判其他integer字段
+                        if matches!(column_name, "is_active" | "active" | "enabled" | "disabled" | "verified" | "is_admin" | "is_deleted")
+                           && (i == 0 || i == 1) {
+                            DataValue::Bool(i == 1)
+                        } else {
+                            DataValue::Int(i)
+                        }
+                    },
                     None => DataValue::Null,
                 }
             } else if let Ok(value) = row.try_get::<Option<f64>, _>(column_name) {
