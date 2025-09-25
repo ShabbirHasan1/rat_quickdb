@@ -419,11 +419,6 @@ static DEFAULT_SERIALIZER: once_cell::sync::Lazy<DataSerializer> =
         DataSerializer::default()
     });
 
-#[cfg(feature = "python")]
-static PYO3_SERIALIZER: once_cell::sync::Lazy<DataSerializer> = 
-    once_cell::sync::Lazy::new(|| {
-        DataSerializer::new(SerializerConfig::for_pyo3())
-    });
 
 static RUST_SERIALIZER: once_cell::sync::Lazy<DataSerializer> = 
     once_cell::sync::Lazy::new(|| {
@@ -442,19 +437,6 @@ pub fn serialize_records(records: Vec<HashMap<String, DataValue>>) -> QuickDbRes
     result.to_json_string()
 }
 
-/// 便捷函数：使用PyO3兼容配置序列化记录
-#[cfg(feature = "python")]
-pub fn serialize_record_for_pyo3(data: HashMap<String, DataValue>) -> QuickDbResult<String> {
-    let result = PYO3_SERIALIZER.serialize_record(data)?;
-    result.to_json_string()
-}
-
-/// 便捷函数：使用PyO3兼容配置序列化多个记录
-#[cfg(feature = "python")]
-pub fn serialize_records_for_pyo3(records: Vec<HashMap<String, DataValue>>) -> QuickDbResult<String> {
-    let result = PYO3_SERIALIZER.serialize_records(records)?;
-    result.to_json_string()
-}
 
 /// 便捷函数：使用Rust原生配置序列化记录
 pub fn serialize_record_for_rust(data: HashMap<String, DataValue>) -> QuickDbResult<JsonValue> {
@@ -478,16 +460,6 @@ pub fn serialize_query_result(
     result.to_json_string()
 }
 
-/// 便捷函数：为PyO3序列化查询结果
-#[cfg(feature = "python")]
-pub fn serialize_query_result_for_pyo3(
-    records: Vec<HashMap<String, DataValue>>,
-    total_count: Option<u64>,
-    has_more: Option<bool>,
-) -> QuickDbResult<String> {
-    let result = PYO3_SERIALIZER.serialize_query_result(records, total_count, has_more)?;
-    result.to_json_string()
-}
 
 /// 便捷函数：为Rust序列化查询结果
 pub fn serialize_query_result_for_rust(
@@ -499,90 +471,3 @@ pub fn serialize_query_result_for_rust(
     result.to_json_object()
 }
 
-#[cfg(feature = "python")]
-mod pyo3_support {
-    use super::*;
-    use pyo3::prelude::*;
-    use pyo3::types::{PyDict, PyList, PyString};
-    
-    /// PyO3序列化器
-    #[pyclass]
-    pub struct PyDataSerializer {
-        inner: DataSerializer,
-    }
-    
-    #[pymethods]
-    impl PyDataSerializer {
-        /// 创建新的PyO3序列化器
-        #[new]
-        pub fn new() -> Self {
-            Self {
-                inner: DataSerializer::new(SerializerConfig::for_pyo3()),
-            }
-        }
-        
-        /// 序列化Python字典为JSON字符串
-        pub fn serialize_dict(&self, py: Python, data: &PyDict) -> PyResult<String> {
-            let mut data_map = HashMap::new();
-            
-            for (key, value) in data.iter() {
-                let key_str: String = key.extract()?;
-                let data_value = python_value_to_data_value(py, value)?;
-                data_map.insert(key_str, data_value);
-            }
-            
-            let result = self.inner.serialize_record(data_map)
-                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
-            
-            result.to_json_string()
-                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
-        }
-        
-        /// 序列化Python列表为JSON字符串
-        pub fn serialize_list(&self, py: Python, data: &PyList) -> PyResult<String> {
-            let mut records = Vec::new();
-            
-            for item in data.iter() {
-                if let Ok(dict) = item.downcast::<PyDict>() {
-                    let mut data_map = HashMap::new();
-                    
-                    for (key, value) in dict.iter() {
-                        let key_str: String = key.extract()?;
-                        let data_value = python_value_to_data_value(py, value)?;
-                        data_map.insert(key_str, data_value);
-                    }
-                    
-                    records.push(data_map);
-                }
-            }
-            
-            let result = self.inner.serialize_records(records)
-                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
-            
-            result.to_json_string()
-                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
-        }
-    }
-    
-    /// 将Python值转换为DataValue
-    fn python_value_to_data_value(py: Python, value: &PyAny) -> PyResult<DataValue> {
-        if value.is_none() {
-            Ok(DataValue::Null)
-        } else if let Ok(s) = value.extract::<String>() {
-            Ok(DataValue::String(s))
-        } else if let Ok(i) = value.extract::<i64>() {
-            Ok(DataValue::Int(i))
-        } else if let Ok(f) = value.extract::<f64>() {
-            Ok(DataValue::Float(f))
-        } else if let Ok(b) = value.extract::<bool>() {
-            Ok(DataValue::Bool(b))
-        } else {
-            // 对于其他类型，尝试转换为JSON字符串
-            let json_str = value.str()?.to_string();
-            Ok(DataValue::String(json_str))
-        }
-    }
-}
-
-#[cfg(feature = "python")]
-pub use pyo3_support::*;

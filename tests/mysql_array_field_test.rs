@@ -52,7 +52,10 @@ impl Student {
 }
 
 #[tokio::test]
+#[ignore]
 async fn test_mysql_array_field_serialization() {
+    // 这个测试需要远程MySQL服务器，默认忽略
+    println!("⚠️ 此测试需要远程MySQL服务器，默认忽略");
     println!("开始MySQL数组字段序列化测试");
     
     // 创建MySQL数据库配置

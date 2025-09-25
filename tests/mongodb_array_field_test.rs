@@ -49,7 +49,10 @@ impl Student {
 }
 
 #[tokio::test]
+#[ignore]
 async fn test_mongodb_array_field_serialization() {
+    // 这个测试需要远程MongoDB服务器，默认忽略
+    println!("⚠️ 此测试需要远程MongoDB服务器，默认忽略");
     println!("开始MongoDB数组字段序列化测试");
     
     // 创建MongoDB数据库配置（从示例文件中提取的配置）
