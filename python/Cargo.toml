@@ -12,8 +12,8 @@ crate-type = ["cdylib"]
 build = "build.rs"
 
 [dependencies]
-# 恢复对主库的依赖，启用 python-bindings 特性
-rat_quickdb = { path = "..", default-features = false }
+# 使用主库的默认特性
+rat_quickdb = { path = ".." }
 pyo3 = { version = "0.21.0", features = ["extension-module", "abi3-py38"] }
 chrono = { version = "0.4", features = ["serde"] }
 crossbeam-queue = "0.3"

@@ -13,14 +13,48 @@ __version__ = "0.1.6"
 # 这些类由maturin在构建时自动注册
 try:
     from .rat_quickdb_py import (
-        PyDbQueueBridge, create_db_queue_bridge,
+        # 基础函数
+        DbQueueBridge, create_db_queue_bridge,
         init_logging, init_logging_with_level,
-        log_info, log_error, log_warn, log_debug, log_trace
+        log_info, log_error, log_warn, log_debug, log_trace,
+        get_version, get_name, get_info,
+
+        # 配置类
+        PyCacheConfig, PyL1CacheConfig, PyL2CacheConfig, PyTtlConfig,
+        PyCompressionConfig, PyTlsConfig, PyZstdConfig,
+
+        # ODM模型系统类
+        FieldType, FieldDefinition, IndexDefinition, ModelMeta,
+
+        # 字段创建函数
+        string_field, integer_field, boolean_field, datetime_field,
+        uuid_field, reference_field, array_field, json_field,
+        list_field, float_field, dict_field,
+
+        # 模型管理函数
+        register_model
     )
     __all__ = [
-        "PyDbQueueBridge", "create_db_queue_bridge",
+        # 基础函数
+        "DbQueueBridge", "create_db_queue_bridge",
         "init_logging", "init_logging_with_level",
-        "log_info", "log_error", "log_warn", "log_debug", "log_trace"
+        "log_info", "log_error", "log_warn", "log_debug", "log_trace",
+        "get_version", "get_name", "get_info",
+
+        # 配置类
+        "PyCacheConfig", "PyL1CacheConfig", "PyL2CacheConfig", "PyTtlConfig",
+        "PyCompressionConfig", "PyTlsConfig", "PyZstdConfig",
+
+        # ODM模型系统类
+        "FieldType", "FieldDefinition", "IndexDefinition", "ModelMeta",
+
+        # 字段创建函数
+        "string_field", "integer_field", "boolean_field", "datetime_field",
+        "uuid_field", "reference_field", "array_field", "json_field",
+        "list_field", "float_field", "dict_field",
+
+        # 模型管理函数
+        "register_model"
     ]
 except ImportError:
     # 如果Rust模块不可用（例如在开发环境中），提供友好的错误信息

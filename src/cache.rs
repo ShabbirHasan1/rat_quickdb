@@ -138,10 +138,10 @@ impl CacheManager {
                 block_cache_size: 16 * 1024 * 1024,
                 enable_lz4: config.compression_config.enabled,
                 compression_threshold: config.compression_config.threshold_bytes,
-                compression_max_threshold: config.l2_config.as_ref().map(|c| c.compression_level as usize).unwrap_or(6) * 1024 * 1024,
+                compression_max_threshold: config.compression_config.threshold_bytes * 10, // 最大阈值为最小阈值的10倍
                 compression_level: config.l2_config.as_ref().map(|c| c.compression_level).unwrap_or(6),
                 background_threads: 2,
-                clear_on_startup: false,
+                clear_on_startup: config.l2_config.as_ref().map(|c| c.clear_on_startup).unwrap_or(false),
                 cache_size_mb: config.l2_config.as_ref().map(|c| c.max_disk_mb).unwrap_or(500),
                 max_file_size_mb: config.l2_config.as_ref().map(|c| c.max_disk_mb / 2).unwrap_or(250),
                 smart_flush_enabled: true,

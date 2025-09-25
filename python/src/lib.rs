@@ -15,6 +15,9 @@ use message::*;
 use bridge::*;
 use model_bindings::*;
 
+// 重新导出register_model函数，以便可以在Python模块中直接调用
+pub use bridge::register_model;
+
 /// 获取版本信息
 #[pyfunction]
 fn get_version() -> String {
@@ -152,6 +155,9 @@ fn rat_quickdb_py(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(list_field, m)?)?;
     m.add_function(wrap_pyfunction!(float_field, m)?)?;
     m.add_function(wrap_pyfunction!(dict_field, m)?)?;
+
+    // 模型管理函数
+    m.add_function(wrap_pyfunction!(register_model, m)?)?;
 
     Ok(())
 }

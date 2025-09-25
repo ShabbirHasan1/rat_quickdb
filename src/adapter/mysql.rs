@@ -133,6 +133,85 @@ impl MysqlAdapter {
         Err(QuickDbError::SerializationError { message: format!("无法读取浮点数字段 '{}'", column_name) })
     }
 
+    /// 安全读取JSON字段，处理MySQL中JSON的多种存储格式
+    fn safe_read_json(row: &MySqlRow, column_name: &str) -> QuickDbResult<DataValue> {
+        info!("开始安全读取JSON字段: {}", column_name);
+
+        // 1. 首先尝试直接解析为JsonValue（标准的JSON字段）
+        let direct_json_result = row.try_get::<Option<JsonValue>, _>(column_name);
+        info!("直接解析JsonValue结果: {:?}", direct_json_result);
+
+        if let Ok(value) = direct_json_result {
+            info!("成功直接解析为JsonValue: {:?}", value);
+            return Ok(match value {
+                Some(json) => DataValue::Json(json),
+                None => DataValue::Null,
+            });
+        }
+
+        // 2. 如果直接解析失败，尝试读取为字符串，然后解析为JSON
+        let string_result = row.try_get::<Option<String>, _>(column_name);
+        info!("读取为字符串结果: {:?}", string_result);
+
+        if let Ok(value) = string_result {
+            match value {
+                Some(s) => {
+                    info!("获取到字符串值，长度: {}, 前50字符: {}", s.len(), &s[..s.len().min(50)]);
+                    // 检查是否是JSON字符串格式（以{或[开头）
+                    if s.starts_with('{') || s.starts_with('[') {
+                        info!("检测到JSON格式字符串，尝试解析");
+                        // 尝试解析为JSON值
+                        match serde_json::from_str::<JsonValue>(&s) {
+                            Ok(json_value) => {
+                                info!("JSON字符串解析成功: {:?}", json_value);
+                                // 直接根据JSON类型转换为对应的DataValue
+                                // 这样可以避免DataValue::Json包装，确保Object字段正确解析
+                                match json_value {
+                                    JsonValue::Object(obj) => {
+                                        let data_object: HashMap<String, DataValue> = obj.into_iter()
+                                            .map(|(k, v)| (k, crate::types::json_value_to_data_value(v)))
+                                            .collect();
+                                        info!("转换为DataValue::Object，包含{}个字段", data_object.len());
+                                        Ok(DataValue::Object(data_object))
+                                    },
+                                    JsonValue::Array(arr) => {
+                                        let data_array: Vec<DataValue> = arr.into_iter()
+                                            .map(|v| crate::types::json_value_to_data_value(v))
+                                            .collect();
+                                        info!("转换为DataValue::Array，包含{}个元素", data_array.len());
+                                        Ok(DataValue::Array(data_array))
+                                    },
+                                    _ => {
+                                        info!("转换为其他DataValue类型");
+                                        Ok(crate::types::json_value_to_data_value(json_value))
+                                    },
+                                }
+                            },
+                            Err(e) => {
+                                warn!("JSON字符串解析失败: {}，错误: {}", s, e);
+                                // 解析失败，作为普通字符串处理
+                                Ok(DataValue::String(s))
+                            }
+                        }
+                    } else {
+                        info!("不是JSON格式字符串，返回DataValue::String");
+                        // 不是JSON格式，作为普通字符串处理
+                        Ok(DataValue::String(s))
+                    }
+                },
+                None => {
+                    info!("字符串值为None，返回DataValue::Null");
+                    Ok(DataValue::Null)
+                },
+            }
+        } else {
+            error!("所有读取方式都失败");
+            Err(QuickDbError::SerializationError {
+                message: format!("无法读取JSON字段 '{}' 的值，所有类型转换都失败", column_name)
+            })
+        }
+    }
+
     /// 安全读取布尔值，避免 byteorder 错误
     fn safe_read_bool(row: &MySqlRow, column_name: &str) -> QuickDbResult<DataValue> {
         // 尝试以 bool 读取
@@ -285,7 +364,7 @@ impl MysqlAdapter {
                         }
                     }
                 },
-                "VARCHAR" | "TEXT" | "CHAR" => {
+                "CHAR" => {
                     debug!("准备读取字符串字段: {}", column_name);
                     if let Ok(value) = row.try_get::<Option<String>, _>(column_name) {
                         let result = match value {
@@ -299,19 +378,29 @@ impl MysqlAdapter {
                         DataValue::Null
                     }
                 },
-                "JSON" => {
-                    debug!("准备读取JSON字段: {}", column_name);
-                    if let Ok(value) = row.try_get::<Option<JsonValue>, _>(column_name) {
-                        let result = match value {
-                            Some(json) => DataValue::Json(json),
-                            None => DataValue::Null,
-                        };
-                        debug!("成功读取JSON字段 {}: {:?}", column_name, result);
-                        result
-                    } else {
-                        error!("无法读取JSON字段: {}", column_name);
-                        DataValue::Null
-                    }
+                "JSON" | "LONGTEXT" | "TEXT" | "VARCHAR" => {
+                    // MySQL中JSON可能被存储为不同的文本类型
+                    // 需要检查内容是否为JSON格式
+                    debug!("准备读取可能的JSON字段: {} (类型: {})", column_name, column_type);
+                    info!("MySQL可能的JSON字段类型: '{}'，列名: '{}'", column_type, column_name);
+
+                    // 尝试使用JSON读取逻辑
+                    let result = Self::safe_read_json(row, column_name).unwrap_or_else(|e| {
+                        warn!("JSON字段读取失败，回退到字符串处理: {} (错误: {})", column_name, e);
+                        // 如果JSON读取失败，回退到字符串处理
+                        if let Ok(value) = row.try_get::<Option<String>, _>(column_name) {
+                            match value {
+                                Some(s) => DataValue::String(s),
+                                None => DataValue::Null,
+                            }
+                        } else {
+                            error!("无法读取字段 '{}' 的值", column_name);
+                            DataValue::Null
+                        }
+                    });
+                    info!("MySQL JSON字段处理结果: {:?}, 类型: {}", result, result.type_name());
+                    debug!("成功读取JSON字段 {}: {:?}", column_name, result);
+                    result
                 },
                 "DATETIME" | "TIMESTAMP" => {
                     debug!("准备读取日期时间字段: {}", column_name);

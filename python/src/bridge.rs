@@ -6,8 +6,9 @@ use crate::message::*;
 use crossbeam::queue::SegQueue;
 use pyo3::prelude::*;
 use rat_quickdb::config::{DatabaseConfigBuilder, PoolConfigBuilder};
-use rat_quickdb::manager::{add_database, get_global_pool_manager};
+use rat_quickdb::manager::{add_database, get_global_pool_manager, register_model as rust_register_model};
 use rat_quickdb::odm::{get_odm_manager, OdmOperations};
+use crate::model_bindings::PyModelMeta;
 use rat_quickdb::types::DatabaseConfig;
 use rat_quickdb::types::{
     ConnectionConfig, DataValue, DatabaseType, IdStrategy, PaginationConfig, PoolConfig,
@@ -708,6 +709,31 @@ impl PyDbQueueBridge {
         Ok(())
     }
 
+    /// 注册ODM模型
+    pub fn register_model(&self, model_meta: &PyModelMeta) -> PyResult<String> {
+        self.check_initialized()?;
+
+        // 调用Rust的register_model函数
+        match rust_register_model(model_meta.inner.clone()) {
+            Ok(_) => {
+                let response = serde_json::json!({
+                    "success": true,
+                    "message": "模型注册成功",
+                    "error": null
+                });
+                Ok(response.to_string())
+            },
+            Err(e) => {
+                let response = serde_json::json!({
+                    "success": false,
+                    "message": "模型注册失败",
+                    "error": format!("{}", e)
+                });
+                Ok(response.to_string())
+            }
+        }
+    }
+
     /// 删除表
     pub fn drop_table(
         &self,
@@ -1365,4 +1391,27 @@ impl PyDbQueueBridgeAsync {
 #[pyfunction]
 pub fn create_db_queue_bridge() -> PyResult<PyDbQueueBridge> {
     PyDbQueueBridge::new()
+}
+
+/// 注册ODM模型
+#[pyfunction]
+pub fn register_model(model_meta: &PyModelMeta) -> PyResult<String> {
+    match rust_register_model(model_meta.inner.clone()) {
+        Ok(_) => {
+            let response = serde_json::json!({
+                "success": true,
+                "message": "模型注册成功",
+                "error": null
+            });
+            Ok(response.to_string())
+        },
+        Err(e) => {
+            let response = serde_json::json!({
+                "success": false,
+                "message": "模型注册失败",
+                "error": format!("{}", e)
+            });
+            Ok(response.to_string())
+        }
+    }
 }

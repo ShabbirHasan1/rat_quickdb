@@ -40,6 +40,20 @@ RAT QuickDB Python 绑定位于 python/ 子目录中。
     if init_py_path.exists() {
         fs::remove_file(&init_py_path).expect("Failed to remove old __init__.py");
     }
+
+    // 删除旧的.so文件（如果存在）- 防止缓存问题
+    if let Ok(entries) = fs::read_dir(python_package_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+                if file_name.contains("rat_quickdb_py") &&
+                   (file_name.ends_with(".so") || file_name.ends_with(".dylib") || file_name.ends_with(".pyd")) {
+                    println!("Removing old shared library: {:?}", path);
+                    let _ = fs::remove_file(&path);
+                }
+            }
+        }
+    }
     
     // 生成 __init__.py 文件
     let init_py_content = format!(
@@ -58,14 +72,48 @@ __version__ = "{}"
 # 这些类由maturin在构建时自动注册
 try:
     from .rat_quickdb_py import (
-        PyDbQueueBridge, create_db_queue_bridge,
+        # 基础函数
+        DbQueueBridge, create_db_queue_bridge,
         init_logging, init_logging_with_level,
-        log_info, log_error, log_warn, log_debug, log_trace
+        log_info, log_error, log_warn, log_debug, log_trace,
+        get_version, get_name, get_info,
+
+        # 配置类
+        PyCacheConfig, PyL1CacheConfig, PyL2CacheConfig, PyTtlConfig,
+        PyCompressionConfig, PyTlsConfig, PyZstdConfig,
+
+        # ODM模型系统类
+        FieldType, FieldDefinition, IndexDefinition, ModelMeta,
+
+        # 字段创建函数
+        string_field, integer_field, boolean_field, datetime_field,
+        uuid_field, reference_field, array_field, json_field,
+        list_field, float_field, dict_field,
+
+        # 模型管理函数
+        register_model
     )
     __all__ = [
-        "PyDbQueueBridge", "create_db_queue_bridge",
+        # 基础函数
+        "DbQueueBridge", "create_db_queue_bridge",
         "init_logging", "init_logging_with_level",
-        "log_info", "log_error", "log_warn", "log_debug", "log_trace"
+        "log_info", "log_error", "log_warn", "log_debug", "log_trace",
+        "get_version", "get_name", "get_info",
+
+        # 配置类
+        "PyCacheConfig", "PyL1CacheConfig", "PyL2CacheConfig", "PyTtlConfig",
+        "PyCompressionConfig", "PyTlsConfig", "PyZstdConfig",
+
+        # ODM模型系统类
+        "FieldType", "FieldDefinition", "IndexDefinition", "ModelMeta",
+
+        # 字段创建函数
+        "string_field", "integer_field", "boolean_field", "datetime_field",
+        "uuid_field", "reference_field", "array_field", "json_field",
+        "list_field", "float_field", "dict_field",
+
+        # 模型管理函数
+        "register_model"
     ]
 except ImportError:
     # 如果Rust模块不可用（例如在开发环境中），提供友好的错误信息
