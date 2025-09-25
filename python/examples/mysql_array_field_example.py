@@ -110,20 +110,25 @@ def create_student_model() -> Dict[str, Any]:
     print("\n=== 创建学生模型 (MySQL JSON 存储) ===")
     
     # 基础字段
-    id_field = string_field(
+    id_field = integer_field(
         required=True,
         unique=True,
-        description="学生ID"
+        min_value=None,
+        max_value=None,
+        description="学生ID（主键）"
     )
     
     name_field = string_field(
         required=True,
+        unique=None,
         max_length=100,
+        min_length=None,
         description="学生姓名"
     )
-    
+
     age_field = integer_field(
         required=True,
+        unique=None,
         min_value=6,
         max_value=25,
         description="学生年龄"
@@ -134,7 +139,7 @@ def create_student_model() -> Dict[str, Any]:
     
     # 分数数组 - 存储多门课程分数
     scores_field = array_field(
-        item_type=FieldType.float(min_value=None, max_value=None),
+        item_type=FieldType.float(),
         required=False,
         description="课程分数数组 - MySQL JSON存储"
     )
@@ -142,7 +147,7 @@ def create_student_model() -> Dict[str, Any]:
     
     # 等级数组 - 存储各科等级
     grades_field = array_field(
-        item_type=FieldType.string(max_length=None, min_length=None),
+        item_type=FieldType.string(),
         required=False,
         description="课程等级数组 - MySQL JSON存储"
     )
@@ -158,7 +163,7 @@ def create_student_model() -> Dict[str, Any]:
     
     # 标签数组 - 存储学生标签
     tags_field = array_field(
-        item_type=FieldType.string(max_length=None, min_length=None),
+        item_type=FieldType.string(),
         required=False,
         description="学生标签数组 - MySQL JSON存储"
     )
@@ -166,7 +171,7 @@ def create_student_model() -> Dict[str, Any]:
     
     # 爱好列表 - 混合类型数据
     hobbies_field = list_field(
-        item_type=FieldType.string(max_length=None, min_length=None),
+        item_type=FieldType.string(),
         required=False,
         description="爱好列表 - MySQL JSON存储混合类型"
     )
@@ -174,9 +179,9 @@ def create_student_model() -> Dict[str, Any]:
     
     # 元数据字典 - 嵌套结构
     metadata_fields = {
-        "class_name": string_field(required=True, description="班级名称"),
-        "teacher_id": integer_field(required=True, description="教师ID"),
-        "semester_gpa": float_field(required=False, min_value=0.0, max_value=4.0, description="学期GPA"),
+        "class_name": string_field(required=True, unique=None, max_length=None, min_length=None, description="班级名称"),
+        "teacher_id": integer_field(required=True, unique=None, min_value=None, max_value=None, description="教师ID"),
+        "semester_gpa": float_field(required=False, unique=None, min_value=0.0, max_value=4.0, description="学期GPA"),
         "is_scholarship": boolean_field(required=False, description="是否获得奖学金")
     }
     metadata_field = dict_field(
@@ -344,7 +349,6 @@ def demonstrate_mysql_array_operations():
         
         # 示例数据 - 展示 MySQL JSON 存储的数组数据
         sample_data = {
-            "id": "student_001",
             "name": "张三",
             "age": 20,
             "scores": [85.5, 92.0, 78.5, 88.0],  # 浮点数数组
@@ -382,16 +386,9 @@ def demonstrate_mysql_array_operations():
         
         # 查询记录
         print("\n--- 查询学生记录 ---")
-        query_conditions = [
-            {
-                "field": "id",
-                "operator": "eq",
-                "value": "student_001"
-            }
-        ]
         find_result = bridge.find(
             table="students",
-            query_json=json.dumps(query_conditions),
+            query_json="{}",
             alias="mysql_array_test"
         )
         print(f"查询结果: {find_result}")
