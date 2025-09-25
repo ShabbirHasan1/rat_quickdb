@@ -62,6 +62,9 @@ Thumbs.db
 *.bak
 *.backup
 
+# Claude settings
+.claude
+
 # Shared libraries
 /**/*.so
 /**/*.dylib
