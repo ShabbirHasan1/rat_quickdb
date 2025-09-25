@@ -4,6 +4,9 @@ version = "0.1.8"
 edition = "2021"
 authors = ["0ldm0s <oldmos@gmail.com>"]
 description = "Python bindings for RAT QuickDB - A high-performance cross-database ORM library"
+license = "LGPL-3.0"
+repository = "https://github.com/0ldm0s/rat_quickdb"
+homepage = "https://github.com/0ldm0s/rat_quickdb"
 
 [lib]
 name = "rat_quickdb_py"

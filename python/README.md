@@ -353,15 +353,21 @@ tls_config = PyTlsConfig(
 
 查看 `examples/` 目录中的完整示例：
 
-- `caller_init_log_example.py` - 日志初始化示例
-- `simple_test.py` - 基础CRUD操作
-- `advanced_query_example.py` - 高级查询示例
+- `caller_init_log_example.py` - 日志初始化示例（推荐）
+- `simple_mongodb_test.py` - MongoDB基础操作示例
+- `model_usage.py` - ODM模型使用示例
+- `mongodb_model_usage.py` - MongoDB模型使用示例
+- `test_mysql_complex_query.py` - MySQL复杂查询示例
+- `test_postgresql_complex_query.py` - PostgreSQL复杂查询示例
+- `cache_config_debug_test.py` - 缓存配置示例
+- `bridge_instance_test.py` - 桥接器实例测试
 
 运行示例：
 
 ```bash
 python examples/caller_init_log_example.py
-python examples/simple_test.py
+python examples/simple_mongodb_test.py
+python examples/model_usage.py
 ```
 
 ## 性能特点
@@ -397,4 +403,4 @@ python -m pytest tests/
 
 ## 许可证
 
-本项目采用 MIT 许可证。
+本项目采用 LGPL-3.0 许可证。
