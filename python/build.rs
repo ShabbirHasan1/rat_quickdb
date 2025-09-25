@@ -6,7 +6,7 @@ fn main() {
     // 检查是否在根目录下运行maturin（错误的做法）
     let current_dir = env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
     let dir_name = current_dir.file_name().unwrap_or_default();
-    
+
     // 如果当前目录是rat_quickdb，说明在根目录下运行（错误）
     if dir_name == "rat_quickdb" {
         panic!("
@@ -21,12 +21,13 @@ fn main() {
 RAT QuickDB Python 绑定位于 python/ 子目录中。
         ");
     }
-    
+
     println!("cargo:rerun-if-changed=build.rs");
-    
+    println!("cargo:rerun-if-changed=Cargo.toml");
+
     // 获取包名和版本
     let package_name = env::var("CARGO_PKG_NAME").unwrap_or_else(|_| "rat_quickdb_py".to_string());
-    let version = env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.1.3".to_string());
+    let version = env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.1.6".to_string());
     
     // 创建Python包目录 (将下划线转换为包名)
     let python_package_dir = Path::new("rat_quickdb_py");
@@ -135,7 +136,7 @@ except NameError:
     
     fs::write(&init_py_path, init_py_content)
         .expect("Failed to write __init__.py");
-    
+  
     println!("Generated Python package structure for {}", package_name);
     println!("Package version: {}", version);
 }
