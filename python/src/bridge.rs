@@ -400,7 +400,7 @@ impl PyDbQueueBridge {
         max_lifetime: Option<u64>,
         cache_config: Option<PyCacheConfig>,
     ) -> PyResult<String> {
-        let mut pool_config_builder = PoolConfigBuilder::new();
+        let mut pool_config_builder = PoolConfig::builder();
         
         if let Some(max_conn) = max_connections {
             pool_config_builder = pool_config_builder.max_connections(max_conn);
@@ -476,7 +476,7 @@ impl PyDbQueueBridge {
         max_lifetime: Option<u64>,
         cache_config: Option<PyCacheConfig>,
     ) -> PyResult<String> {
-        let mut pool_config_builder = PoolConfigBuilder::new();
+        let mut pool_config_builder = PoolConfig::builder();
         
         if let Some(max_conn) = max_connections {
             pool_config_builder = pool_config_builder.max_connections(max_conn);
@@ -554,7 +554,7 @@ impl PyDbQueueBridge {
         max_lifetime: Option<u64>,
         cache_config: Option<PyCacheConfig>,
     ) -> PyResult<String> {
-        let mut pool_config_builder = PoolConfigBuilder::new();
+        let mut pool_config_builder = PoolConfig::builder();
         
         if let Some(max_conn) = max_connections {
             pool_config_builder = pool_config_builder.max_connections(max_conn);
@@ -636,7 +636,7 @@ impl PyDbQueueBridge {
         tls_config: Option<PyTlsConfig>,
         zstd_config: Option<PyZstdConfig>,
     ) -> PyResult<String> {
-        let mut pool_config_builder = PoolConfigBuilder::new();
+        let mut pool_config_builder = PoolConfig::builder();
         
         if let Some(max_conn) = max_connections {
             pool_config_builder = pool_config_builder.max_connections(max_conn);

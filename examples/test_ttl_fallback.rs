@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use chrono::Utc;
 use tokio::time::{sleep, Duration};
 use rat_logger::{info, debug, warn};
+use std::time::Instant;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -46,7 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
 
     // 创建连接池配置
-    let pool_config = PoolConfigBuilder::new()
+    let pool_config = PoolConfig::builder()
         .min_connections(1)
         .max_connections(2)
         .connection_timeout(5)
@@ -89,24 +90,57 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         operator: QueryOperator::Eq,
         value: DataValue::String("test_record".to_string()),
     }];
-    
+
     println!("\n=== 第一次查询 (应该从数据库查询并缓存) ===");
+    debug!("发送第一次查询请求...");
+    let start1 = Instant::now();
     let result1 = rat_quickdb::find(table_name, conditions.clone(), None, None).await?;
-    println!("第一次查询结果: {} 条记录", result1.len());
-    
-    // 第二次查询 - 应该从缓存命中
+    let duration1 = start1.elapsed();
+    println!("第一次查询结果: {} 条记录 (耗时: {:.2}μs)", result1.len(), duration1.as_micros() as f64);
+    debug!("第一次查询完成，数据应该已缓存");
+
+    // 立即第二次查询 - 应该从缓存命中
     println!("\n=== 第二次查询 (应该从缓存命中) ===");
+    debug!("发送第二次查询请求...");
+    let start2 = Instant::now();
     let result2 = rat_quickdb::find(table_name, conditions.clone(), None, None).await?;
-    println!("第二次查询结果: {} 条记录", result2.len());
-    
+    let duration2 = start2.elapsed();
+    println!("第二次查询结果: {} 条记录 (耗时: {:.2}μs)", result2.len(), duration2.as_micros() as f64);
+    debug!("第二次查询完成，如果很快则说明命中缓存");
+
+    // 比较缓存效果
+    if duration2 < duration1 {
+        let speedup = duration1.as_micros() as f64 / duration2.as_micros() as f64;
+        println!("✅ 缓存生效！第二次查询比第一次快 {:.2}倍 ({}μs vs {}μs)",
+                 speedup, duration1.as_micros(), duration2.as_micros());
+    } else {
+        println!("⚠️  缓存可能未生效，第二次查询没有明显加速 ({}μs vs {}μs)",
+                 duration1.as_micros(), duration2.as_micros());
+    }
+
     // 等待TTL过期（3秒）
     println!("\n等待TTL过期（3秒）...");
     sleep(Duration::from_secs(3)).await;
-    
+    debug!("TTL已过期，缓存应该失效");
+
     // 第三次查询 - TTL过期后应该回退到数据库查询
     println!("\n=== 第三次查询 (TTL过期，应该回退到数据库) ===");
+    debug!("发送第三次查询请求...");
+    let start3 = Instant::now();
     let result3 = rat_quickdb::find(table_name, conditions.clone(), None, None).await?;
-    println!("第三次查询结果: {} 条记录", result3.len());
+    let duration3 = start3.elapsed();
+    println!("第三次查询结果: {} 条记录 (耗时: {:.2}μs)", result3.len(), duration3.as_micros() as f64);
+    debug!("第三次查询完成，如果较慢则说明回退到数据库查询");
+
+    // 验证回退机制
+    if duration3 > duration2 {
+        let slowdown = duration3.as_micros() as f64 / duration2.as_micros() as f64;
+        println!("✅ TTL回退机制生效！第三次查询比第二次慢 {:.2}倍 ({}μs vs {}μs)",
+                 slowdown, duration3.as_micros(), duration2.as_micros());
+    } else {
+        println!("⚠️  TTL回退机制可能未生效，第三次查询没有明显变慢 ({}μs vs {}μs)",
+                 duration3.as_micros(), duration2.as_micros());
+    }
     
     // 验证结果
     if result3.is_empty() {

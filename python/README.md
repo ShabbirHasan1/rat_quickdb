@@ -534,7 +534,7 @@ python examples/comprehensive_example.py
 ```python
 # 所有配置项必须显式设置
 config = (
-    PoolConfigBuilder()
+    PoolConfig.builder()
     .max_connections(20)     # 必须设置
     .min_connections(5)      # 必须设置
     .connection_timeout(30)  # 必须设置
