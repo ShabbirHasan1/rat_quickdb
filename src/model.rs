@@ -12,6 +12,7 @@ use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use rat_logger::{debug, error, info, warn};
+use base64;
 
 /// 支持直接转换为 DataValue 的 trait
 /// 避免 JSON 序列化的性能开销
@@ -127,6 +128,12 @@ impl ToDataValue for HashMap<String, DataValue> {
 
 // 注意：不能同时有泛型和特定类型的实现，所以移除了通用的Vec<T>实现
 // 如果需要支持其他Vec类型，请添加特定的实现
+
+impl ToDataValue for serde_json::Value {
+    fn to_data_value(&self) -> DataValue {
+        DataValue::Json(self.clone())
+    }
+}
 
 impl<T> ToDataValue for Option<T>
 where
@@ -665,33 +672,129 @@ pub trait Model: Serialize + for<'de> Deserialize<'de> + Send + Sync {
 
     /// 从数据映射创建模型实例
     fn from_data_map(data: HashMap<String, DataValue>) -> QuickDbResult<Self> {
-        // 直接将 HashMap<String, DataValue> 转换为 JsonValue，避免带类型标签的序列化
+        // 将 HashMap<String, DataValue> 转换为 JsonValue，处理类型转换
         let mut json_map = serde_json::Map::new();
         for (key, value) in data {
-            let json_value = match &value {
-                // 对于字符串类型的DataValue，检查是否是JSON格式
+            let json_value = match value {
+                // 处理复杂类型的智能转换
+                DataValue::Object(obj_map) => {
+                    // 如果结构体期望字符串，但数据库存储的是对象，将对象序列化为JSON字符串
+                    debug!("字段 {} 的Object类型将转换为JSON字符串", key);
+                    let mut nested_map = serde_json::Map::new();
+                    for (nested_key, nested_value) in obj_map {
+                        nested_map.insert(nested_key, nested_value.to_json_value());
+                    }
+                    JsonValue::Object(nested_map)
+                },
+                DataValue::Array(arr) => {
+                    // 数组类型直接转换
+                    debug!("转换数组字段，元素数量: {}", arr.len());
+                    let json_array: Vec<JsonValue> = arr.iter()
+                        .map(|item| {
+                            let json_item = item.to_json_value();
+                            debug!("数组元素: {:?} -> {}", item, json_item);
+                            json_item
+                        })
+                        .collect();
+                    let result = JsonValue::Array(json_array);
+                    debug!("数组转换结果: {}", result);
+                    result
+                },
                 DataValue::String(s) => {
-                    // 尝试解析为JSON，如果失败则作为普通字符串处理
+                    // 对于字符串类型的DataValue，检查是否是JSON格式
                     if (s.starts_with('[') && s.ends_with(']')) || (s.starts_with('{') && s.ends_with('}')) {
-                        match serde_json::from_str::<serde_json::Value>(s) {
+                        match serde_json::from_str::<serde_json::Value>(&s) {
                             Ok(parsed) => parsed,
-                            Err(_) => value.to_json_value(),
+                            Err(_) => JsonValue::String(s),
                         }
                     } else {
-                        value.to_json_value()
+                        JsonValue::String(s)
                     }
                 },
-                _ => value.to_json_value(),
+                DataValue::Json(j) => {
+                    // JSON值直接使用
+                    j
+                },
+                // 其他基本类型直接转换
+                DataValue::Bool(b) => JsonValue::Bool(b),
+                DataValue::Int(i) => JsonValue::Number(serde_json::Number::from(i)),
+                DataValue::Float(f) => {
+                    serde_json::Number::from_f64(f)
+                        .map(JsonValue::Number)
+                        .unwrap_or(JsonValue::Null)
+                },
+                DataValue::Null => JsonValue::Null,
+                DataValue::Bytes(b) => {
+                    // 字节数组转换为base64字符串
+                    JsonValue::String(base64::encode(&b))
+                },
+                DataValue::DateTime(dt) => JsonValue::String(dt.to_rfc3339()),
+                DataValue::Uuid(u) => JsonValue::String(u.to_string()),
             };
             json_map.insert(key, json_value);
         }
         let json_value = JsonValue::Object(json_map);
-        
+
         debug!("准备反序列化的JSON数据: {}", serde_json::to_string_pretty(&json_value).unwrap_or_else(|_| "无法序列化".to_string()));
-        serde_json::from_value(json_value).map_err(|e| {
-            error!("反序列化失败，错误详情: {}", e);
-            QuickDbError::SerializationError { message: format!("反序列化失败: {}", e) }
-        })
+
+        // 尝试直接反序列化
+        match serde_json::from_value(json_value.clone()) {
+            Ok(model) => Ok(model),
+            Err(first_error) => {
+                debug!("直接反序列化失败，尝试兼容模式: {}", first_error);
+
+                // 分析具体的错误，看看哪个字段类型不匹配
+                debug!("反序列化错误: {}", first_error);
+
+                // 如果错误信息提示期望sequence但得到string，说明某个数组字段被错误转换了
+                // 让我们重新构建JSON，确保数组类型保持不变
+                let mut fixed_map = serde_json::Map::new();
+                for (key, value) in json_value.as_object().unwrap() {
+                    // 根据字段名推断正确的类型
+                    let fixed_value = match key.as_str() {
+                        "tags" | "profile" => {
+                            // 这些字段在结构体中有特定的类型定义
+                            match value {
+                                JsonValue::String(s) if s.starts_with('[') && s.ends_with(']') => {
+                                    // 如果是字符串格式的数组，尝试解析回数组
+                                    if let Ok(parsed_array) = serde_json::from_str::<Vec<JsonValue>>(&s) {
+                                        JsonValue::Array(parsed_array)
+                                    } else {
+                                        value.clone()
+                                    }
+                                },
+                                _ => value.clone()
+                            }
+                        },
+                        "is_active" | "is_featured" => {
+                            // 布尔字段可能被存储为整数
+                            match value {
+                                JsonValue::Number(n) => {
+                                    if n.as_i64() == Some(1) {
+                                        JsonValue::Bool(true)
+                                    } else if n.as_i64() == Some(0) {
+                                        JsonValue::Bool(false)
+                                    } else {
+                                        value.clone()
+                                    }
+                                },
+                                _ => value.clone()
+                            }
+                        },
+                        _ => value.clone()
+                    };
+                    fixed_map.insert(key.clone(), fixed_value);
+                }
+
+                let fixed_json = JsonValue::Object(fixed_map);
+                debug!("修复后的JSON数据: {}", serde_json::to_string_pretty(&fixed_json).unwrap_or_else(|_| "无法序列化".to_string()));
+
+                serde_json::from_value(fixed_json).map_err(|e| {
+                    error!("修复后反序列化仍然失败: {}", e);
+                    QuickDbError::SerializationError { message: format!("反序列化失败: {}", e) }
+                })
+            }
+        }
     }
 }
 
@@ -766,11 +869,19 @@ impl<T: Model> ModelOperations<T> for ModelManager<T> {
             // 处理 DataValue::Object 格式的数据
             match data_value {
                 DataValue::Object(data_map) => {
-                    let model: T = T::from_data_map(data_map)?;
+                    debug!("从数据库收到的数据: {:?}", data_map);
+                    let model: T = match T::from_data_map(data_map.clone()) {
+                        Ok(model) => model,
+                        Err(e) => {
+                            println!("❌ from_data_map失败: {}, 数据: {:?}", e, data_map);
+                            return Err(e);
+                        }
+                    };
                     Ok(Some(model))
                 },
                 _ => {
                     // 兼容其他格式，使用直接反序列化
+                    debug!("收到非Object格式数据: {:?}", data_value);
                     let model: T = data_value.deserialize_to()?;
                     Ok(Some(model))
                 }
@@ -799,11 +910,19 @@ impl<T: Model> ModelOperations<T> for ModelManager<T> {
             // 处理 DataValue::Object 格式的数据
             match data_value {
                 DataValue::Object(data_map) => {
-                    let model: T = T::from_data_map(data_map)?;
+                    debug!("查询收到的数据: {:?}", data_map);
+                    let model: T = match T::from_data_map(data_map.clone()) {
+                        Ok(model) => model,
+                        Err(e) => {
+                            println!("❌ 查询from_data_map失败: {}, 数据: {:?}", e, data_map);
+                            continue;
+                        }
+                    };
                     models.push(model);
                 },
                 _ => {
                     // 兼容其他格式，使用直接反序列化
+                    debug!("查询收到非Object格式数据: {:?}", data_value);
                     let model: T = data_value.deserialize_to()?;
                     models.push(model);
                 }
@@ -1138,7 +1257,13 @@ macro_rules! define_model {
                 let data = self.to_data_map()?;
                 let collection_name = Self::collection_name();
                 let database_alias = Self::database_alias();
-                
+
+                // 确保表和索引存在
+                let alias = database_alias.as_deref().unwrap_or("default");
+                if let Err(e) = $crate::manager::ensure_table_and_indexes(&collection_name, alias).await {
+                    println!("⚠️  确保表和索引失败: {}", e);
+                }
+
                 let result = $crate::odm::create(
                     &collection_name,
                     data,

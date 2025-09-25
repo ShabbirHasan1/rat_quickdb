@@ -293,13 +293,47 @@ impl AsyncOdmManager {
                 alias: actual_alias.clone(),
             })?;
 
+        // 检查数据是否包含id字段，如果没有则使用IdGenerator生成
+        let mut processed_data = data.clone();
+        if !processed_data.contains_key("id") && !processed_data.contains_key("_id") {
+            debug!("数据中缺少ID字段，使用IdGenerator生成ID");
+            if let Ok(id_generator) = manager.get_id_generator(&actual_alias) {
+                match id_generator.generate().await {
+                    Ok(id_type) => {
+                        let id_value = match id_type {
+                            crate::types::IdType::Number(n) => DataValue::Int(n),
+                            crate::types::IdType::String(s) => DataValue::String(s),
+                        };
+                        // 根据数据库类型决定使用"id"还是"_id"字段
+                        match connection_pool.db_config.db_type {
+                            crate::types::DatabaseType::MongoDB => {
+                                debug!("为MongoDB生成_id字段: {:?}", id_value);
+                                processed_data.insert("_id".to_string(), id_value);
+                            },
+                            _ => {
+                                debug!("为SQL数据库生成id字段: {:?}", id_value);
+                                processed_data.insert("id".to_string(), id_value);
+                            }
+                        }
+                    },
+                    Err(e) => {
+                        warn!("使用IdGenerator生成ID失败: {}", e);
+                        // 继续使用原始数据，让数据库处理ID生成
+                    }
+                }
+            } else {
+                warn!("获取IdGenerator失败");
+                // 继续使用原始数据，让数据库处理ID生成
+            }
+        }
+
         // 创建oneshot通道用于接收响应
         let (response_tx, response_rx) = oneshot::channel();
 
         // 发送DatabaseOperation::Create请求到连接池
         let operation = crate::pool::DatabaseOperation::Create {
             table: collection.to_string(),
-            data: data.clone(),
+            data: processed_data,
             response: response_tx,
         };
         
