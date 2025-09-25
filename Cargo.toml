@@ -1,6 +1,6 @@
 [package]
 name = "rat_quickdb"
-version = "0.1.7"
+version = "0.1.8"
 edition = "2024"
 authors = ["0ldm0s <oldmos@gmail.com>"]
 description = "强大的跨数据库ORM库，支持自动索引创建、统一接口和现代异步架构"
