@@ -76,7 +76,16 @@ async fn main() -> QuickDbResult<()> {
     // 创建用户
     let data = test_user.to_data_map();
     info!("创建用户: {:?}", data);
-    
+
+    // 先尝试删除已存在的表
+    info!("清理已存在的表...");
+    let pool_manager = rat_quickdb::manager::get_global_pool_manager();
+    let pools = pool_manager.get_connection_pools();
+    if let Some(pool) = pools.get("mysql_test") {
+        let _ = pool.drop_table(&table_name).await; // 忽略错误，表可能不存在
+        info!("已清理现有表");
+    }
+
     let created_id = odm.create(&table_name, data, Some("mysql_test")).await?;
     info!("返回的ID: {:?}", created_id);
     

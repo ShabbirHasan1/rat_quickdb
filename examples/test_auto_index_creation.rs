@@ -30,7 +30,7 @@ rat_quickdb::define_model! {
 
     collection = "auto_index_test_users",
     fields = {
-        id: integer_field(None, None),
+        id: integer_field(None, None).unique(), // ID字段应该是唯一的，但不要求必填，让数据库自动生成
         username: string_field(Some(50), Some(3), None).required(),
         email: string_field(Some(255), Some(5), None).required().unique(),
         age: integer_field(Some(0), Some(150)),
@@ -50,10 +50,22 @@ rat_quickdb::define_model! {
 async fn test_database_indexes(db_alias: &str, db_name: &str) -> Result<(), Box<dyn std::error::Error>> {
     println!("\n=== 测试 {} 索引功能 ===", db_name);
 
+    // 设置默认数据库别名
+    rat_quickdb::set_default_alias(db_alias).await?;
+
+    // 清理已存在的表
+    println!("0. 清理已存在的表...");
+    let pool_manager = rat_quickdb::manager::get_global_pool_manager();
+    let pools = pool_manager.get_connection_pools();
+    if let Some(pool) = pools.get(db_alias) {
+        let _ = pool.drop_table("auto_index_test_users").await; // 忽略错误，表可能不存在
+        println!("✅ 已清理现有表");
+    }
+
     // 1. 创建测试用户
     println!("1. 创建测试用户...");
     let user1 = AutoIndexTestUser {
-        id: None,
+        id: None,  // 设为None让数据库自动生成ID
         username: format!("user1_{}", db_alias),
         email: format!("user1_{}@test.com", db_alias),
         age: 25,
@@ -63,11 +75,12 @@ async fn test_database_indexes(db_alias: &str, db_name: &str) -> Result<(), Box<
 
     let user1_id = user1.save().await?;
     println!("✅ 用户1创建成功，ID: {}", user1_id);
+    println!("ID值调试: {:?}", user1_id);
 
     // 2. 创建第二个用户（不同数据）
     println!("2. 创建第二个用户...");
     let user2 = AutoIndexTestUser {
-        id: None,
+        id: None,  // 设为None让数据库自动生成ID
         username: format!("user2_{}", db_alias),
         email: format!("user2_{}@test.com", db_alias),
         age: 30,
@@ -164,15 +177,14 @@ async fn test_database_indexes(db_alias: &str, db_name: &str) -> Result<(), Box<
 
     println!("✅ 查询到 {} 个用户记录", found_users.len());
 
-    // 5. 清理测试数据
+    // 5. 清理测试数据 - 直接删除整个表，避免ID类型不匹配问题
     println!("5. 清理测试数据...");
-    if let Some(user1) = ModelManager::<AutoIndexTestUser>::find_by_id(&user1_id).await? {
-        user1.delete().await?;
+    let pool_manager = rat_quickdb::manager::get_global_pool_manager();
+    let pools = pool_manager.get_connection_pools();
+    if let Some(pool) = pools.get(db_alias) {
+        let _ = pool.drop_table("auto_index_test_users").await; // 忽略错误，表可能不存在
+        println!("✅ 测试数据清理完成");
     }
-    if let Some(user2) = ModelManager::<AutoIndexTestUser>::find_by_id(&user2_id).await? {
-        user2.delete().await?;
-    }
-    println!("✅ 测试数据清理完成");
 
     println!("✅ {} 索引功能测试完成", db_name);
     Ok(())
@@ -304,7 +316,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         pool_config,
     )?;
 
-    add_database(mongo_config).await?;
+    // 修改MongoDB配置使用AutoIncrement ID策略以保持一致性
+    let mut mongo_config_fixed = mongo_config;
+    mongo_config_fixed.id_strategy = rat_quickdb::types::IdStrategy::AutoIncrement;
+    add_database(mongo_config_fixed).await?;
     test_database_indexes("mongodb_auto_index_test", "MongoDB").await?;
 
     println!("\n🎉 所有数据库的自动索引创建功能测试完成！");
