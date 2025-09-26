@@ -11,6 +11,7 @@
 # Cache directories
 /cache/
 /examples/cache/
+/python/cache_l2_test/
 /python/examples/cache_l2_test/
 /python/examples/simple_test_cache/
 /python/examples/*_cache/
