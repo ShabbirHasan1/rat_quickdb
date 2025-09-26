@@ -1,4 +1,4 @@
-//! rat_quickdb - 跨数据库ORM库
+//! rat_quickdb - 跨数据库ODM库
 //! 
 //! 提供统一的数据库操作接口，支持SQLite、PostgreSQL、MySQL和MongoDB
 //! 通过连接池和无锁队列实现高性能的数据后端无关性
