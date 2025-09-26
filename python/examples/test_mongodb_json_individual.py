@@ -124,7 +124,7 @@ def test_mongodb_json_parsing():
                             "experience": 8,
                             "projects": [
                                 {
-                                    "name": "rat_quickdb ORM",
+                                    "name": "rat_quickdb ODM",
                                     "role": "主要开发者",
                                     "duration": "2年",
                                     "technologies": ["Rust", "Python", "PyO3"]

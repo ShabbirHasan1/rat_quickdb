@@ -5,10 +5,10 @@ build-backend = "maturin"
 [project]
 name = "rat-quickdb-py"
 dynamic = ["version"]
-description = "Python bindings for RAT QuickDB - A high-performance cross-database ORM library with unified interface for SQLite, PostgreSQL, MySQL, and MongoDB"
+description = "Python bindings for RAT QuickDB - A high-performance cross-database ODM library with unified interface for SQLite, PostgreSQL, MySQL, and MongoDB"
 authors = [{name = "0ldm0s", email = "oldmos@gmail.com"}]
 requires-python = ">=3.8"
-keywords = ["database", "orm", "sqlite", "postgresql", "mysql", "mongodb", "rust", "performance"]
+keywords = ["database", "odm", "sqlite", "postgresql", "mysql", "mongodb", "rust", "performance"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",

@@ -1,6 +1,6 @@
 # rat_quickdb Python 绑定
 
-高性能跨数据库ORM库的Python绑定，基于Rust和PyO3构建，支持SQLite、PostgreSQL、MySQL、MongoDB的统一接口。
+高性能跨数据库ODM库的Python绑定，基于Rust和PyO3构建，支持SQLite、PostgreSQL、MySQL、MongoDB的统一接口。
 
 ## 特性
 

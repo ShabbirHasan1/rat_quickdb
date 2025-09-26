@@ -62,7 +62,7 @@ r#"""
 """
 {} - RAT QuickDB Python Bindings
 
-跨数据库ORM库的Python绑定，支持SQLite、PostgreSQL、MySQL、MongoDB的统一接口
+跨数据库ODM库的Python绑定，支持SQLite、PostgreSQL、MySQL、MongoDB的统一接口
 
 Version: {}
 """
