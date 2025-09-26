@@ -12,6 +12,8 @@
 /cache/
 /examples/cache/
 /python/cache_l2_test/
+/python/simple_test_cache/
+/python/object_test_cache/
 /python/examples/cache_l2_test/
 /python/examples/simple_test_cache/
 /python/examples/*_cache/
