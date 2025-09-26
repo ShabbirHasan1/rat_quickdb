@@ -6,7 +6,7 @@
 [![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://rust-lang.org)
 [![Downloads](https://img.shields.io/crates/d/rat_quickdb.svg)](https://crates.io/crates/rat_quickdb)
 
-🚀 强大的跨数据库ORM库，支持SQLite、PostgreSQL、MySQL、MongoDB的统一接口
+🚀 强大的跨数据库ODM库，支持SQLite、PostgreSQL、MySQL、MongoDB的统一接口
 
 **🌐 语言版本**: [中文](README.md) | [English](README.en.md) | [日本語](README.ja.md)
 
@@ -450,11 +450,11 @@ rat_quickdb采用现代化架构设计：
 
 ## 🌟 版本信息
 
-**当前版本**: 0.1.8
+**当前版本**: 0.1.9
 
 **支持Rust版本**: 1.70+
 
-**重要更新**: v0.1.8 完善了ID生成策略、缓存配置和日志控制，验证了所有核心功能！
+**重要更新**: v0.1.9 修正项目定位为ODM，完善了跨数据库支持！
 
 ## 📄 许可证
 

@@ -6,7 +6,7 @@
 [![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://rust-lang.org)
 [![Downloads](https://img.shields.io/crates/d/rat_quickdb.svg)](https://crates.io/crates/rat_quickdb)
 
-🚀 Powerful cross-database ORM library with unified interface for SQLite, PostgreSQL, MySQL, MongoDB
+🚀 Powerful cross-database ODM library with unified interface for SQLite, PostgreSQL, MySQL, MongoDB
 
 **🌐 Language Versions**: [中文](README.md) | [English](README.en.md) | [日本語](README.ja.md)
 
@@ -450,11 +450,11 @@ Application Layer → Model Operations → ODM Layer → Message Queue → Conne
 
 ## 🌟 Version Information
 
-**Current Version**: 0.1.8
+**Current Version**: 0.1.9
 
 **Supported Rust Version**: 1.70+
 
-**Important Update**: v0.1.8 enhances ID generation strategies, cache configuration, and logging control, with all core features validated!
+**Important Update**: v0.1.9 corrects project positioning to ODM, improves cross-database support!
 
 ## 📄 License
 

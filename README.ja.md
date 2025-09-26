@@ -6,7 +6,7 @@
 [![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://rust-lang.org)
 [![Downloads](https://img.shields.io/crates/d/rat_quickdb.svg)](https://crates.io/crates/rat_quickdb)
 
-🚀 SQLite、PostgreSQL、MySQL、MongoDB対応の強力なクロスデータベースORMライブラリ
+🚀 SQLite、PostgreSQL、MySQL、MongoDB対応の強力なクロスデータベースODMライブラリ
 
 **🌐 言語バージョン**: [中文](README.md) | [English](README.en.md) | [日本語](README.ja.md)
 
@@ -319,11 +319,11 @@ rat_quickdbはモダンアーキテクチャ設計を採用：
 
 ## 🌟 バージョン情報
 
-**現在のバージョン**: 0.1.8
+**現在のバージョン**: 0.1.9
 
 **サポートRustバージョン**: 1.70+
 
-**重要なアップデート**: v0.1.8はID生成戦略、キャッシュ設定、ログ制御を改善し、すべてのコア機能を検証完了！
+**重要なアップデート**: v0.1.9はプロジェクトの位置付けをODMに修正し、クロスデータベースサポートを改善しました！
 
 ## 📄 ライセンス
 

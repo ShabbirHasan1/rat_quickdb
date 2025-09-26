@@ -1,15 +1,15 @@
 [package]
 name = "rat_quickdb"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2024"
 authors = ["0ldm0s <oldmos@gmail.com>"]
-description = "强大的跨数据库ORM库，支持自动索引创建、统一接口和现代异步架构"
+description = "强大的跨数据库ODM库，支持自动索引创建、统一接口和现代异步架构"
 license = "LGPL-3.0"
 repository = "https://github.com/0ldm0s/rat_quickdb"
 homepage = "https://github.com/0ldm0s/rat_quickdb"
 documentation = "https://docs.rs/rat_quickdb"
 readme = "README.md"
-keywords = ["database", "orm", "async", "cross-database", "sql"]
+keywords = ["odm", "database", "async", "cross-database", "mongodb"]
 categories = [
     "database",
     "asynchronous",
