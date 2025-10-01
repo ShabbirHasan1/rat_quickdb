@@ -26,9 +26,9 @@ define_model! {
         phone: Option<String>,
         avatar_url: Option<String>,
         is_active: bool,
-        created_at: String,
-        updated_at: Option<String>,
-        last_login: Option<String>,
+        created_at: chrono::DateTime<chrono::Utc>,
+        updated_at: Option<chrono::DateTime<chrono::Utc>>,
+        last_login: Option<chrono::DateTime<chrono::Utc>>,
         profile: Option<serde_json::Value>,
         tags: Option<Vec<String>>,
     }
@@ -43,9 +43,9 @@ define_model! {
         phone: string_field(None, None, None),
         avatar_url: string_field(None, None, None),
         is_active: boolean_field().required(),
-        created_at: string_field(None, None, None).required(),
-        updated_at: string_field(None, None, None),
-        last_login: string_field(None, None, None),
+        created_at: datetime_field().required(),
+        updated_at: datetime_field(),
+        last_login: datetime_field(),
         profile: json_field(),
         tags: array_field(field_types!(string), None, None),
     }
@@ -72,9 +72,9 @@ define_model! {
         view_count: i32,
         like_count: i32,
         is_featured: bool,
-        published_at: Option<String>,
-        created_at: String,
-        updated_at: Option<String>,
+        published_at: Option<chrono::DateTime<chrono::Utc>>,
+        created_at: chrono::DateTime<chrono::Utc>,
+        updated_at: Option<chrono::DateTime<chrono::Utc>>,
         metadata: Option<serde_json::Value>,
         tags: Option<Vec<String>>,
     }
@@ -91,9 +91,9 @@ define_model! {
         view_count: integer_field(None, None).required(),
         like_count: integer_field(None, None).required(),
         is_featured: boolean_field().required(),
-        published_at: string_field(None, None, None),
-        created_at: string_field(None, None, None).required(),
-        updated_at: string_field(None, None, None),
+        published_at: datetime_field(),
+        created_at: datetime_field().required(),
+        updated_at: datetime_field(),
         metadata: json_field(),
         tags: array_field(field_types!(string), None, None),
     }
@@ -117,8 +117,8 @@ define_model! {
         content: String,
         is_approved: bool,
         like_count: i32,
-        created_at: String,
-        updated_at: Option<String>,
+        created_at: chrono::DateTime<chrono::Utc>,
+        updated_at: Option<chrono::DateTime<chrono::Utc>>,
     }
     collection = "comments",
     fields = {
@@ -129,8 +129,8 @@ define_model! {
         content: FieldDefinition::new(field_types!(string)).required(),
         is_approved: FieldDefinition::new(field_types!(boolean)).required(),
         like_count: FieldDefinition::new(field_types!(integer)).required(),
-        created_at: FieldDefinition::new(field_types!(datetime)).required(),
-        updated_at: FieldDefinition::new(field_types!(datetime)),
+        created_at: datetime_field().required(),
+        updated_at: datetime_field(),
     }
     indexes = [
         { fields: ["article_id"], unique: false, name: "idx_article" },
@@ -158,8 +158,8 @@ async fn demonstrate_json_serialization() -> QuickDbResult<()> {
         phone: Some("+8613812345678".to_string()),
         avatar_url: Some("https://avatar.example.com/zhangsan.jpg".to_string()),
         is_active: true,
-        created_at: Utc::now().to_rfc3339(),
-        updated_at: Some(Utc::now().to_rfc3339()),
+        created_at: Utc::now(),
+        updated_at: Some(Utc::now()),
         last_login: None,
         profile: Some(serde_json::json!({"preferences":{"theme":"dark","language":"zh-CN"}})),
         tags: Some(vec!["新用户".to_string(), "活跃".to_string()]),
@@ -260,8 +260,8 @@ async fn demonstrate_basic_crud() -> QuickDbResult<()> {
         phone: Some("+8613811111111".to_string()),
         avatar_url: Some("https://avatar.example.com/demo.jpg".to_string()),
         is_active: true,
-        created_at: Utc::now().to_rfc3339(),
-        updated_at: Some(Utc::now().to_rfc3339()),
+        created_at: Utc::now(),
+        updated_at: Some(Utc::now()),
         last_login: None,
         profile: Some(serde_json::json!({"preferences":{"theme":"dark","language":"en-US"}})),
         tags: Some(vec!["测试用户".to_string()]),
@@ -281,7 +281,7 @@ async fn demonstrate_basic_crud() -> QuickDbResult<()> {
                     println!("\n3. 更新用户...");
                     let mut update_data = HashMap::new();
                     update_data.insert("age".to_string(), DataValue::Int(26));
-                    update_data.insert("updated_at".to_string(), DataValue::String(Utc::now().to_rfc3339()));
+                    update_data.insert("updated_at".to_string(), DataValue::DateTime(Utc::now()));
 
                     match found_user.update(update_data).await {
                         Ok(_) => println!("✅ 用户更新成功"),
@@ -321,8 +321,8 @@ async fn demonstrate_error_handling() -> QuickDbResult<()> {
         phone: None,
         avatar_url: None,
         is_active: true,
-        created_at: Utc::now().to_rfc3339(),
-        updated_at: Some(Utc::now().to_rfc3339()),
+        created_at: Utc::now(),
+        updated_at: Some(Utc::now()),
         last_login: None,
         profile: None,
         tags: None,
@@ -353,8 +353,8 @@ async fn demonstrate_error_handling() -> QuickDbResult<()> {
         phone: Some("+8613811111111".to_string()),
         avatar_url: Some("https://avatar.example.com/unique1.jpg".to_string()),
         is_active: true,
-        created_at: Utc::now().to_rfc3339(),
-        updated_at: Some(Utc::now().to_rfc3339()),
+        created_at: Utc::now(),
+        updated_at: Some(Utc::now()),
         last_login: None,
         profile: None,
         tags: None,
@@ -376,8 +376,8 @@ async fn demonstrate_error_handling() -> QuickDbResult<()> {
                 phone: Some("+8613822222222".to_string()),
                 avatar_url: Some("https://avatar.example.com/unique2.jpg".to_string()),
                 is_active: true,
-                created_at: Utc::now().to_rfc3339(),
-                updated_at: Some(Utc::now().to_rfc3339()),
+                created_at: Utc::now(),
+                updated_at: Some(Utc::now()),
                 last_login: None,
                 profile: None,
                 tags: None,
@@ -403,8 +403,8 @@ async fn demonstrate_error_handling() -> QuickDbResult<()> {
         phone: None,
         avatar_url: None,
         is_active: true,
-        created_at: Utc::now().to_rfc3339(),
-        updated_at: Some(Utc::now().to_rfc3339()),
+        created_at: Utc::now(),
+        updated_at: Some(Utc::now()),
         last_login: None,
         profile: None,
         tags: None,
@@ -445,8 +445,8 @@ async fn demonstrate_batch_operations() -> QuickDbResult<()> {
             phone: Some("+8613811111111".to_string()),
             avatar_url: Some("https://avatar.example.com/batch1.jpg".to_string()),
             is_active: true,
-            created_at: Utc::now().to_rfc3339(),
-            updated_at: Some(Utc::now().to_rfc3339()),
+            created_at: Utc::now(),
+            updated_at: Some(Utc::now()),
             last_login: None,
             profile: None,
             tags: Some(vec!["批量用户".to_string()]),
@@ -461,8 +461,8 @@ async fn demonstrate_batch_operations() -> QuickDbResult<()> {
             phone: Some("+8613822222222".to_string()),
             avatar_url: Some("https://avatar.example.com/batch2.jpg".to_string()),
             is_active: true,
-            created_at: Utc::now().to_rfc3339(),
-            updated_at: Some(Utc::now().to_rfc3339()),
+            created_at: Utc::now(),
+            updated_at: Some(Utc::now()),
             last_login: None,
             profile: None,
             tags: Some(vec!["批量用户".to_string()]),
@@ -477,8 +477,8 @@ async fn demonstrate_batch_operations() -> QuickDbResult<()> {
             phone: Some("+8613833333333".to_string()),
             avatar_url: Some("https://avatar.example.com/batch3.jpg".to_string()),
             is_active: true,
-            created_at: Utc::now().to_rfc3339(),
-            updated_at: Some(Utc::now().to_rfc3339()),
+            created_at: Utc::now(),
+            updated_at: Some(Utc::now()),
             last_login: None,
             profile: None,
             tags: Some(vec!["批量用户".to_string()]),
@@ -493,8 +493,8 @@ async fn demonstrate_batch_operations() -> QuickDbResult<()> {
             phone: Some("+8613844444444".to_string()),
             avatar_url: Some("https://avatar.example.com/batch4.jpg".to_string()),
             is_active: true,
-            created_at: Utc::now().to_rfc3339(),
-            updated_at: Some(Utc::now().to_rfc3339()),
+            created_at: Utc::now(),
+            updated_at: Some(Utc::now()),
             last_login: None,
             profile: None,
             tags: Some(vec!["批量用户".to_string()]),
@@ -539,7 +539,7 @@ async fn demonstrate_batch_operations() -> QuickDbResult<()> {
     println!("\n3. 批量更新用户状态...");
     let mut update_data = HashMap::new();
     update_data.insert("is_active".to_string(), DataValue::Bool(false));
-    update_data.insert("updated_at".to_string(), DataValue::String(Utc::now().to_rfc3339()));
+    update_data.insert("updated_at".to_string(), DataValue::DateTime(Utc::now()));
 
     // 批量查询并更新
     if let Ok(users) = ModelManager::<User>::find(batch_conditions.clone(), None).await {
@@ -616,8 +616,8 @@ async fn demonstrate_transaction_operations() -> QuickDbResult<()> {
         phone: Some("+8613811111111".to_string()),
         avatar_url: Some("https://avatar.example.com/tx.jpg".to_string()),
         is_active: true,
-        created_at: Utc::now().to_rfc3339(),
-        updated_at: Some(Utc::now().to_rfc3339()),
+        created_at: Utc::now(),
+        updated_at: Some(Utc::now()),
         last_login: None,
         profile: None,
         tags: None,
@@ -647,9 +647,9 @@ async fn demonstrate_transaction_operations() -> QuickDbResult<()> {
         view_count: 0,
         like_count: 0,
         is_featured: false,
-        published_at: Some(Utc::now().to_rfc3339()),
-        created_at: Utc::now().to_rfc3339(),
-        updated_at: Some(Utc::now().to_rfc3339()),
+        published_at: Some(Utc::now()),
+        created_at: Utc::now(),
+        updated_at: Some(Utc::now()),
         metadata: None,
         tags: Some(vec!["事务测试".to_string()]),
     };
@@ -707,11 +707,11 @@ async fn demonstrate_transaction_operations() -> QuickDbResult<()> {
 
     // 同时更新用户和文章的状态
     let mut user_update_data = HashMap::new();
-    user_update_data.insert("updated_at".to_string(), DataValue::String(Utc::now().to_rfc3339()));
+    user_update_data.insert("updated_at".to_string(), DataValue::DateTime(Utc::now()));
 
     let mut article_update_data = HashMap::new();
     article_update_data.insert("view_count".to_string(), DataValue::Int(100));
-    article_update_data.insert("updated_at".to_string(), DataValue::String(Utc::now().to_rfc3339()));
+    article_update_data.insert("updated_at".to_string(), DataValue::DateTime(Utc::now()));
 
     // 获取刚创建的用户和文章
     if let (Ok(Some(mut user_for_update)), Ok(Some(article_for_update))) = (
@@ -776,8 +776,8 @@ async fn demonstrate_performance_test() -> QuickDbResult<()> {
             phone: Some(format!("+86138{:08}", 1000000 + i)),
             avatar_url: Some(format!("https://avatar.example.com/perf{}.jpg", i)),
             is_active: true,
-            created_at: Utc::now().to_rfc3339(),
-            updated_at: Some(Utc::now().to_rfc3339()),
+            created_at: Utc::now(),
+            updated_at: Some(Utc::now()),
             last_login: None,
             profile: None,
             tags: Some(vec!["性能测试".to_string()]),
@@ -838,7 +838,7 @@ async fn demonstrate_performance_test() -> QuickDbResult<()> {
             if let Some(mut user) = users.first() {
                 let mut update_data = HashMap::new();
                 update_data.insert("age".to_string(), DataValue::Int((30 + i) as i64));
-                update_data.insert("updated_at".to_string(), DataValue::String(Utc::now().to_rfc3339()));
+                update_data.insert("updated_at".to_string(), DataValue::DateTime(Utc::now()));
 
                 match user.update(update_data).await {
                     Ok(_) => {},
@@ -914,6 +914,10 @@ fn init_logging_system() -> Result<(), Box<dyn std::error::Error>> {
 async fn main() -> QuickDbResult<()> {
     println!("=== RatQuickDB 模型定义系统演示 ===");
 
+    // 清理旧数据库文件
+    let _ = std::fs::remove_file("./test_model.db");
+    println!("🧹 清理旧数据库文件完成");
+
     // 初始化日志系统
     if let Err(e) = init_logging_system() {
         println!("❌ 日志系统初始化失败: {}", e);
@@ -985,8 +989,8 @@ async fn demonstrate_model_validation() -> QuickDbResult<()> {
         phone: Some("+8613812345678".to_string()),
         avatar_url: Some("https://avatar.example.com/val_001.jpg".to_string()),
         is_active: true,
-        created_at: Utc::now().to_rfc3339(),
-        updated_at: Some(Utc::now().to_rfc3339()),
+        created_at: Utc::now(),
+        updated_at: Some(Utc::now()),
         last_login: None,
         profile: Some(serde_json::json!({"preferences":{"theme":"dark","language":"zh-CN"}})),
         tags: Some(vec!["新用户".to_string(), "活跃".to_string()]),
@@ -1022,8 +1026,8 @@ async fn demonstrate_model_validation() -> QuickDbResult<()> {
         phone: Some("+8613812345679".to_string()),
         avatar_url: Some("https://avatar.example.com/val_002.jpg".to_string()),
         is_active: true,
-        created_at: Utc::now().to_rfc3339(),
-        updated_at: Some(Utc::now().to_rfc3339()),
+        created_at: Utc::now(),
+        updated_at: Some(Utc::now()),
         last_login: None,
         profile: Some(serde_json::json!({"preferences":{"theme":"light","language":"en-US"}})),
         tags: Some(vec!["测试用户".to_string()]),
@@ -1083,9 +1087,9 @@ async fn demonstrate_model_validation() -> QuickDbResult<()> {
         view_count: 0,
         like_count: 0,
         is_featured: true,
-        published_at: Some(Utc::now().to_rfc3339()),
-        created_at: Utc::now().to_rfc3339(),
-        updated_at: Some(Utc::now().to_rfc3339()),
+        published_at: Some(Utc::now()),
+        created_at: Utc::now(),
+        updated_at: Some(Utc::now()),
         metadata: Some(serde_json::json!({"seo":{"keywords":["rust","编程","技术"],"description":"验证测试文章"}})),
         tags: Some(vec!["技术".to_string(), "编程".to_string()]),
     };
@@ -1178,8 +1182,8 @@ async fn demonstrate_complex_queries() -> QuickDbResult<()> {
             phone: Some("+8613811111111".to_string()),
             avatar_url: Some("https://avatar.example.com/alice.jpg".to_string()),
             is_active: true,
-            created_at: Utc::now().to_rfc3339(),
-            updated_at: Some(Utc::now().to_rfc3339()),
+            created_at: Utc::now(),
+            updated_at: Some(Utc::now()),
             last_login: None,
             profile: Some(serde_json::json!({"preferences":{"theme":"dark","language":"en-US"}})),
             tags: Some(vec!["开发者".to_string(), "活跃用户".to_string()]),
@@ -1194,8 +1198,8 @@ async fn demonstrate_complex_queries() -> QuickDbResult<()> {
             phone: Some("+8613822222222".to_string()),
             avatar_url: Some("https://avatar.example.com/bob.jpg".to_string()),
             is_active: true,
-            created_at: Utc::now().to_rfc3339(),
-            updated_at: Some(Utc::now().to_rfc3339()),
+            created_at: Utc::now(),
+            updated_at: Some(Utc::now()),
             last_login: None,
             profile: Some(serde_json::json!({"preferences":{"theme":"light","language":"en-US"}})),
             tags: Some(vec!["设计师".to_string(), "新用户".to_string()]),
@@ -1210,8 +1214,8 @@ async fn demonstrate_complex_queries() -> QuickDbResult<()> {
             phone: Some("+8613833333333".to_string()),
             avatar_url: Some("https://avatar.example.com/charlie.jpg".to_string()),
             is_active: true,
-            created_at: Utc::now().to_rfc3339(),
-            updated_at: Some(Utc::now().to_rfc3339()),
+            created_at: Utc::now(),
+            updated_at: Some(Utc::now()),
             last_login: None,
             profile: Some(serde_json::json!({"preferences":{"theme":"dark","language":"en-US"}})),
             tags: Some(vec!["管理员".to_string(), "资深用户".to_string()]),
@@ -1226,8 +1230,8 @@ async fn demonstrate_complex_queries() -> QuickDbResult<()> {
             phone: Some("+8613844444444".to_string()),
             avatar_url: Some("https://avatar.example.com/diana.jpg".to_string()),
             is_active: true,
-            created_at: Utc::now().to_rfc3339(),
-            updated_at: Some(Utc::now().to_rfc3339()),
+            created_at: Utc::now(),
+            updated_at: Some(Utc::now()),
             last_login: None,
             profile: Some(serde_json::json!({"preferences":{"theme":"light","language":"en-US"}})),
             tags: Some(vec!["产品经理".to_string(), "活跃用户".to_string()]),

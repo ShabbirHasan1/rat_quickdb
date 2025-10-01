@@ -63,6 +63,13 @@ impl ToDataValue for bool {
     }
 }
 
+// 为DateTime<Utc>实现ToDataValue
+impl ToDataValue for chrono::DateTime<chrono::Utc> {
+    fn to_data_value(&self) -> DataValue {
+        DataValue::DateTime(*self)
+    }
+}
+
 // 为Vec<String>提供特定的实现，确保字符串数组被正确转换为DataValue::Array
 impl ToDataValue for Vec<String> {
     fn to_data_value(&self) -> DataValue {
