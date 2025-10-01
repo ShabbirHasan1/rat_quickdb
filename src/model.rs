@@ -1265,11 +1265,9 @@ macro_rules! define_model {
                 let collection_name = Self::collection_name();
                 let database_alias = Self::database_alias();
 
-                // 确保表和索引存在
+                // 确保表和索引存在（静默处理，这是预期行为）
                 let alias = database_alias.as_deref().unwrap_or("default");
-                if let Err(e) = $crate::manager::ensure_table_and_indexes(&collection_name, alias).await {
-                    println!("⚠️  确保表和索引失败: {}", e);
-                }
+                let _ = $crate::manager::ensure_table_and_indexes(&collection_name, alias).await;
 
                 let result = $crate::odm::create(
                     &collection_name,
