@@ -400,6 +400,7 @@ impl PyDbQueueBridge {
         idle_timeout: Option<u64>,
         max_lifetime: Option<u64>,
         cache_config: Option<PyCacheConfig>,
+        id_strategy: Option<String>,
     ) -> PyResult<String> {
         let mut pool_config_builder = PoolConfig::builder();
         
@@ -424,15 +425,27 @@ impl PyDbQueueBridge {
         
         let create_if_missing_value = create_if_missing.unwrap_or(true);
         
+        // 解析ID策略，默认使用AutoIncrement
+        let id_strategy_enum = match id_strategy.as_deref() {
+            Some("Uuid") => IdStrategy::Uuid,
+            Some("Snowflake") => IdStrategy::Snowflake { machine_id: 1, datacenter_id: 1 },
+            Some("ObjectId") => IdStrategy::ObjectId,
+            Some(custom) if custom.starts_with("Custom:") => {
+                let prefix = custom.strip_prefix("Custom:").unwrap_or(custom);
+                IdStrategy::Custom(prefix.to_string())
+            },
+            _ => IdStrategy::AutoIncrement,
+        };
+
         let mut db_config_builder = DatabaseConfigBuilder::new()
             .db_type(DatabaseType::SQLite)
-            .connection(ConnectionConfig::SQLite { 
+            .connection(ConnectionConfig::SQLite {
                 path,
                 create_if_missing: create_if_missing_value,
             })
             .pool(pool_config)
             .alias(alias.clone())
-            .id_strategy(IdStrategy::AutoIncrement);
+            .id_strategy(id_strategy_enum);
         
         if let Some(cache_cfg) = cache_config {
             db_config_builder = db_config_builder.cache(cache_cfg.to_rust_config());
