@@ -8,7 +8,7 @@ MongoDB调试测试脚本
 import json
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from rat_quickdb_py import (
     create_db_queue_bridge, 
     PyCacheConfig, 
@@ -113,7 +113,7 @@ def test_mongodb_basic_operations():
             "age": 25,
             "city": "北京",
             "department": "技术部",
-            "created_at": datetime.utcnow().isoformat() + "Z"
+            "created_at": datetime.now(timezone.utc).isoformat()
         }
         
         print("📝 插入测试数据...")

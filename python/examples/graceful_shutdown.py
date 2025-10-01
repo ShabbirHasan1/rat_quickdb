@@ -24,7 +24,7 @@ from typing import Optional, Callable, List, Dict, Any
 from contextlib import contextmanager
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 @dataclass

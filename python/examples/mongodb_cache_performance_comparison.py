@@ -12,7 +12,7 @@ import json
 import time
 import os
 import shutil
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
@@ -107,7 +107,7 @@ class TestUser:
             name=name,
             email=email,
             age=age,
-            created_at=datetime.utcnow().isoformat() + "Z"
+            created_at=datetime.now(timezone.utc).isoformat()
         )
     
     def to_json(self) -> str:
@@ -701,7 +701,7 @@ class MongoDbCachePerformanceTest(GracefulShutdownMixin):
         print("\n✏️ 测试更新操作性能...")
         
         try:
-            update_data = json.dumps({"age": 30, "updated_at": datetime.utcnow().isoformat() + "Z"})
+            update_data = json.dumps({"age": 30, "updated_at": datetime.now(timezone.utc).isoformat()})
             
             # 测试缓存数据库的更新操作
             start_time = time.time()

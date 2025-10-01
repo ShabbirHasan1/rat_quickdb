@@ -27,7 +27,7 @@ RAT QuickDB Python 绑定位于 python/ 子目录中。
 
     // 获取包名和版本
     let package_name = env::var("CARGO_PKG_NAME").unwrap_or_else(|_| "rat_quickdb_py".to_string());
-    let version = env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.1.6".to_string());
+    let version = env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.2.0".to_string());
     
     // 创建Python包目录 (将下划线转换为包名)
     let python_package_dir = Path::new("rat_quickdb_py");

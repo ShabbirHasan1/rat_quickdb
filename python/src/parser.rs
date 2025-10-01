@@ -298,7 +298,14 @@ impl Parser {
     /// 解析JSON值为DataValue
     pub fn parse_data_value(&self, json_value: &JsonValue) -> Result<DataValue, String> {
         match json_value {
-            JsonValue::String(s) => Ok(DataValue::String(s.clone())),
+            JsonValue::String(s) => {
+                // 尝试解析为datetime
+                if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+                    Ok(DataValue::DateTime(dt.with_timezone(&chrono::Utc)))
+                } else {
+                    Ok(DataValue::String(s.clone()))
+                }
+            },
             JsonValue::Number(n) => {
                 if let Some(i) = n.as_i64() {
                     Ok(DataValue::Int(i))

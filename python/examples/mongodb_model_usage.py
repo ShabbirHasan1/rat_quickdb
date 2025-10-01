@@ -18,7 +18,7 @@ import os
 import signal
 import threading
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 # 导入优雅关闭机制
@@ -501,7 +501,7 @@ def demonstrate_mongodb_database_operations():
         test_doc = {
             "_id": "test_connection_doc",
             "test_field": "MongoDB连接测试",
-            "created_at": datetime.utcnow().isoformat() + "Z",
+            "created_at": datetime.now(timezone.utc).isoformat(),
             "test_number": 42,
             "test_boolean": True,
             "test_array": ["tag1", "tag2", "tag3"],

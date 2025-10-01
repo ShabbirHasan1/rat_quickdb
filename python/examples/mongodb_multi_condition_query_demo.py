@@ -20,7 +20,7 @@ import shutil
 import signal
 import threading
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 from rat_quickdb_py import (
     create_db_queue_bridge, 
@@ -221,7 +221,7 @@ class MongoDbMultiConditionQueryDemo(GracefulShutdownMixin):
                     "experience_years": 3,
                     "certification": ["AWS", "MongoDB"]
                 },
-                "created_at": datetime.utcnow().isoformat() + "Z",
+                "created_at": datetime.now(timezone.utc).isoformat(),
                 "is_active": True
             },
             {
@@ -237,7 +237,7 @@ class MongoDbMultiConditionQueryDemo(GracefulShutdownMixin):
                     "experience_years": 6,
                     "certification": ["PMP"]
                 },
-                "created_at": datetime.utcnow().isoformat() + "Z",
+                "created_at": datetime.now(timezone.utc).isoformat(),
                 "is_active": True
             },
             {
@@ -253,7 +253,7 @@ class MongoDbMultiConditionQueryDemo(GracefulShutdownMixin):
                     "experience_years": 4,
                     "certification": ["Oracle", "Java"]
                 },
-                "created_at": datetime.utcnow().isoformat() + "Z",
+                "created_at": datetime.now(timezone.utc).isoformat(),
                 "is_active": True
             },
             {
@@ -269,7 +269,7 @@ class MongoDbMultiConditionQueryDemo(GracefulShutdownMixin):
                     "experience_years": 8,
                     "certification": ["Google Analytics", "Facebook Marketing"]
                 },
-                "created_at": datetime.utcnow().isoformat() + "Z",
+                "created_at": datetime.now(timezone.utc).isoformat(),
                 "is_active": True
             },
             {
@@ -285,7 +285,7 @@ class MongoDbMultiConditionQueryDemo(GracefulShutdownMixin):
                     "experience_years": 1,
                     "certification": []
                 },
-                "created_at": datetime.utcnow().isoformat() + "Z",
+                "created_at": datetime.now(timezone.utc).isoformat(),
                 "is_active": True
             },
             {
@@ -301,7 +301,7 @@ class MongoDbMultiConditionQueryDemo(GracefulShutdownMixin):
                     "experience_years": 15,
                     "certification": ["PMP", "CISSP", "MBA"]
                 },
-                "created_at": datetime.utcnow().isoformat() + "Z",
+                "created_at": datetime.now(timezone.utc).isoformat(),
                 "is_active": True
             },
             {
@@ -317,7 +317,7 @@ class MongoDbMultiConditionQueryDemo(GracefulShutdownMixin):
                     "experience_years": 3,
                     "certification": ["Salesforce Admin"]
                 },
-                "created_at": datetime.utcnow().isoformat() + "Z",
+                "created_at": datetime.now(timezone.utc).isoformat(),
                 "is_active": True
             },
             {
@@ -333,7 +333,7 @@ class MongoDbMultiConditionQueryDemo(GracefulShutdownMixin):
                     "experience_years": 7,
                     "certification": ["AWS Solutions Architect", "CKA"]
                 },
-                "created_at": datetime.utcnow().isoformat() + "Z",
+                "created_at": datetime.now(timezone.utc).isoformat(),
                 "is_active": True
             },
         ]

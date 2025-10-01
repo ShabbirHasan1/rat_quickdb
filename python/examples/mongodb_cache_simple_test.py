@@ -11,7 +11,7 @@ import json
 import time
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from dataclasses import dataclass
 
@@ -53,7 +53,7 @@ class TestUser:
             name=name,
             email=email,
             age=age,
-            created_at=datetime.utcnow().isoformat() + "Z"
+            created_at=datetime.now(timezone.utc).isoformat()
         )
     
     def to_json(self) -> str:
