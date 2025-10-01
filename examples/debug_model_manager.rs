@@ -13,7 +13,7 @@ use std::collections::HashMap;
 define_model! {
     /// 测试用户模型
     struct TestUser {
-        id: String,
+        id: Option<String>,
         name: String,
         email: String,
         age: i32,
@@ -28,7 +28,7 @@ define_model! {
     }
     collection = "test_users",
     fields = {
-        id: string_field(None, None, None).required().unique(),
+        id: string_field(None, None, None).unique(), // 移除required，允许自动生成
         name: string_field(None, None, None).required(),
         email: string_field(None, None, None).required(),
         age: integer_field(None, None).required(),
@@ -69,7 +69,7 @@ async fn main() -> QuickDbResult<()> {
         })
         .pool(PoolConfig::default())
         .alias("default".to_string())
-        .id_strategy(IdStrategy::AutoIncrement)
+        .id_strategy(IdStrategy::Uuid)
         .build()?;
 
     // 3. 添加数据库
@@ -77,10 +77,10 @@ async fn main() -> QuickDbResult<()> {
     pool_manager.add_database(db_config).await?;
     tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
 
-    // 4. 创建测试数据（完整字段）
+    // 4. 创建测试数据（完整字段，ID自动生成）
     let test_users = vec![
         TestUser {
-            id: "user_001".to_string(),
+            id: None, // 使用UUID自动生成
             name: "张三".to_string(),
             email: "zhangsan@company.com".to_string(),
             age: 25,
@@ -98,7 +98,7 @@ async fn main() -> QuickDbResult<()> {
             score: Some(85),
         },
         TestUser {
-            id: "user_002".to_string(),
+            id: None, // 使用UUID自动生成
             name: "李四".to_string(),
             email: "lisi@company.com".to_string(),
             age: 30,
@@ -116,7 +116,7 @@ async fn main() -> QuickDbResult<()> {
             score: Some(92),
         },
         TestUser {
-            id: "user_003".to_string(),
+            id: None, // 使用UUID自动生成
             name: "王五".to_string(),
             email: "wangwu@company.com".to_string(),
             age: 28,
@@ -134,7 +134,7 @@ async fn main() -> QuickDbResult<()> {
             score: Some(95),
         },
         TestUser {
-            id: "user_004".to_string(),
+            id: None, // 使用UUID自动生成
             name: "赵六".to_string(),
             email: "zhaoliu@company.com".to_string(),
             age: 35,
@@ -153,11 +153,15 @@ async fn main() -> QuickDbResult<()> {
         },
     ];
 
-    // 5. 创建数据
-    println!("创建测试数据...");
+    // 5. 创建数据并记录生成的ID
+    println!("创建测试数据（测试UUID自动生成）...");
+    let mut created_user_ids = Vec::new();
     for user in &test_users {
         match user.save().await {
-            Ok(id) => println!("✅ 创建成功: {} ({})", user.name, id),
+            Ok(id) => {
+                created_user_ids.push(id.clone());
+                println!("✅ 创建成功: {} (自动生成UUID: {})", user.name, id);
+            }
             Err(e) => {
                 println!("❌ 创建失败 {}: {}", user.name, e);
                 return Err(e);
@@ -175,8 +179,8 @@ async fn main() -> QuickDbResult<()> {
     match ModelManager::<TestUser>::find(Vec::new(), None).await {
         Ok(users) => {
             println!("✅ 空条件查询成功，找到 {} 个用户", users.len());
-            for user in &users {
-                println!("   - {} ({}) - {}岁 - {}", user.name, user.id, user.age, if user.active { "激活" } else { "未激活" });
+            for (i, user) in users.iter().enumerate() {
+                println!("   {}. {} ({}) - {}岁 - {}", i+1, user.name, user.id.as_ref().unwrap_or(&"未知ID".to_string()), user.age, if user.active { "激活" } else { "未激活" });
             }
         }
         Err(e) => {
@@ -215,7 +219,7 @@ async fn main() -> QuickDbResult<()> {
         Ok(users) => {
             println!("✅ 条件查询成功 (active=true)，找到 {} 个用户", users.len());
             for user in users {
-                println!("   - {} ({})", user.name, user.id);
+                println!("   - {} ({})", user.name, user.id.as_ref().unwrap_or(&"未知ID".to_string()));
             }
         }
         Err(e) => {
@@ -234,7 +238,7 @@ async fn main() -> QuickDbResult<()> {
         Ok(users) => {
             println!("✅ 年龄条件查询成功 (age>=25)，找到 {} 个用户", users.len());
             for user in users {
-                println!("   - {} ({}) - {}岁", user.name, user.id, user.age);
+                println!("   - {} ({}) - {}岁", user.name, user.id.as_ref().unwrap_or(&"未知ID".to_string()), user.age);
             }
         }
         Err(e) => {
@@ -260,7 +264,7 @@ async fn main() -> QuickDbResult<()> {
         Ok(users) => {
             println!("✅ 复合条件查询成功 (age>=25 && active=true)，找到 {} 个用户", users.len());
             for user in users {
-                println!("   - {} ({}) - {}岁 - {} - 薪资: {}", user.name, user.id, user.age, user.department, user.salary);
+                println!("   - {} ({}) - {}岁 - {} - 薪资: {}", user.name, user.id.as_ref().unwrap_or(&"未知ID".to_string()), user.age, user.department, user.salary);
             }
         }
         Err(e) => {
@@ -280,7 +284,7 @@ async fn main() -> QuickDbResult<()> {
         Ok(users) => {
             println!("✅ 薪资条件查询成功 (salary>20000)，找到 {} 个用户", users.len());
             for user in users {
-                println!("   - {} ({}) - {} - 薪资: {}", user.name, user.id, user.department, user.salary);
+                println!("   - {} ({}) - {} - 薪资: {}", user.name, user.id.as_ref().unwrap_or(&"未知ID".to_string()), user.department, user.salary);
             }
         }
         Err(e) => {
@@ -300,7 +304,7 @@ async fn main() -> QuickDbResult<()> {
         Ok(users) => {
             println!("✅ 部门条件查询成功 (department=技术部)，找到 {} 个用户", users.len());
             for user in users {
-                println!("   - {} ({}) - {}岁 - 薪资: {}", user.name, user.id, user.age, user.salary);
+                println!("   - {} ({}) - {}岁 - 薪资: {}", user.name, user.id.as_ref().unwrap_or(&"未知ID".to_string()), user.age, user.salary);
             }
         }
         Err(e) => {
@@ -311,81 +315,85 @@ async fn main() -> QuickDbResult<()> {
     // 7. 核心测试：更新功能验证 - 用户强调的关键功能
     println!("\n=== 核心测试：更新功能验证 ===");
 
-    // 7.1 先查询一个用户用于更新测试
-    let update_target_condition = QueryCondition {
-        field: "id".to_string(),
-        operator: QueryOperator::Eq,
-        value: DataValue::String("user_001".to_string()),
-    };
+    // 7.1 先查询一个用户用于更新测试（使用第一个生成的UUID）
+    if let Some(first_user_id) = created_user_ids.first() {
+        let update_target_condition = QueryCondition {
+            field: "id".to_string(),
+            operator: QueryOperator::Eq,
+            value: DataValue::String(first_user_id.clone()),
+        };
 
-    match ModelManager::<TestUser>::find(vec![update_target_condition], None).await {
-        Ok(mut users) => {
-            if let Some(mut target_user) = users.pop() {
-                println!("✅ 找到更新目标用户: {} ({})", target_user.name, target_user.id);
+          match ModelManager::<TestUser>::find(vec![update_target_condition], None).await {
+            Ok(mut users) => {
+                if let Some(mut target_user) = users.pop() {
+                    println!("✅ 找到更新目标用户: {} ({})", target_user.name, target_user.id.as_ref().unwrap_or(&"未知ID".to_string()));
 
-                // 记录原始数据
-                let original_salary = target_user.salary;
-                let original_dept = target_user.department.clone();
-                println!("   原始薪资: {}, 原始部门: {}", original_salary, original_dept);
+                    // 记录原始数据
+                    let original_salary = target_user.salary;
+                    let original_dept = target_user.department.clone();
+                    println!("   原始薪资: {}, 原始部门: {}", original_salary, original_dept);
 
-                // 7.2 执行更新操作
-                let mut updates = HashMap::new();
-                updates.insert("salary".to_string(), DataValue::Float(18000.0));
-                updates.insert("department".to_string(), DataValue::String("研发部".to_string()));
-                updates.insert("updated_at".to_string(), DataValue::String(chrono::Utc::now().to_rfc3339()));
+                    // 7.2 执行更新操作
+                    let mut updates = HashMap::new();
+                    updates.insert("salary".to_string(), DataValue::Float(18000.0));
+                    updates.insert("department".to_string(), DataValue::String("研发部".to_string()));
+                    updates.insert("updated_at".to_string(), DataValue::String(chrono::Utc::now().to_rfc3339()));
 
-                println!("执行更新: 薪资 {} -> {}, 部门 {} -> {}",
-                    original_salary, 18000.0, original_dept, "研发部");
+                    println!("执行更新: 薪资 {} -> {}, 部门 {} -> {}",
+                        original_salary, 18000.0, original_dept, "研发部");
 
-                match target_user.update(updates).await {
-                    Ok(updated) => {
-                        if updated {
-                            println!("✅ 更新操作成功");
+                    match target_user.update(updates).await {
+                        Ok(updated) => {
+                            if updated {
+                                println!("✅ 更新操作成功");
 
-                            // 7.3 验证更新结果
-                            let verify_condition = QueryCondition {
-                                field: "id".to_string(),
-                                operator: QueryOperator::Eq,
-                                value: DataValue::String("user_001".to_string()),
-                            };
+                                // 7.3 验证更新结果
+                                let verify_condition = QueryCondition {
+                                    field: "id".to_string(),
+                                    operator: QueryOperator::Eq,
+                                    value: DataValue::String(first_user_id.clone()),
+                                };
 
-                            match ModelManager::<TestUser>::find(vec![verify_condition], None).await {
-                                Ok(mut verify_users) => {
-                                    if let Some(verified_user) = verify_users.pop() {
-                                        println!("✅ 验证更新结果:");
-                                        println!("   新薪资: {} (原: {})", verified_user.salary, original_salary);
-                                        println!("   新部门: {} (原: {})", verified_user.department, original_dept);
-                                        println!("   更新时间: {:?}", verified_user.updated_at);
+                                match ModelManager::<TestUser>::find(vec![verify_condition], None).await {
+                                    Ok(mut verify_users) => {
+                                        if let Some(verified_user) = verify_users.pop() {
+                                            println!("✅ 验证更新结果:");
+                                            println!("   新薪资: {} (原: {})", verified_user.salary, original_salary);
+                                            println!("   新部门: {} (原: {})", verified_user.department, original_dept);
+                                            println!("   更新时间: {:?}", verified_user.updated_at);
 
-                                        // 验证数据确实更新了
-                                        if verified_user.salary == 18000.0 && verified_user.department == "研发部" {
-                                            println!("✅ 数据更新验证成功！");
+                                            // 验证数据确实更新了
+                                            if verified_user.salary == 18000.0 && verified_user.department == "研发部" {
+                                                println!("✅ 数据更新验证成功！");
+                                            } else {
+                                                println!("❌ 数据更新验证失败！");
+                                            }
                                         } else {
-                                            println!("❌ 数据更新验证失败！");
+                                            println!("❌ 更新后查询不到用户");
                                         }
-                                    } else {
-                                        println!("❌ 更新后查询不到用户");
+                                    }
+                                    Err(e) => {
+                                        println!("❌ 更新验证查询失败: {}", e);
                                     }
                                 }
-                                Err(e) => {
-                                    println!("❌ 更新验证查询失败: {}", e);
-                                }
+                            } else {
+                                println!("❌ 更新操作失败");
                             }
-                        } else {
-                            println!("❌ 更新操作失败");
+                        }
+                        Err(e) => {
+                            println!("❌ 更新操作异常: {}", e);
                         }
                     }
-                    Err(e) => {
-                        println!("❌ 更新操作异常: {}", e);
-                    }
+                } else {
+                    println!("❌ 未找到更新目标用户");
                 }
-            } else {
-                println!("❌ 未找到更新目标用户");
+            }
+            Err(e) => {
+                println!("❌ 更新目标查询失败: {}", e);
             }
         }
-        Err(e) => {
-            println!("❌ 更新目标查询失败: {}", e);
-        }
+    } else {
+        println!("❌ 没有可用的用户ID进行更新测试");
     }
 
     // 7.4 批量更新测试
@@ -469,9 +477,9 @@ async fn main() -> QuickDbResult<()> {
     // 8. 验证宏系统是否正常工作
     println!("\n=== 宏系统验证 ===");
 
-    // 创建一个测试用户并验证to_data_map/from_data_map
+    // 创建一个测试用户并验证to_data_map/from_data_map（测试ID自动生成）
     let test_user = TestUser {
-        id: "macro_test".to_string(),
+        id: None, // 测试自动生成UUID
         name: "宏测试".to_string(),
         email: "macro_test@example.com".to_string(),
         age: 99,

@@ -1246,6 +1246,13 @@ macro_rules! define_model {
                     data_map.insert(stringify!($field).to_string(), self.$field.to_data_value());
                 )*
 
+                // 移除为None的id字段，让数据库自动生成ID
+                if let Some(id_value) = data_map.get("id") {
+                    if matches!(id_value, $crate::types::DataValue::Null) {
+                        data_map.remove("id");
+                    }
+                }
+
                 // 移除为None的_id字段，让MongoDB自动生成
                 if let Some(id_value) = data_map.get("_id") {
                     if matches!(id_value, $crate::types::DataValue::Null) {
