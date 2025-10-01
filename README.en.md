@@ -30,7 +30,7 @@ Add dependency in `Cargo.toml`:
 
 ```toml
 [dependencies]
-rat_quickdb = "0.1.8"
+rat_quickdb = "0.2.0"
 ```
 
 ## 🚀 Quick Start
@@ -450,11 +450,11 @@ Application Layer → Model Operations → ODM Layer → Message Queue → Conne
 
 ## 🌟 Version Information
 
-**Current Version**: 0.1.9
+**Current Version**: 0.2.0
 
 **Supported Rust Version**: 1.70+
 
-**Important Update**: v0.1.9 corrects project positioning to ODM, improves cross-database support!
+**Important Update**: v0.2.0 completely fixes DateTime field functionality with full DateTime support!
 
 ## 📄 License
 
