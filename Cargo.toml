@@ -1,6 +1,6 @@
 [package]
 name = "rat_quickdb"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 authors = ["0ldm0s <oldmos@gmail.com>"]
 description = "强大的跨数据库ODM库，支持自动索引创建、统一接口和现代异步架构"
@@ -69,7 +69,7 @@ rand = "0.8"
 bytes = "1.0"
 
 # 缓存支持
-rat_memcache = { version = "0.2.1", features = ["full-features"] }
+rat_memcache = { version = "0.2.3", features = ["full-features"] }
 # 雪花算法ID生成
 snowflake = { version = "1.3" }
 

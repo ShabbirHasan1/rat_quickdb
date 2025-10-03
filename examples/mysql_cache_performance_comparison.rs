@@ -364,14 +364,14 @@ impl CachePerformanceTest {
         // 测试带缓存的批量查询
         let start = Instant::now();
         for _ in 0..50 {
-            let _ = self.odm.find(&self.table_name, conditions.clone(), Some(query_options.clone()), Some("mysql_cached_db")).await?;
+            let _ = self.odm.find(&self.cached_table_name, conditions.clone(), Some(query_options.clone()), Some("mysql_cached_db")).await?;
         }
         let cached_time = start.elapsed();
 
         // 测试不带缓存的批量查询
         let start = Instant::now();
         for _ in 0..50 {
-            let _ = self.odm.find(&self.table_name, conditions.clone(), Some(query_options.clone()), Some("mysql_non_cached_db")).await?;
+            let _ = self.odm.find(&self.non_cached_table_name, conditions.clone(), Some(query_options.clone()), Some("mysql_non_cached_db")).await?;
         }
         let non_cached_time = start.elapsed();
 
