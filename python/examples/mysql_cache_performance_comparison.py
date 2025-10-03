@@ -100,9 +100,9 @@ class TestUser:
     created_at: str
     
     @classmethod
-    def new(cls, user_id: int, name: str, email: str, age: int, city: str) -> 'TestUser':
+    def new(cls, name: str, email: str, age: int, city: str) -> 'TestUser':
         return cls(
-            id=user_id,
+            id=0,  # 占位符，实际插入时不使用
             name=name,
             email=email,
             age=age,
@@ -161,7 +161,13 @@ class MySqlCachePerformanceTest(GracefulShutdownMixin):
         self.test_data_dir = "./test_data"
         # 使用时间戳作为表名后缀，避免重复
         timestamp = int(time.time() * 1000)
-        self.table_name = f"test_users_{timestamp}"
+        self.cached_table_name = f"test_users_cached_{timestamp}"
+        self.non_cached_table_name = f"test_users_non_cached_{timestamp}"
+        # 为了兼容现有代码，保留table_name属性，但实际使用时会根据上下文选择
+        self.table_name = self.cached_table_name
+        # 为了兼容测试数据创建
+        self.cached_prefix = "cached"
+        self.non_cached_prefix = "non_cached"
         
         # 注册临时目录
         self.add_temp_dir(self.test_data_dir)
@@ -172,7 +178,7 @@ class MySqlCachePerformanceTest(GracefulShutdownMixin):
         try:
             # 创建临时桥接器进行清理
             temp_bridge = create_db_queue_bridge()
-            
+
             # 添加MySQL数据库连接
             result = temp_bridge.add_mysql_database(
                 alias="mysql_cleanup",
@@ -187,20 +193,46 @@ class MySqlCachePerformanceTest(GracefulShutdownMixin):
                 idle_timeout=300,
                 max_lifetime=600
             )
-            
+
             result_data = json.loads(result)
             if result_data.get("success"):
                 # 删除测试表中的数据
-                tables_to_clean = ["test_users", "users", "performance_test", self.table_name]
-                for table in tables_to_clean:
+                tables_to_clean = ["test_users", "users", "performance_test"]
+                # 添加可能存在的旧表
+                try:
+                    # 查询可能存在的测试表
+                    existing_tables = temp_bridge.list_tables("mysql_cleanup")
+                    if existing_tables:
+                        existing_data = json.loads(existing_tables)
+                        if existing_data.get("success"):
+                            table_list = existing_data.get("tables", [])
+                            # 添加所有以test_users开头的表
+                            tables_to_clean.extend([t for t in table_list if t.startswith("test_users_")])
+                except:
+                    pass
+
+                # 清理当前表
+                tables_to_clean.extend([self.cached_table_name, self.non_cached_table_name])
+
+                for table in set(tables_to_clean):  # 去重
                     try:
+                        # 先尝试删除表
                         temp_bridge.drop_table(table, "mysql_cleanup")
                         print(f"✅ 已清理表: {table}")
                     except Exception as e:
-                        print(f"⚠️ 清理表 {table} 时出错: {e}")
+                        # 如果删除表失败，尝试清空表数据
+                        try:
+                            delete_result = temp_bridge.delete(table, "[]", "mysql_cleanup")
+                            delete_data = json.loads(delete_result)
+                            if delete_data.get("success"):
+                                print(f"✅ 已清空表数据: {table}")
+                            else:
+                                print(f"⚠️ 清空表 {table} 失败: {delete_data.get('error')}")
+                        except Exception as delete_error:
+                            print(f"⚠️ 清理表 {table} 时出错: {e}, 清空数据也失败: {delete_error}")
             else:
                 print(f"⚠️ 无法连接到MySQL进行清理: {result_data.get('error')}")
-                
+
         except Exception as e:
             print(f"⚠️ 清理过程中出错: {e}")
     
@@ -322,15 +354,16 @@ class MySqlCachePerformanceTest(GracefulShutdownMixin):
             max_retries = 3  # 最大重试次数
             operation_timeout = 5  # 单个操作超时时间（秒）
             
-            # 基础测试用户（为不同数据库使用不同的数据避免冲突）
+            # 基础测试用户（不指定ID，让数据库自动生成）
+            # 缓存数据库和非缓存数据库使用不同的数据以避免主键冲突
             cached_users = [
-                TestUser.new(i, f"缓存用户{i}", f"cached_user{i}@example.com", 20 + (i % 50), 
+                TestUser.new(f"{self.cached_prefix}_用户{i}", f"{self.cached_prefix}_user{i}@example.com", 20 + (i % 50),
                            ["北京", "上海", "广州", "深圳", "杭州"][i % 5])
                 for i in range(1, 1001)  # 1000条记录
             ]
-            
+
             non_cached_users = [
-                TestUser.new(i, f"非缓存用户{i}", f"non_cached_user{i}@example.com", 20 + (i % 50),
+                TestUser.new(f"{self.non_cached_prefix}_用户{i}", f"{self.non_cached_prefix}_user{i}@example.com", 20 + (i % 50),
                            ["北京", "上海", "广州", "深圳", "杭州"][i % 5])
                 for i in range(1, 1001)  # 1000条记录
             ]
@@ -343,7 +376,7 @@ class MySqlCachePerformanceTest(GracefulShutdownMixin):
                 while retry_count < max_retries and not success:
                     try:
                         start_time = time.time()
-                        response = self.bridge.create(self.table_name, user.to_json(), "mysql_cached")
+                        response = self.bridge.create(self.cached_table_name, user.to_json(), "mysql_cached")
                         
                         # 检查操作是否超时
                         if time.time() - start_time > operation_timeout:
@@ -374,7 +407,7 @@ class MySqlCachePerformanceTest(GracefulShutdownMixin):
                 while retry_count < max_retries and not success:
                     try:
                         start_time = time.time()
-                        response = self.bridge.create(self.table_name, user.to_json(), "mysql_non_cached")
+                        response = self.bridge.create(self.non_cached_table_name, user.to_json(), "mysql_non_cached")
                         
                         # 检查操作是否超时
                         if time.time() - start_time > operation_timeout:
@@ -752,7 +785,7 @@ class MySqlCachePerformanceTest(GracefulShutdownMixin):
                         ])
                         self.bridge.delete(self.table_name, delete_conditions, "mysql_non_cached")
                     
-                    print(f"  ✅ 已清理MySQL测试表: {self.table_name}")
+                    print(f"  ✅ 已清理MySQL测试表: {self.cached_table_name} 和 {self.non_cached_table_name}")
                 except Exception as e:
                     print(f"  ⚠️  清理MySQL测试数据失败: {e}")
             

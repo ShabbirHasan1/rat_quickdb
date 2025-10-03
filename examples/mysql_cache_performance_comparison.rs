@@ -42,6 +42,23 @@ impl TestUser {
         data.insert("city".to_string(), DataValue::String(self.city.clone()));
         data
     }
+
+    /// 创建新的测试用户（不包含ID）
+    fn new_without_id(index: usize) -> Self {
+        Self {
+            id: 0, // 占位符，实际不使用
+            name: format!("用户{}", index),
+            email: format!("user{}@example.com", index),
+            age: 20 + (index % 50) as i32,
+            city: match index % 5 {
+                0 => "北京".to_string(),
+                1 => "上海".to_string(),
+                2 => "广州".to_string(),
+                3 => "深圳".to_string(),
+                _ => "杭州".to_string(),
+            },
+        }
+    }
 }
 
 /// 缓存性能测试器
@@ -49,7 +66,8 @@ struct CachePerformanceTest {
     test_data: Vec<TestUser>,
     odm: AsyncOdmManager,
     results: Vec<PerformanceResult>,
-    table_name: String,
+    cached_table_name: String,
+    non_cached_table_name: String,
 }
 
 /// 性能测试结果
@@ -188,26 +206,15 @@ impl CachePerformanceTest {
         let odm = AsyncOdmManager::new();
 
         let test_data = (1..=1000)
-            .map(|i| TestUser {
-                id: i,
-                name: format!("用户{}", i),
-                email: format!("user{}@example.com", i),
-                age: 20 + (i % 50) as i32,
-                city: match i % 5 {
-                    0 => "北京".to_string(),
-                    1 => "上海".to_string(),
-                    2 => "广州".to_string(),
-                    3 => "深圳".to_string(),
-                    _ => "杭州".to_string(),
-                },
-            })
+            .map(|i| TestUser::new_without_id(i))
             .collect();
 
         // 使用时间戳作为表名后缀，避免重复
         let timestamp = chrono::Utc::now().timestamp_millis();
-        let table_name = format!("test_users_{}", timestamp);
-        
-        Ok(Self { test_data, odm, results: Vec::new(), table_name })
+        let cached_table_name = format!("test_users_cached_{}", timestamp);
+        let non_cached_table_name = format!("test_users_non_cached_{}", timestamp);
+
+        Ok(Self { test_data, odm, results: Vec::new(), cached_table_name, non_cached_table_name })
     }
 
     /// 运行所有性能测试
@@ -233,16 +240,16 @@ impl CachePerformanceTest {
 
         // 清理现有数据（删除所有记录）
         let delete_conditions = vec![];
-        let _ = self.odm.delete(&self.table_name, delete_conditions.clone(), Some("mysql_cached_db")).await;
-        let _ = self.odm.delete(&self.table_name, delete_conditions, Some("mysql_non_cached_db")).await;
+        let _ = self.odm.delete(&self.cached_table_name, delete_conditions.clone(), Some("mysql_cached_db")).await;
+        let _ = self.odm.delete(&self.non_cached_table_name, delete_conditions, Some("mysql_non_cached_db")).await;
 
         // 插入测试数据到两个数据库
         for user in &self.test_data {
             let data = user.to_data_map();
             // 插入到缓存数据库
-            self.odm.create(&self.table_name, data.clone(), Some("mysql_cached_db")).await?;
+            self.odm.create(&self.cached_table_name, data.clone(), Some("mysql_cached_db")).await?;
             // 插入到非缓存数据库
-            self.odm.create(&self.table_name, data, Some("mysql_non_cached_db")).await?;
+            self.odm.create(&self.non_cached_table_name, data, Some("mysql_non_cached_db")).await?;
         }
 
         info!("测试数据准备完成，共插入 {} 条记录", self.test_data.len());
@@ -272,14 +279,14 @@ impl CachePerformanceTest {
         // 测试带缓存的查询
         let start = Instant::now();
         for _ in 0..100 {
-            let _ = self.odm.find(&self.table_name, conditions.clone(), Some(query_options.clone()), Some("mysql_cached_db")).await?;
+            let _ = self.odm.find(&self.cached_table_name, conditions.clone(), Some(query_options.clone()), Some("mysql_cached_db")).await?;
         }
         let cached_time = start.elapsed();
 
         // 测试不带缓存的查询
         let start = Instant::now();
         for _ in 0..100 {
-            let _ = self.odm.find(&self.table_name, conditions.clone(), Some(query_options.clone()), Some("mysql_non_cached_db")).await?;
+            let _ = self.odm.find(&self.non_cached_table_name, conditions.clone(), Some(query_options.clone()), Some("mysql_non_cached_db")).await?;
         }
         let non_cached_time = start.elapsed();
 
@@ -311,19 +318,19 @@ impl CachePerformanceTest {
         };
 
         // 预热缓存
-        let _ = self.odm.find(&self.table_name, conditions.clone(), Some(query_options.clone()), Some("mysql_cached_db")).await?;
+        let _ = self.odm.find(&self.cached_table_name, conditions.clone(), Some(query_options.clone()), Some("mysql_cached_db")).await?;
 
         // 测试带缓存的重复查询
         let start = Instant::now();
         for _ in 0..200 {
-            let _ = self.odm.find(&self.table_name, conditions.clone(), Some(query_options.clone()), Some("mysql_cached_db")).await?;
+            let _ = self.odm.find(&self.cached_table_name, conditions.clone(), Some(query_options.clone()), Some("mysql_cached_db")).await?;
         }
         let cached_time = start.elapsed();
 
         // 测试不带缓存的重复查询
         let start = Instant::now();
         for _ in 0..200 {
-            let _ = self.odm.find(&self.table_name, conditions.clone(), Some(query_options.clone()), Some("mysql_non_cached_db")).await?;
+            let _ = self.odm.find(&self.non_cached_table_name, conditions.clone(), Some(query_options.clone()), Some("mysql_non_cached_db")).await?;
         }
         let non_cached_time = start.elapsed();
 

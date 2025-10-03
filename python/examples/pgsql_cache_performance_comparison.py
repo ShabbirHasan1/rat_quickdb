@@ -162,7 +162,10 @@ class PostgreSqlCachePerformanceTest(GracefulShutdownMixin):
         self.test_data_dir = "./test_data"
         # 使用时间戳作为表名后缀，避免重复
         timestamp = int(time.time() * 1000)
-        self.table_name = f"test_users_{timestamp}"
+        self.cached_table_name = f"test_users_cached_{timestamp}"
+        self.non_cached_table_name = f"test_users_non_cached_{timestamp}"
+        # 为了兼容现有代码，保留table_name属性
+        self.table_name = self.cached_table_name
         
         # 注册临时目录
         self.add_temp_dir(self.test_data_dir)
@@ -193,7 +196,7 @@ class PostgreSqlCachePerformanceTest(GracefulShutdownMixin):
             result_data = json.loads(result)
             if result_data.get("success"):
                 # 删除测试表中的数据
-                tables_to_clean = ["test_users", "users", "performance_test", self.table_name]
+                tables_to_clean = ["test_users", "users", "performance_test", self.cached_table_name, self.non_cached_table_name]
                 for table in tables_to_clean:
                     try:
                         temp_bridge.drop_table(table, "pgsql_cleanup")
@@ -347,7 +350,7 @@ class PostgreSqlCachePerformanceTest(GracefulShutdownMixin):
                 while retry_count < max_retries and not success:
                     try:
                         start_time = time.time()
-                        response = self.bridge.create(self.table_name, user.to_json(), "pgsql_cached")
+                        response = self.bridge.create(self.cached_table_name, user.to_json(), "pgsql_cached")
                         
                         # 检查操作是否超时
                         if time.time() - start_time > operation_timeout:
@@ -378,7 +381,7 @@ class PostgreSqlCachePerformanceTest(GracefulShutdownMixin):
                 while retry_count < max_retries and not success:
                     try:
                         start_time = time.time()
-                        response = self.bridge.create(self.table_name, user.to_json(), "pgsql_non_cached")
+                        response = self.bridge.create(self.non_cached_table_name, user.to_json(), "pgsql_non_cached")
                         
                         # 检查操作是否超时
                         if time.time() - start_time > operation_timeout:
@@ -756,7 +759,7 @@ class PostgreSqlCachePerformanceTest(GracefulShutdownMixin):
                         ])
                         self.bridge.delete(self.table_name, delete_conditions, "pgsql_non_cached")
                     
-                    print(f"  ✅ 已清理PostgreSQL测试表: {self.table_name}")
+                    print(f"  ✅ 已清理PostgreSQL测试表: {self.cached_table_name} 和 {self.non_cached_table_name}")
                 except Exception as e:
                     print(f"  ⚠️  清理PostgreSQL测试数据失败: {e}")
             
