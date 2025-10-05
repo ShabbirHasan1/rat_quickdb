@@ -1,6 +1,27 @@
 //! 数据库适配器模块
-//! 
+//!
 //! 提供统一的数据库操作接口，屏蔽不同数据库的实现差异
+//!
+//! # 缓存架构重新设计说明
+//!
+//! **重要变更**：缓存架构已从包装器模式重新设计为内部集成模式。
+//!
+//! ## 旧模式（已废弃）
+//! - 缓存作为 `DatabaseAdapter` 的包装器
+//! - 使用 `CachedDatabaseAdapter` 包装真实适配器
+//! - 缓存与数据库共享相同的 trait 定义
+//!
+//! ## 新模式（当前实现）
+//! - 缓存提供通用方法供数据库适配器内部使用
+//! - 各个数据库适配器在执行操作时自动调用缓存逻辑
+//! - 用户使用 `UserCacheOperations` 手动清理缓存
+//! - 开发者使用 `CacheOperations` 在适配器内部集成缓存逻辑
+//!
+//! ## 主要优势
+//! 1. **架构清晰**：缓存不再是数据库，职责分离
+//! 2. **性能优化**：减少不必要的包装层调用
+//! 3. **可见性控制**：严格控制哪些方法可以暴露给用户
+//! 4. **弹性设计**：数据库适配器可以灵活选择缓存策略
 
 use crate::error::{QuickDbError, QuickDbResult};
 use crate::types::*;
@@ -16,14 +37,12 @@ mod postgres;
 mod mysql;
 mod mongodb;
 mod query_builder;
-mod cached;
 
 pub use sqlite::SqliteAdapter;
 pub use postgres::PostgresAdapter;
 pub use mysql::MysqlAdapter;
 pub use mongodb::MongoAdapter;
 pub use query_builder::*;
-pub use cached::CachedDatabaseAdapter;
 
 /// 数据库适配器trait，定义统一的数据库操作接口
 #[async_trait]
@@ -156,13 +175,4 @@ pub fn create_adapter(db_type: &DatabaseType) -> QuickDbResult<Box<dyn DatabaseA
             db_type: format!("{:?}", db_type),
         }),
     }
-}
-
-/// 根据数据库类型和缓存管理器创建带缓存的适配器
-pub fn create_adapter_with_cache(
-    db_type: &DatabaseType,
-    cache_manager: std::sync::Arc<crate::cache::CacheManager>,
-) -> QuickDbResult<Box<dyn DatabaseAdapter>> {
-    let base_adapter = create_adapter(db_type)?;
-    Ok(Box::new(CachedDatabaseAdapter::new(base_adapter, cache_manager)))
 }

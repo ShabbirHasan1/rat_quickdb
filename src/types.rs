@@ -4,6 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
 
@@ -415,6 +416,26 @@ impl DataValue {
         })
     }
 
+    /// 将DataValue转换为字节序列
+    pub fn to_bytes(&self) -> Vec<u8> {
+        rmp_serde::to_vec(self).unwrap_or_default()
+    }
+
+    /// 从字节序列创建DataValue
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        rmp_serde::from_slice(bytes).unwrap_or(DataValue::Null)
+    }
+
+    /// 将DataValue数组转换为字节序列
+    pub fn vec_to_bytes(vec: &[DataValue]) -> Vec<u8> {
+        rmp_serde::to_vec(vec).unwrap_or_default()
+    }
+
+    /// 从字节序列创建DataValue数组
+    pub fn vec_from_bytes(bytes: &[u8]) -> Vec<DataValue> {
+        rmp_serde::from_slice(bytes).unwrap_or_default()
+    }
+
     /// 从 JSON 字符串解析
     pub fn from_json_string(json: &str) -> Result<Self, crate::error::QuickDbError> {
         serde_json::from_str(json).map_err(|e| {
@@ -741,7 +762,7 @@ pub struct QueryCondition {
 }
 
 /// 逻辑操作符
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Hash)]
 pub enum LogicalOperator {
     /// AND 逻辑
     And,
@@ -750,7 +771,7 @@ pub enum LogicalOperator {
 }
 
 /// 查询条件组合
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Hash)]
 pub enum QueryConditionGroup {
     /// 单个条件
     Single(QueryCondition),
@@ -764,7 +785,7 @@ pub enum QueryConditionGroup {
 }
 
 /// 查询操作符
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Hash)]
 pub enum QueryOperator {
     /// 等于
     Eq,
@@ -799,7 +820,7 @@ pub enum QueryOperator {
 }
 
 /// 排序配置
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Hash)]
 pub struct SortConfig {
     /// 字段名
     pub field: String,
@@ -808,7 +829,7 @@ pub struct SortConfig {
 }
 
 /// 排序方向
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Hash)]
 pub enum SortDirection {
     /// 升序
     Asc,
@@ -817,7 +838,7 @@ pub enum SortDirection {
 }
 
 /// 分页配置
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Hash)]
 pub struct PaginationConfig {
     /// 跳过的记录数
     pub skip: u64,
@@ -826,7 +847,7 @@ pub struct PaginationConfig {
 }
 
 /// 查询选项
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Hash)]
 pub struct QueryOptions {
     /// 查询条件
     pub conditions: Vec<QueryCondition>,
@@ -836,6 +857,20 @@ pub struct QueryOptions {
     pub pagination: Option<PaginationConfig>,
     /// 选择的字段（空表示选择所有字段）
     pub fields: Vec<String>,
+}
+
+impl std::hash::Hash for QueryCondition {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.field.hash(state);
+        self.operator.hash(state);
+        // 将DataValue转换为JSON字符串进行hash，避免f64和HashMap的hash问题
+        if let Ok(json_str) = serde_json::to_string(&self.value) {
+            json_str.hash(state);
+        } else {
+            // 如果序列化失败，使用type_name进行hash
+            self.value.type_name().hash(state);
+        }
+    }
 }
 
 impl QueryOptions {
@@ -882,8 +917,8 @@ pub struct CacheConfig {
     pub l2_config: Option<L2CacheConfig>,
     /// TTL 配置
     pub ttl_config: TtlConfig,
-    /// 压缩配置
-    pub compression_config: CompressionConfig,
+    /// 性能配置
+    pub performance_config: PerformanceConfig,
     /// 缓存版本标识，变更此值可清理所有缓存
     #[serde(default = "default_cache_version")]
     pub version: String,
@@ -921,27 +956,115 @@ pub struct L1CacheConfig {
 /// L2 缓存配置（磁盘缓存）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct L2CacheConfig {
+    /// 是否启用L2缓存
+    pub enable_l2_cache: bool,
     /// 存储路径
-    pub storage_path: String,
-    /// 最大磁盘使用（MB）
-    pub max_disk_mb: usize,
-    /// 压缩级别（0-22）
-    pub compression_level: i32,
-    /// 是否启用 WAL
-    pub enable_wal: bool,
+    pub data_dir: Option<String>,
     /// 启动时清空缓存目录
     pub clear_on_startup: bool,
+    /// 最大磁盘使用（字节）
+    pub max_disk_size: u64,
+    /// 写入缓冲区大小（字节）
+    pub write_buffer_size: u64,
+    /// 最大写入缓冲区数量
+    pub max_write_buffer_number: usize,
+    /// 块缓存大小（字节）
+    pub block_cache_size: u64,
+    /// 后台线程数
+    pub background_threads: usize,
+    /// 启用LZ4压缩
+    pub enable_lz4: bool,
+    /// 压缩阈值（字节）
+    pub compression_threshold: usize,
+    /// 最大压缩阈值（字节）
+    pub compression_max_threshold: usize,
+    /// 压缩级别
+    pub compression_level: i32,
+    /// 缓存大小（MB）
+    pub cache_size_mb: usize,
+    /// 最大文件大小（MB）
+    pub max_file_size_mb: usize,
+    /// 启用智能刷新
+    pub smart_flush_enabled: bool,
+    /// 智能刷新基础间隔（毫秒）
+    pub smart_flush_base_interval_ms: u64,
+    /// 智能刷新最小间隔（毫秒）
+    pub smart_flush_min_interval_ms: u64,
+    /// 智能刷新最大间隔（毫秒）
+    pub smart_flush_max_interval_ms: u64,
+    /// 智能刷新写入速率阈值
+    pub smart_flush_write_rate_threshold: u64,
+    /// 智能刷新累积字节阈值
+    pub smart_flush_accumulated_bytes_threshold: u64,
+    /// 缓存预热策略
+    pub cache_warmup_strategy: String,
+    /// ZSTD压缩级别
+    pub zstd_compression_level: Option<i32>,
+    /// L2写入策略
+    pub l2_write_strategy: String,
+    /// L2写入阈值
+    pub l2_write_threshold: u64,
+    /// L2写入TTL阈值
+    pub l2_write_ttl_threshold: u64,
 }
 
 /// TTL 配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TtlConfig {
-    /// 默认 TTL（秒）
-    pub default_ttl_secs: u64,
-    /// 最大 TTL（秒）
-    pub max_ttl_secs: u64,
+    /// 数据过期时间（秒），None 表示永不过期
+    pub expire_seconds: Option<u64>,
     /// TTL 检查间隔（秒）
-    pub check_interval_secs: u64,
+    pub cleanup_interval: u64,
+    /// 每次清理的最大条目数
+    pub max_cleanup_entries: usize,
+    /// 启用惰性过期（访问时检查）
+    pub lazy_expiration: bool,
+    /// 启用主动过期（定时清理）
+    pub active_expiration: bool,
+}
+
+/// 性能配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PerformanceConfig {
+    /// 工作线程数
+    pub worker_threads: usize,
+    /// 是否启用并发
+    pub enable_concurrency: bool,
+    /// 是否启用读写分离
+    pub read_write_separation: bool,
+    /// 批处理大小
+    pub batch_size: usize,
+    /// 是否启用预热
+    pub enable_warmup: bool,
+    /// 大值阈值（字节），超过此值的数据直接写入L2或抛弃
+    pub large_value_threshold: usize,
+}
+
+impl Default for PerformanceConfig {
+    fn default() -> Self {
+        Self {
+            worker_threads: 4,
+            enable_concurrency: true,
+            read_write_separation: false,
+            batch_size: 100,
+            enable_warmup: false,
+            large_value_threshold: 1024 * 1024, // 1MB
+        }
+    }
+}
+
+impl PerformanceConfig {
+    /// 创建新的性能配置（基于melange_db低端配置）
+    pub fn new() -> Self {
+        Self {
+            worker_threads: 1,           // 单线程适合低端CPU
+            enable_concurrency: true,     // 启用并发但限制线程数
+            read_write_separation: false, // 禁用读写分离，减少复杂性
+            batch_size: 10,             // 小批处理，减少内存压力
+            enable_warmup: false,        // 禁用预热，快速启动
+            large_value_threshold: 512 * 1024, // 512KB，适合低端设备
+        }
+    }
 }
 
 /// 压缩配置
@@ -1013,7 +1136,7 @@ impl Default for CacheConfig {
             l1_config: L1CacheConfig::default(),
             l2_config: None,
             ttl_config: TtlConfig::default(),
-            compression_config: CompressionConfig::default(),
+            performance_config: PerformanceConfig::new(),
             version: default_cache_version(),
         }
     }
@@ -1055,9 +1178,9 @@ impl CacheConfig {
         self
     }
 
-    /// 设置压缩配置
-    pub fn with_compression_config(mut self, config: CompressionConfig) -> Self {
-        self.compression_config = config;
+    /// 设置性能配置
+    pub fn with_performance_config(mut self, config: PerformanceConfig) -> Self {
+        self.performance_config = config;
         self
     }
 }
@@ -1098,20 +1221,40 @@ impl L1CacheConfig {
 }
 
 impl L2CacheConfig {
-    /// 创建新的 L2 缓存配置
-    pub fn new(storage_path: String) -> Self {
+    /// 创建新的 L2 缓存配置（基于melange_db低端配置）
+    pub fn new(data_dir: Option<String>) -> Self {
         Self {
-            storage_path,
-            max_disk_mb: 1000,
-            compression_level: 3,
-            enable_wal: true,
+            enable_l2_cache: true, // 创建时默认启用
+            data_dir,
             clear_on_startup: false,
+            max_disk_size: 256 * 1024 * 1024,   // 256MB (保守的磁盘使用)
+            write_buffer_size: 8 * 1024 * 1024,  // 8MB (适合低端设备)
+            max_write_buffer_number: 2,           // 减少缓冲区数量
+            block_cache_size: 4 * 1024 * 1024,    // 4MB (小缓存)
+            background_threads: 1,                 // 单线程适合低端CPU
+            enable_lz4: true,
+            compression_threshold: 512,            // 提高压缩阈值，减少CPU开销
+            compression_max_threshold: 64 * 1024,  // 64KB
+            compression_level: 3,                  // 降低压缩级别
+            cache_size_mb: 32,                     // 32MB (与melange_db低端配置一致)
+            max_file_size_mb: 64,                  // 64MB (适中的文件大小)
+            smart_flush_enabled: true,
+            smart_flush_base_interval_ms: 100,     // 基于melange_db低端配置
+            smart_flush_min_interval_ms: 30,       // 基于melange_db低端配置
+            smart_flush_max_interval_ms: 1500,     // 基于melange_db低端配置
+            smart_flush_write_rate_threshold: 4000, // 基于melange_db低端配置
+            smart_flush_accumulated_bytes_threshold: 2 * 1024 * 1024, // 2MB (基于melange_db)
+            cache_warmup_strategy: "Recent".to_string(),
+            zstd_compression_level: Some(3),       // 使用zstd级别3，平衡性能和压缩率
+            l2_write_strategy: "write_through".to_string(),
+            l2_write_threshold: 512,               // 降低写入阈值
+            l2_write_ttl_threshold: 600,           // 增加TTL阈值，减少写入频率
         }
     }
 
-    /// 设置最大磁盘使用
-    pub fn with_max_disk_mb(mut self, disk_mb: usize) -> Self {
-        self.max_disk_mb = disk_mb;
+    /// 设置最大磁盘使用（字节）
+    pub fn with_max_disk_size(mut self, size: u64) -> Self {
+        self.max_disk_size = size;
         self
     }
 
@@ -1121,12 +1264,7 @@ impl L2CacheConfig {
         self
     }
 
-    /// 启用 WAL
-    pub fn enable_wal(mut self, enable: bool) -> Self {
-        self.enable_wal = enable;
-        self
-    }
-
+  
     /// 设置启动时清空缓存目录
     pub fn clear_on_startup(mut self, clear: bool) -> Self {
         self.clear_on_startup = clear;
@@ -1137,9 +1275,11 @@ impl L2CacheConfig {
 impl Default for TtlConfig {
     fn default() -> Self {
         Self {
-            default_ttl_secs: 3600, // 1小时
-            max_ttl_secs: 86400,     // 24小时
-            check_interval_secs: 300, // 5分钟
+            expire_seconds: Some(3600),        // 1小时默认TTL
+            cleanup_interval: 300,             // 5分钟清理间隔
+            max_cleanup_entries: 1000,         // 每次清理最多1000条
+            lazy_expiration: true,              // 启用惰性过期
+            active_expiration: true,            // 启用主动清理
         }
     }
 }
@@ -1150,21 +1290,33 @@ impl TtlConfig {
         Self::default()
     }
 
-    /// 设置默认 TTL
-    pub fn with_default_ttl_secs(mut self, ttl_secs: u64) -> Self {
-        self.default_ttl_secs = ttl_secs;
+    /// 设置过期时间
+    pub fn with_expire_seconds(mut self, seconds: Option<u64>) -> Self {
+        self.expire_seconds = seconds;
         self
     }
 
-    /// 设置最大 TTL
-    pub fn with_max_ttl_secs(mut self, ttl_secs: u64) -> Self {
-        self.max_ttl_secs = ttl_secs;
+    /// 设置清理间隔
+    pub fn with_cleanup_interval(mut self, seconds: u64) -> Self {
+        self.cleanup_interval = seconds;
         self
     }
 
-    /// 设置检查间隔
-    pub fn with_check_interval_secs(mut self, interval_secs: u64) -> Self {
-        self.check_interval_secs = interval_secs;
+    /// 设置最大清理条目数
+    pub fn with_max_cleanup_entries(mut self, count: usize) -> Self {
+        self.max_cleanup_entries = count;
+        self
+    }
+
+    /// 启用/禁用惰性过期
+    pub fn with_lazy_expiration(mut self, enabled: bool) -> Self {
+        self.lazy_expiration = enabled;
+        self
+    }
+
+    /// 启用/禁用主动过期
+    pub fn with_active_expiration(mut self, enabled: bool) -> Self {
+        self.active_expiration = enabled;
         self
     }
 }

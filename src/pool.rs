@@ -163,6 +163,8 @@ impl std::fmt::Debug for ConnectionWorker {
 pub struct ExtendedPoolConfig {
     /// 基础连接池配置
     pub base: PoolConfig,
+    /// 缓存配置（全局共享，L1缓存必须启用）
+    pub cache_config: crate::types::CacheConfig,
     /// 最大重试次数
     pub max_retries: u32,
     /// 重试间隔（毫秒）
@@ -177,6 +179,7 @@ impl Default for ExtendedPoolConfig {
     fn default() -> Self {
         Self {
             base: PoolConfig::default(),
+            cache_config: crate::types::CacheConfig::default(),
             max_retries: 3,
             retry_interval_ms: 1000,
             keepalive_interval_sec: 30,
@@ -196,8 +199,6 @@ pub struct ConnectionPool {
     pub operation_sender: mpsc::UnboundedSender<DatabaseOperation>,
     /// 数据库类型
     pub db_type: DatabaseType,
-    /// 缓存管理器（可选）
-    pub cache_manager: Option<Arc<crate::cache::CacheManager>>,
 }
 
 /// SQLite 单线程工作器
@@ -220,8 +221,6 @@ pub struct SqliteWorker {
     last_health_check: Instant,
     /// 连接是否健康
     is_healthy: bool,
-    /// 缓存管理器（可选）
-    cache_manager: Option<Arc<crate::cache::CacheManager>>,
     /// 数据库适配器（持久化，避免重复创建）
     adapter: Box<dyn crate::adapter::DatabaseAdapter + Send + Sync>,
 }
@@ -237,7 +236,6 @@ impl std::fmt::Debug for SqliteWorker {
             .field("health_check_interval_sec", &self.health_check_interval_sec)
             .field("last_health_check", &self.last_health_check)
             .field("is_healthy", &self.is_healthy)
-            .field("cache_manager", &self.cache_manager)
             .field("adapter", &"<DatabaseAdapter>")
             .finish()
     }
@@ -257,8 +255,6 @@ pub struct MultiConnectionManager {
     config: ExtendedPoolConfig,
     /// 保活任务句柄
     keepalive_handle: Option<tokio::task::JoinHandle<()>>,
-    /// 缓存管理器（可选）
-    cache_manager: Option<Arc<crate::cache::CacheManager>>,
 }
 
 impl SqliteWorker {
@@ -534,19 +530,18 @@ impl MultiConnectionManager {
     async fn create_connection_worker(&self, index: usize) -> QuickDbResult<ConnectionWorker> {
         let connection = self.create_database_connection().await?;
         
-        // 创建适配器
-        use crate::adapter::{create_adapter, create_adapter_with_cache};
-        let (adapter, adapter_type) = if let Some(cache_manager) = &self.cache_manager {
-            let adapter = create_adapter_with_cache(&self.db_config.db_type, cache_manager.clone())?;
-            (adapter, "缓存适配器")
-        } else {
-            let adapter = create_adapter(&self.db_config.db_type)?;
-            (adapter, "普通适配器")
-        };
+        // 创建适配器（缓存功能已内置）
+        use crate::adapter::create_adapter;
+        let adapter = create_adapter(&self.db_config.db_type)?;
         
-        // 只在第一个工作器创建时输出适配器类型信息
+        // 只在第一个工作器创建时输出缓存配置信息
         if index == 0 {
-            info!("数据库 '{}' 使用 {}", self.db_config.alias, adapter_type);
+            let cache_info = if self.config.cache_config.l2_config.is_some() {
+                "双层缓存（L1内存+L2持久化）"
+            } else {
+                "单层缓存（仅L1内存）"
+            };
+            info!("数据库 '{}' 使用 {} 模式", self.db_config.alias, cache_info);
         }
         
         Ok(ConnectionWorker {
@@ -845,27 +840,25 @@ impl MultiConnectionManager {
 }
 
 impl ConnectionPool {
-    /// 使用配置创建连接池
+    /// 使用配置创建连接池（自动初始化全局缓存）
     pub async fn with_config(db_config: DatabaseConfig, config: ExtendedPoolConfig) -> QuickDbResult<Self> {
-        Self::with_config_and_cache(db_config, config, None).await
-    }
-    
-    /// 使用配置和缓存管理器创建连接池
-    pub async fn with_config_and_cache(
-        db_config: DatabaseConfig, 
-        config: ExtendedPoolConfig,
-        cache_manager: Option<Arc<crate::cache::CacheManager>>
-    ) -> QuickDbResult<Self> {
+        // 初始化全局缓存管理器（如果尚未初始化）
+        use crate::cache_singleton::GlobalCacheManager;
+
+        if !GlobalCacheManager::is_initialized() {
+            GlobalCacheManager::initialize(config.cache_config.clone()).await
+                .map_err(|e| crate::error::QuickDbError::CacheError { message: e.to_string() })?;
+        }
+
         let (operation_sender, operation_receiver) = mpsc::unbounded_channel();
-        
+
         let pool = Self {
             db_type: db_config.db_type.clone(),
             db_config: db_config.clone(),
             config: config.clone(),
             operation_sender,
-            cache_manager: cache_manager.clone(),
         };
-        
+
         // 根据数据库类型启动对应的工作器
         match &db_config.db_type {
             DatabaseType::SQLite => {
@@ -875,13 +868,8 @@ impl ConnectionPool {
                 pool.start_multi_connection_manager(operation_receiver, db_config, config).await?;
             }
         }
-        
+
         Ok(pool)
-    }
-    
-    /// 设置缓存管理器
-    pub fn set_cache_manager(&mut self, cache_manager: Arc<crate::cache::CacheManager>) {
-        self.cache_manager = Some(cache_manager);
     }
 
     /// 启动SQLite工作器
@@ -896,18 +884,11 @@ impl ConnectionPool {
         // 创建启动同步通道
         let (startup_tx, startup_rx) = oneshot::channel();
         
-        // 创建适配器
-        use crate::adapter::{create_adapter, create_adapter_with_cache};
-        let (adapter, adapter_type) = if let Some(cache_manager) = &self.cache_manager {
-            let adapter = create_adapter_with_cache(&db_config.db_type, cache_manager.clone())?;
-            (adapter, "缓存适配器")
-        } else {
-            let adapter = create_adapter(&db_config.db_type)?;
-            (adapter, "普通适配器")
-        };
-        
-        info!("数据库 '{}' 使用 {}", db_config.alias, adapter_type);
-        
+        // 创建适配器（缓存功能已内置）
+        use crate::adapter::create_adapter;
+        let adapter = create_adapter(&db_config.db_type)?;
+
+                
         let worker = SqliteWorker {
             connection,
             operation_receiver,
@@ -918,7 +899,6 @@ impl ConnectionPool {
             health_check_interval_sec: config.health_check_timeout_sec, // 复用健康检查超时作为间隔
             last_health_check: Instant::now(),
             is_healthy: true,
-            cache_manager: self.cache_manager.clone(),
             adapter,
         };
         
@@ -952,7 +932,6 @@ impl ConnectionPool {
             db_config,
             config,
             keepalive_handle: None,
-            cache_manager: self.cache_manager.clone(),
         };
         
         // 启动管理器
@@ -1061,6 +1040,7 @@ impl ConnectionPool {
         table: &str,
         id: &DataValue,
     ) -> QuickDbResult<Option<DataValue>> {
+        rat_logger::info!("🔍 Pool.find_by_id: table={}, id={}", table, id);
         let (response_sender, response_receiver) = oneshot::channel();
         
         let operation = DatabaseOperation::FindById {

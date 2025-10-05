@@ -18,6 +18,7 @@ pub mod table;
 
 // 条件编译的模块
 pub mod cache;
+pub mod cache_singleton;
 pub mod id_generator;
 
 // Python API 模块（仅在启用 python-bindings 特性时编译）
@@ -34,9 +35,6 @@ pub use manager::{
     get_id_generator, get_mongo_auto_increment_generator
 };
 
-pub use manager::{
-    get_cache_manager, get_cache_stats, clear_cache, clear_all_caches
-};
 pub use odm::{AsyncOdmManager, OdmOperations, get_odm_manager, get_odm_manager_mut};
 pub use model::{
     Model, ModelOperations, ModelManager, FieldType, FieldDefinition, ModelMeta, IndexDefinition,
@@ -57,8 +55,8 @@ pub use task_queue::{
 };
 pub use table::{TableManager, TableSchema, ColumnDefinition, ColumnType, IndexType};
 
-// 条件导出缓存相关类型
-pub use cache::{CacheManager, CacheStats};
+// 导出缓存快捷方法
+pub use cache::CacheOps;
 
 // 导出ID生成器相关类型
 pub use id_generator::{IdGenerator, MongoAutoIncrementGenerator};

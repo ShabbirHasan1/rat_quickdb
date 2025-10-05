@@ -8,6 +8,7 @@ use crate::types::*;
 use crate::model::FieldType;
 use crate::pool::{DatabaseConnection};
 use crate::table::{TableManager, TableSchema, ColumnType};
+use crate::cache::CacheOps;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -151,7 +152,7 @@ impl DatabaseAdapter for SqliteAdapter {
             
             // 根据插入的数据返回相应的ID
             // 优先返回数据中的ID字段，如果没有则使用SQLite的rowid
-            if let Some(id_value) = data.get("id") {
+            let result_id = if let Some(id_value) = data.get("id") {
                 Ok(id_value.clone())
             } else if let Some(id_value) = data.get("_id") {
                 Ok(id_value.clone())
@@ -167,7 +168,23 @@ impl DatabaseAdapter for SqliteAdapter {
                     result_map.insert("affected_rows".to_string(), DataValue::Int(result.rows_affected() as i64));
                     Ok(DataValue::Object(result_map))
                 }
+            };
+
+            // 创建成功后清理相关的查询缓存
+            if let Ok(ref id) = result_id {
+                // 清理新创建记录的缓存（如果有的话）
+                let cache_key = format!("sqlite:{}:record:{}", table, id.to_string());
+                if let Err(e) = CacheOps::delete_record("sqlite", table, &IdType::String(id.to_string())).await {
+                    warn!("清理记录缓存失败: {}, {}", cache_key, e);
+                }
+
+                // 清理表相关的所有查询缓存
+                if let Err(e) = CacheOps::clear_table("sqlite", table).await {
+                    warn!("清理表查询缓存失败: {}, {}", table, e);
+                }
             }
+
+            result_id
     }
 
     async fn find_by_id(
@@ -176,35 +193,71 @@ impl DatabaseAdapter for SqliteAdapter {
         table: &str,
         id: &DataValue,
     ) -> QuickDbResult<Option<DataValue>> {
+        // 生成缓存键
+        let cache_key = format!("sqlite:{}:record:{}", table, id.to_string());
+
+        // 尝试从缓存获取
+        match CacheOps::get(&cache_key).await {
+            Ok((true, Some(vec_data))) => {
+                // 缓存命中，从Vec<DataValue>中取第一个元素
+                println!("🔥 SQLite缓存命中: {} (结果数量: {})", cache_key, vec_data.len());
+                return Ok(vec_data.first().cloned());
+            },
+            Ok((true, None)) => {
+                // 缓存命中但为空值（空Vec）
+                println!("🔥 SQLite缓存命中空值: {}", cache_key);
+                return Ok(None);
+            },
+            Ok((false, _)) => {
+                // 缓存未命中，继续数据库查询
+                println!("❌ SQLite缓存未命中: {}", cache_key);
+            },
+            Err(e) => {
+                println!("缓存获取失败: {}, 继续数据库查询", e);
+            }
+        }
+
         let pool = match connection {
             DatabaseConnection::SQLite(pool) => pool,
             _ => return Err(QuickDbError::ConnectionError {
                 message: "Invalid connection type for SQLite".to_string(),
             }),
         };
-        {
-            let sql = format!("SELECT * FROM {} WHERE id = ? LIMIT 1", table);
-            
-            let mut query = sqlx::query(&sql);
-            match id {
-                DataValue::String(s) => { query = query.bind(s); },
-                DataValue::Int(i) => { query = query.bind(i); },
-                _ => { query = query.bind(id.to_string()); },
-            }
-            
-            let row = query.fetch_optional(pool).await
-                .map_err(|e| QuickDbError::QueryError {
-                    message: format!("执行SQLite根据ID查询失败: {}", e),
-                })?;
-            
-            match row {
-                Some(r) => {
-                    let data_map = self.row_to_data_map(&r)?;
-                    Ok(Some(DataValue::Object(data_map)))
-                },
-                None => Ok(None),
-            }
+
+        let sql = format!("SELECT * FROM {} WHERE id = ? LIMIT 1", table);
+
+        let mut query = sqlx::query(&sql);
+        match id {
+            DataValue::String(s) => { query = query.bind(s); },
+            DataValue::Int(i) => { query = query.bind(i); },
+            _ => { query = query.bind(id.to_string()); },
         }
+
+        let row = query.fetch_optional(pool).await
+            .map_err(|e| QuickDbError::QueryError {
+                message: format!("执行SQLite根据ID查询失败: {}", e),
+            })?;
+
+        let result = match row {
+            Some(r) => {
+                let data_map = self.row_to_data_map(&r)?;
+                Some(DataValue::Object(data_map))
+            },
+            None => None,
+        };
+
+        // 将结果存入缓存（转换为Vec<DataValue>）
+        let cache_data = match &result {
+            Some(data_value) => Some(vec![data_value.clone()]),
+            None => Some(vec![]), // 空Vec表示有效的空结果
+        };
+
+        println!("📦 SQLite设置缓存: {} (数据量: {})", cache_key, cache_data.as_ref().map_or(0, |v| v.len()));
+        if let Err(e) = CacheOps::set(&cache_key, cache_data, Some(3600)).await {
+            println!("缓存设置失败: {}, {}", cache_key, e);
+        }
+
+        Ok(result)
     }
 
     async fn find(
@@ -238,6 +291,31 @@ impl DatabaseAdapter for SqliteAdapter {
         condition_groups: &[QueryConditionGroup],
         options: &QueryOptions,
     ) -> QuickDbResult<Vec<DataValue>> {
+        // 生成查询缓存键
+        let query_hash = CacheOps::hash_condition_groups(condition_groups, options);
+        let cache_key = format!("sqlite:{}:query:{}", table, query_hash);
+
+        // 尝试从缓存获取
+        match CacheOps::get(&cache_key).await {
+            Ok((true, Some(results))) => {
+                // 缓存命中，直接返回Vec<DataValue>
+                debug!("查询缓存命中: {}", cache_key);
+                return Ok(results);
+            },
+            Ok((true, None)) => {
+                // 缓存命中但为空结果
+                debug!("查询缓存命中空结果: {}", cache_key);
+                return Ok(Vec::new());
+            },
+            Ok((false, _)) => {
+                // 缓存未命中，继续数据库查询
+                debug!("查询缓存未命中: {}", cache_key);
+            },
+            Err(e) => {
+                warn!("查询缓存获取失败: {}, 继续数据库查询", e);
+            }
+        }
+
         let pool = match connection {
             DatabaseConnection::SQLite(pool) => pool,
             _ => return Err(QuickDbError::ConnectionError {
@@ -277,7 +355,12 @@ impl DatabaseAdapter for SqliteAdapter {
                 let data_map = self.row_to_data_map(&row)?;
                 results.push(DataValue::Object(data_map));
             }
-            
+
+            // 将查询结果存入缓存
+            if let Err(e) = CacheOps::set(&cache_key, Some(results.clone()), Some(1800)).await {
+                warn!("查询缓存设置失败: {}, {}", cache_key, e);
+            }
+
             Ok(results)
         }
     }
@@ -317,8 +400,31 @@ impl DatabaseAdapter for SqliteAdapter {
                 .map_err(|e| QuickDbError::QueryError {
                     message: format!("执行SQLite更新失败: {}", e),
                 })?;
-            
-            Ok(result.rows_affected())
+
+            let affected_rows = result.rows_affected();
+
+            // 更新成功后清理相关缓存
+            if affected_rows > 0 {
+                // 对于基于ID的更新，需要找到对应的ID并清理特定记录缓存
+                for condition in conditions {
+                    if condition.field == "id" && matches!(condition.operator, QueryOperator::Eq) {
+                        if let Ok(id_str) = std::str::from_utf8(&condition.value.to_bytes()) {
+                            // 清理特定记录的缓存
+                            if let Err(e) = CacheOps::delete_record("sqlite", table, &IdType::String(id_str.to_string())).await {
+                                warn!("清理记录缓存失败: {}, {}", id_str, e);
+                            }
+                        }
+                        break;
+                    }
+                }
+
+                // 清理表相关的所有查询缓存（因为更新可能影响查询结果）
+                if let Err(e) = CacheOps::clear_table("sqlite", table).await {
+                    warn!("清理表查询缓存失败: {}, {}", table, e);
+                }
+            }
+
+            Ok(affected_rows)
         }
     }
 
@@ -373,8 +479,31 @@ impl DatabaseAdapter for SqliteAdapter {
                 .map_err(|e| QuickDbError::QueryError {
                     message: format!("执行SQLite删除失败: {}", e),
                 })?;
-            
-            Ok(result.rows_affected())
+
+            let affected_rows = result.rows_affected();
+
+            // 删除成功后清理相关缓存
+            if affected_rows > 0 {
+                // 对于基于ID的删除，需要找到对应的ID并清理特定记录缓存
+                for condition in conditions {
+                    if condition.field == "id" && matches!(condition.operator, QueryOperator::Eq) {
+                        if let Ok(id_str) = std::str::from_utf8(&condition.value.to_bytes()) {
+                            // 清理特定记录的缓存
+                            if let Err(e) = CacheOps::delete_record("sqlite", table, &IdType::String(id_str.to_string())).await {
+                                warn!("清理记录缓存失败: {}, {}", id_str, e);
+                            }
+                        }
+                        break;
+                    }
+                }
+
+                // 清理表相关的所有查询缓存
+                if let Err(e) = CacheOps::clear_table("sqlite", table).await {
+                    warn!("清理表查询缓存失败: {}, {}", table, e);
+                }
+            }
+
+            Ok(affected_rows)
         }
     }
 
