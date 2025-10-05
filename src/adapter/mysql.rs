@@ -5,10 +5,11 @@
 use crate::adapter::DatabaseAdapter;
 use crate::pool::DatabaseConnection;
 use crate::error::{QuickDbError, QuickDbResult};
-use crate::types::{DataValue, QueryCondition, QueryConditionGroup, QueryOperator, QueryOptions, SortDirection};
+use crate::types::{DataValue, QueryCondition, QueryConditionGroup, QueryOperator, QueryOptions, SortDirection, IdType};
 use crate::adapter::query_builder::SqlQueryBuilder;
 use crate::table::{TableManager, TableSchema, ColumnType};
 use crate::model::FieldType;
+use crate::cache::CacheOps;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -576,6 +577,74 @@ impl MysqlAdapter {
         
         Ok(result.rows_affected())
     }
+
+    /// 直接查询数据库（不使用缓存）- by_id
+    async fn query_database_by_id(
+        &self,
+        connection: &DatabaseConnection,
+        table: &str,
+        id: &DataValue,
+    ) -> QuickDbResult<Option<DataValue>> {
+        if let DatabaseConnection::MySQL(pool) = connection {
+            let condition = QueryCondition {
+                field: "id".to_string(),
+                operator: QueryOperator::Eq,
+                value: id.clone(),
+            };
+
+            let (sql, params) = SqlQueryBuilder::new()
+                .database_type(crate::adapter::query_builder::DatabaseType::MySQL)
+                .select(&["*"])
+                .from(table)
+                .where_condition(condition)
+                .limit(1)
+                .build()?;
+
+            let results = self.execute_query(pool, &sql, &params).await?;
+            Ok(results.into_iter().next())
+        } else {
+            Err(QuickDbError::ConnectionError {
+                message: "连接类型不匹配，期望MySQL连接".to_string(),
+            })
+        }
+    }
+
+    /// 直接查询数据库（不使用缓存）- with_groups
+    async fn query_database_with_groups(
+        &self,
+        connection: &DatabaseConnection,
+        table: &str,
+        condition_groups: &[QueryConditionGroup],
+        options: &QueryOptions,
+    ) -> QuickDbResult<Vec<DataValue>> {
+        if let DatabaseConnection::MySQL(pool) = connection {
+            let mut builder = SqlQueryBuilder::new()
+                .database_type(crate::adapter::query_builder::DatabaseType::MySQL)
+                .select(&["*"])
+                .from(table)
+                .where_condition_groups(condition_groups);
+
+            // 添加排序
+            for sort_field in &options.sort {
+                builder = builder.order_by(&sort_field.field, sort_field.direction.clone());
+            }
+
+            // 添加分页
+            if let Some(pagination) = &options.pagination {
+                builder = builder.limit(pagination.limit).offset(pagination.skip);
+            }
+
+            let (sql, params) = builder.build()?;
+
+            debug!("执行MySQL条件组合查询: {}", sql);
+
+            self.execute_query(pool, &sql, &params).await
+        } else {
+            Err(QuickDbError::ConnectionError {
+                message: "连接类型不匹配，期望MySQL连接".to_string(),
+            })
+        }
+    }
 }
 
 #[async_trait]
@@ -700,6 +769,14 @@ impl DatabaseAdapter for MysqlAdapter {
             result_map.insert("affected_rows".to_string(), DataValue::Int(affected_rows as i64));
 
             debug!("最终返回的DataValue: {:?}", DataValue::Object(result_map.clone()));
+
+            // 创建成功后清理表相关缓存
+            if let Err(e) = CacheOps::clear_table("mysql", table).await {
+                warn!("清理表缓存失败: {}", e);
+            } else {
+                debug!("已清理表缓存: table={}", table);
+            }
+
             Ok(DataValue::Object(result_map))
         } else {
             Err(QuickDbError::ConnectionError {
@@ -714,28 +791,66 @@ impl DatabaseAdapter for MysqlAdapter {
         table: &str,
         id: &DataValue,
     ) -> QuickDbResult<Option<DataValue>> {
-        if let DatabaseConnection::MySQL(pool) = connection {
-            let condition = QueryCondition {
-                field: "id".to_string(),
-                operator: QueryOperator::Eq,
-                value: id.clone(),
-            };
-            
-            let (sql, params) = SqlQueryBuilder::new()
-                .database_type(crate::adapter::query_builder::DatabaseType::MySQL)
-                .select(&["*"])
-                .from(table)
-                .where_condition(condition)
-                .limit(1)
-                .build()?;
-            
-            let results = self.execute_query(pool, &sql, &params).await?;
-            Ok(results.into_iter().next())
-        } else {
-            Err(QuickDbError::ConnectionError {
-                message: "连接类型不匹配，期望MySQL连接".to_string(),
-            })
+        // 将DataValue转换为IdType
+        let id_type = match id {
+            DataValue::Int(n) => IdType::Number(*n),
+            DataValue::String(s) => IdType::String(s.clone()),
+            _ => {
+                warn!("无法将DataValue转换为IdType: {:?}", id);
+                // 如果无法转换，直接查询数据库
+                return self.query_database_by_id(connection, table, id).await;
+            }
+        };
+
+        // 生成缓存键
+        let cache_key = CacheOps::generate_record_key("mysql", table, &id_type);
+
+        // 先检查缓存
+        match CacheOps::get(&cache_key).await {
+            Ok((true, Some(vec_data))) => {
+                // 缓存命中
+                if vec_data.len() == 1 {
+                    println!("🔥 MySQL缓存命中: {} (结果数量: {})", cache_key, vec_data.len());
+                    return Ok(Some(vec_data.into_iter().next().unwrap()));
+                } else {
+                    println!("🔥 MySQL缓存命中: {} (结果数量: {})", cache_key, vec_data.len());
+                    return Ok(None);
+                }
+            }
+            Ok((true, None)) => {
+                // 缓存命中，但结果为空
+                println!("🔥 MySQL缓存命中: {} (空结果)", cache_key);
+                return Ok(None);
+            }
+            Ok((false, _)) => {
+                // 缓存未命中
+                println!("❌ MySQL缓存未命中: {}", cache_key);
+            }
+            Err(e) => {
+                warn!("获取缓存失败: {}, 继续查询数据库", e);
+            }
         }
+
+        // 缓存未命中，查询数据库
+        let result = self.query_database_by_id(connection, table, id).await?;
+
+        // 缓存查询结果
+        if let Some(ref data_value) = result {
+            if let Err(e) = CacheOps::set(&cache_key, Some(vec![data_value.clone()]), Some(3600)).await {
+                warn!("设置缓存失败: {}", e);
+            } else {
+                println!("📦 MySQL设置缓存: {} (数据量: 1)", cache_key);
+            }
+        } else {
+            // 缓存空结果
+            if let Err(e) = CacheOps::set(&cache_key, None, Some(600)).await {
+                warn!("设置空缓存失败: {}", e);
+            } else {
+                println!("📦 MySQL设置空缓存: {}", cache_key);
+            }
+        }
+
+        Ok(result)
     }
 
     async fn find(
@@ -769,33 +884,42 @@ impl DatabaseAdapter for MysqlAdapter {
         condition_groups: &[QueryConditionGroup],
         options: &QueryOptions,
     ) -> QuickDbResult<Vec<DataValue>> {
-        if let DatabaseConnection::MySQL(pool) = connection {
-            let mut builder = SqlQueryBuilder::new()
-                .database_type(crate::adapter::query_builder::DatabaseType::MySQL)
-                .select(&["*"])
-                .from(table)
-                .where_condition_groups(condition_groups);
-            
-            // 添加排序
-            for sort_field in &options.sort {
-                builder = builder.order_by(&sort_field.field, sort_field.direction.clone());
+        // 生成查询缓存键
+        let query_hash = CacheOps::hash_condition_groups(condition_groups, options);
+        let cache_key = CacheOps::generate_query_key("mysql", table, &query_hash);
+
+        // 先检查缓存
+        match CacheOps::get(&cache_key).await {
+            Ok((true, Some(vec_data))) => {
+                // 缓存命中
+                println!("🔥 MySQL缓存命中: {} (结果数量: {})", cache_key, vec_data.len());
+                return Ok(vec_data);
             }
-            
-            // 添加分页
-            if let Some(pagination) = &options.pagination {
-                builder = builder.limit(pagination.limit).offset(pagination.skip);
+            Ok((true, None)) => {
+                // 缓存命中，但结果为空
+                println!("🔥 MySQL缓存命中: {} (空结果)", cache_key);
+                return Ok(Vec::new());
             }
-            
-            let (sql, params) = builder.build()?;
-            
-            debug!("执行MySQL条件组合查询: {}", sql);
-            
-            self.execute_query(pool, &sql, &params).await
-        } else {
-            Err(QuickDbError::ConnectionError {
-                message: "连接类型不匹配，期望MySQL连接".to_string(),
-            })
+            Ok((false, _)) => {
+                // 缓存未命中
+                println!("❌ MySQL缓存未命中: {}", cache_key);
+            }
+            Err(e) => {
+                warn!("获取查询缓存失败: {}, 继续查询数据库", e);
+            }
         }
+
+        // 缓存未命中，查询数据库
+        let result = self.query_database_with_groups(connection, table, condition_groups, options).await?;
+
+        // 缓存查询结果
+        if let Err(e) = CacheOps::set(&cache_key, Some(result.clone()), Some(1800)).await {
+            warn!("设置查询缓存失败: {}", e);
+        } else {
+            println!("📦 MySQL设置缓存: {} (数据量: {})", cache_key, result.len());
+        }
+
+        Ok(result)
     }
 
     async fn update(
@@ -812,8 +936,19 @@ impl DatabaseAdapter for MysqlAdapter {
                 .from(table)
                 .where_conditions(conditions)
                 .build()?;
-            
-            self.execute_update(pool, &sql, &params).await
+
+            let result = self.execute_update(pool, &sql, &params).await?;
+
+            // 更新成功后清理表相关缓存
+            if result > 0 {
+                if let Err(e) = CacheOps::clear_table("mysql", table).await {
+                    warn!("清理表缓存失败: {}", e);
+                } else {
+                    debug!("已清理表缓存: table={}, updated_count={}", table, result);
+                }
+            }
+
+            Ok(result)
         } else {
             Err(QuickDbError::ConnectionError {
                 message: "连接类型不匹配，期望MySQL连接".to_string(),
@@ -834,15 +969,41 @@ impl DatabaseAdapter for MysqlAdapter {
                 operator: QueryOperator::Eq,
                 value: id.clone(),
             };
-            
+
             let (sql, params) = SqlQueryBuilder::new()
                 .database_type(crate::adapter::query_builder::DatabaseType::MySQL)
                 .update(data.clone())
                 .from(table)
                 .where_condition(condition)
                 .build()?;
-            
+
             let affected_rows = self.execute_update(pool, &sql, &params).await?;
+
+            // 更新成功后精确清理相关缓存
+            if affected_rows > 0 {
+                // 清理特定记录的缓存
+                let id_value = match id {
+                    DataValue::Int(n) => IdType::Number(*n),
+                    DataValue::String(s) => IdType::String(s.clone()),
+                    _ => {
+                        warn!("无法将DataValue转换为IdType: {:?}", id);
+                        return Ok(affected_rows > 0);
+                    }
+                };
+
+                // 清理记录缓存
+                if let Err(e) = CacheOps::delete_record("mysql", table, &id_value).await {
+                    warn!("清理记录缓存失败: {}", e);
+                }
+
+                // 清理查询缓存
+                if let Err(e) = CacheOps::clear_table("mysql", table).await {
+                    warn!("清理表查询缓存失败: {}", e);
+                }
+
+                debug!("已清理记录和查询缓存: table={}, id={:?}", table, id);
+            }
+
             Ok(affected_rows > 0)
         } else {
             Err(QuickDbError::ConnectionError {
@@ -864,8 +1025,19 @@ impl DatabaseAdapter for MysqlAdapter {
                 .from(table)
                 .where_conditions(conditions)
                 .build()?;
-            
-            self.execute_update(pool, &sql, &params).await
+
+            let result = self.execute_update(pool, &sql, &params).await?;
+
+            // 删除成功后清理表相关缓存
+            if result > 0 {
+                if let Err(e) = CacheOps::clear_table("mysql", table).await {
+                    warn!("清理表缓存失败: {}", e);
+                } else {
+                    debug!("已清理表缓存: table={}, deleted_count={}", table, result);
+                }
+            }
+
+            Ok(result)
         } else {
             Err(QuickDbError::ConnectionError {
                 message: "连接类型不匹配，期望MySQL连接".to_string(),
@@ -885,15 +1057,41 @@ impl DatabaseAdapter for MysqlAdapter {
                 operator: QueryOperator::Eq,
                 value: id.clone(),
             };
-            
+
             let (sql, params) = SqlQueryBuilder::new()
                 .database_type(crate::adapter::query_builder::DatabaseType::MySQL)
                 .delete()
                 .from(table)
                 .where_condition(condition)
                 .build()?;
-            
+
             let affected_rows = self.execute_update(pool, &sql, &params).await?;
+
+            // 删除成功后精确清理相关缓存
+            if affected_rows > 0 {
+                // 清理特定记录的缓存
+                let id_value = match id {
+                    DataValue::Int(n) => IdType::Number(*n),
+                    DataValue::String(s) => IdType::String(s.clone()),
+                    _ => {
+                        warn!("无法将DataValue转换为IdType: {:?}", id);
+                        return Ok(affected_rows > 0);
+                    }
+                };
+
+                // 清理记录缓存
+                if let Err(e) = CacheOps::delete_record("mysql", table, &id_value).await {
+                    warn!("清理记录缓存失败: {}", e);
+                }
+
+                // 清理查询缓存
+                if let Err(e) = CacheOps::clear_table("mysql", table).await {
+                    warn!("清理表查询缓存失败: {}", e);
+                }
+
+                debug!("已清理记录和查询缓存: table={}, id={:?}", table, id);
+            }
+
             Ok(affected_rows > 0)
         } else {
             Err(QuickDbError::ConnectionError {

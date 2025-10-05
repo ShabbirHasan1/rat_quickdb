@@ -911,7 +911,6 @@ pub fn mysql_config<S: Into<String>>(
             database: database.into(),
             username: username.into(),
             password: password.into(),
-            ssl_opts: None,
             tls_config: None,
         })
         .pool(pool_config)

@@ -152,8 +152,6 @@ pub enum ConnectionConfig {
         username: String,
         /// 密码
         password: String,
-        /// SSL 配置
-        ssl_opts: Option<HashMap<String, String>>,
         /// TLS 配置选项
         tls_config: Option<TlsConfig>,
     },

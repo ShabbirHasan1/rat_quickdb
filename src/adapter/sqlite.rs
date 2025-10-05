@@ -73,6 +73,106 @@ impl SqliteAdapter {
         
         Ok(map)
     }
+
+    /// 直接查询数据库（不使用缓存）- by_id
+    async fn query_database_by_id(
+        &self,
+        connection: &DatabaseConnection,
+        table: &str,
+        id: &DataValue,
+    ) -> QuickDbResult<Option<DataValue>> {
+        let pool = match connection {
+            DatabaseConnection::SQLite(pool) => pool,
+            _ => return Err(QuickDbError::ConnectionError {
+                message: "Invalid connection type for SQLite".to_string(),
+            }),
+        };
+
+        let sql = format!("SELECT * FROM {} WHERE id = ? LIMIT 1", table);
+
+        let mut query = sqlx::query(&sql);
+        match id {
+            DataValue::String(s) => { query = query.bind(s); },
+            DataValue::Int(i) => { query = query.bind(i); },
+            _ => { query = query.bind(id.to_string()); },
+        }
+
+        let row = query.fetch_optional(pool).await
+            .map_err(|e| QuickDbError::QueryError {
+                message: format!("执行SQLite根据ID查询失败: {}", e),
+            })?;
+
+        let result = match row {
+            Some(r) => {
+                let data_map = self.row_to_data_map(&r)?;
+                Some(DataValue::Object(data_map))
+            },
+            None => None,
+        };
+
+        Ok(result)
+    }
+
+    /// 直接查询数据库（不使用缓存）- with_groups
+    async fn query_database_with_groups(
+        &self,
+        connection: &DatabaseConnection,
+        table: &str,
+        condition_groups: &[QueryConditionGroup],
+        options: &QueryOptions,
+    ) -> QuickDbResult<Vec<DataValue>> {
+        let pool = match connection {
+            DatabaseConnection::SQLite(pool) => pool,
+            _ => return Err(QuickDbError::ConnectionError {
+                message: "Invalid connection type for SQLite".to_string(),
+            }),
+        };
+        {
+            let mut builder = SqlQueryBuilder::new()
+                .select(&["*"])
+                .from(table)
+                .where_condition_groups(condition_groups);
+
+            // 添加排序
+            for sort_field in &options.sort {
+                builder = builder.order_by(&sort_field.field, sort_field.direction.clone());
+            }
+
+            // 添加分页
+            if let Some(pagination) = &options.pagination {
+                builder = builder.limit(pagination.limit).offset(pagination.skip);
+            }
+
+            let (sql, params) = builder.build()?;
+
+            debug!("执行SQLite条件组合查询: {}", sql);
+
+            let mut query = sqlx::query(&sql);
+            for param in &params {
+                match param {
+                    DataValue::String(s) => { query = query.bind(s); },
+                    DataValue::Int(i) => { query = query.bind(i); },
+                    DataValue::Float(f) => { query = query.bind(f); },
+                    DataValue::Bool(b) => { query = query.bind(b); },
+                    DataValue::Null => { query = query.bind(Option::<String>::None); },
+                    _ => { query = query.bind(param.to_string()); },
+                }
+            }
+
+            let rows = query.fetch_all(pool).await
+                .map_err(|e| QuickDbError::QueryError {
+                    message: format!("执行SQLite条件组合查询失败: {}", e),
+                })?;
+
+            let mut results = Vec::new();
+            for row in rows {
+                let data_map = self.row_to_data_map(&row)?;
+                results.push(DataValue::Object(data_map));
+            }
+
+            Ok(results)
+        }
+    }
 }
 
 #[async_trait]
@@ -193,68 +293,63 @@ impl DatabaseAdapter for SqliteAdapter {
         table: &str,
         id: &DataValue,
     ) -> QuickDbResult<Option<DataValue>> {
-        // 生成缓存键
-        let cache_key = format!("sqlite:{}:record:{}", table, id.to_string());
+        // 将DataValue转换为IdType
+        let id_type = match id {
+            DataValue::Int(n) => IdType::Number(*n),
+            DataValue::String(s) => IdType::String(s.clone()),
+            _ => {
+                warn!("无法将DataValue转换为IdType: {:?}", id);
+                // 如果无法转换，直接查询数据库
+                return self.query_database_by_id(connection, table, id).await;
+            }
+        };
 
-        // 尝试从缓存获取
+        // 生成缓存键
+        let cache_key = CacheOps::generate_record_key("sqlite", table, &id_type);
+
+        // 先检查缓存
         match CacheOps::get(&cache_key).await {
             Ok((true, Some(vec_data))) => {
-                // 缓存命中，从Vec<DataValue>中取第一个元素
-                println!("🔥 SQLite缓存命中: {} (结果数量: {})", cache_key, vec_data.len());
-                return Ok(vec_data.first().cloned());
-            },
+                // 缓存命中
+                if vec_data.len() == 1 {
+                    println!("🔥 SQLite缓存命中: {} (结果数量: {})", cache_key, vec_data.len());
+                    return Ok(Some(vec_data.into_iter().next().unwrap()));
+                } else {
+                    println!("🔥 SQLite缓存命中: {} (结果数量: {})", cache_key, vec_data.len());
+                    return Ok(None);
+                }
+            }
             Ok((true, None)) => {
-                // 缓存命中但为空值（空Vec）
-                println!("🔥 SQLite缓存命中空值: {}", cache_key);
+                // 缓存命中，但结果为空
+                println!("🔥 SQLite缓存命中: {} (空结果)", cache_key);
                 return Ok(None);
-            },
+            }
             Ok((false, _)) => {
-                // 缓存未命中，继续数据库查询
+                // 缓存未命中
                 println!("❌ SQLite缓存未命中: {}", cache_key);
-            },
+            }
             Err(e) => {
-                println!("缓存获取失败: {}, 继续数据库查询", e);
+                warn!("获取缓存失败: {}, 继续查询数据库", e);
             }
         }
 
-        let pool = match connection {
-            DatabaseConnection::SQLite(pool) => pool,
-            _ => return Err(QuickDbError::ConnectionError {
-                message: "Invalid connection type for SQLite".to_string(),
-            }),
-        };
+        // 缓存未命中，查询数据库
+        let result = self.query_database_by_id(connection, table, id).await?;
 
-        let sql = format!("SELECT * FROM {} WHERE id = ? LIMIT 1", table);
-
-        let mut query = sqlx::query(&sql);
-        match id {
-            DataValue::String(s) => { query = query.bind(s); },
-            DataValue::Int(i) => { query = query.bind(i); },
-            _ => { query = query.bind(id.to_string()); },
-        }
-
-        let row = query.fetch_optional(pool).await
-            .map_err(|e| QuickDbError::QueryError {
-                message: format!("执行SQLite根据ID查询失败: {}", e),
-            })?;
-
-        let result = match row {
-            Some(r) => {
-                let data_map = self.row_to_data_map(&r)?;
-                Some(DataValue::Object(data_map))
-            },
-            None => None,
-        };
-
-        // 将结果存入缓存（转换为Vec<DataValue>）
-        let cache_data = match &result {
-            Some(data_value) => Some(vec![data_value.clone()]),
-            None => Some(vec![]), // 空Vec表示有效的空结果
-        };
-
-        println!("📦 SQLite设置缓存: {} (数据量: {})", cache_key, cache_data.as_ref().map_or(0, |v| v.len()));
-        if let Err(e) = CacheOps::set(&cache_key, cache_data, Some(3600)).await {
-            println!("缓存设置失败: {}, {}", cache_key, e);
+        // 缓存查询结果
+        if let Some(ref data_value) = result {
+            if let Err(e) = CacheOps::set(&cache_key, Some(vec![data_value.clone()]), Some(3600)).await {
+                warn!("设置缓存失败: {}", e);
+            } else {
+                println!("📦 SQLite设置缓存: {} (数据量: 1)", cache_key);
+            }
+        } else {
+            // 缓存空结果
+            if let Err(e) = CacheOps::set(&cache_key, None, Some(600)).await {
+                warn!("设置空缓存失败: {}", e);
+            } else {
+                println!("📦 SQLite设置空缓存: {}", cache_key);
+            }
         }
 
         Ok(result)
@@ -293,76 +388,40 @@ impl DatabaseAdapter for SqliteAdapter {
     ) -> QuickDbResult<Vec<DataValue>> {
         // 生成查询缓存键
         let query_hash = CacheOps::hash_condition_groups(condition_groups, options);
-        let cache_key = format!("sqlite:{}:query:{}", table, query_hash);
+        let cache_key = CacheOps::generate_query_key("sqlite", table, &query_hash);
 
-        // 尝试从缓存获取
+        // 先检查缓存
         match CacheOps::get(&cache_key).await {
-            Ok((true, Some(results))) => {
-                // 缓存命中，直接返回Vec<DataValue>
-                debug!("查询缓存命中: {}", cache_key);
-                return Ok(results);
-            },
+            Ok((true, Some(vec_data))) => {
+                // 缓存命中
+                println!("🔥 SQLite缓存命中: {} (结果数量: {})", cache_key, vec_data.len());
+                return Ok(vec_data);
+            }
             Ok((true, None)) => {
-                // 缓存命中但为空结果
-                debug!("查询缓存命中空结果: {}", cache_key);
+                // 缓存命中，但结果为空
+                println!("🔥 SQLite缓存命中: {} (空结果)", cache_key);
                 return Ok(Vec::new());
-            },
+            }
             Ok((false, _)) => {
-                // 缓存未命中，继续数据库查询
-                debug!("查询缓存未命中: {}", cache_key);
-            },
+                // 缓存未命中
+                println!("❌ SQLite缓存未命中: {}", cache_key);
+            }
             Err(e) => {
-                warn!("查询缓存获取失败: {}, 继续数据库查询", e);
+                warn!("获取查询缓存失败: {}, 继续查询数据库", e);
             }
         }
 
-        let pool = match connection {
-            DatabaseConnection::SQLite(pool) => pool,
-            _ => return Err(QuickDbError::ConnectionError {
-                message: "Invalid connection type for SQLite".to_string(),
-            }),
-        };
-        {
-            let (sql, params) = SqlQueryBuilder::new()
-                .select(&["*"])
-                .from(table)
-                .where_condition_groups(condition_groups)
-                .limit(options.pagination.as_ref().map(|p| p.limit).unwrap_or(1000))
-                .offset(options.pagination.as_ref().map(|p| p.skip).unwrap_or(0))
-                .build()?;
-            
-            debug!("执行SQLite条件组合查询: {}", sql);
-            
-            let mut query = sqlx::query(&sql);
-            for param in &params {
-                match param {
-                    DataValue::String(s) => { query = query.bind(s); },
-                    DataValue::Int(i) => { query = query.bind(i); },
-                    DataValue::Float(f) => { query = query.bind(f); },
-                    DataValue::Bool(b) => { query = query.bind(b); },
-                    DataValue::Null => { query = query.bind(Option::<String>::None); },
-                    _ => { query = query.bind(param.to_string()); },
-                }
-            }
-            
-            let rows = query.fetch_all(pool).await
-                .map_err(|e| QuickDbError::QueryError {
-                    message: format!("执行SQLite条件组合查询失败: {}", e),
-                })?;
-            
-            let mut results = Vec::new();
-            for row in rows {
-                let data_map = self.row_to_data_map(&row)?;
-                results.push(DataValue::Object(data_map));
-            }
+        // 缓存未命中，查询数据库
+        let result = self.query_database_with_groups(connection, table, condition_groups, options).await?;
 
-            // 将查询结果存入缓存
-            if let Err(e) = CacheOps::set(&cache_key, Some(results.clone()), Some(1800)).await {
-                warn!("查询缓存设置失败: {}, {}", cache_key, e);
-            }
-
-            Ok(results)
+        // 缓存查询结果
+        if let Err(e) = CacheOps::set(&cache_key, Some(result.clone()), Some(1800)).await {
+            warn!("设置查询缓存失败: {}", e);
+        } else {
+            println!("📦 SQLite设置缓存: {} (数据量: {})", cache_key, result.len());
         }
+
+        Ok(result)
     }
 
     async fn update(

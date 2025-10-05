@@ -579,7 +579,7 @@ impl MultiConnectionManager {
             },
             DatabaseType::MySQL => {
                 let connection_string = match &self.db_config.connection {
-                    crate::types::ConnectionConfig::MySQL { host, port, database, username, password, ssl_opts: _, tls_config: _ } => {
+                    crate::types::ConnectionConfig::MySQL { host, port, database, username, password, tls_config: _ } => {
                         // 对密码进行 URL 编码以处理特殊字符
                         let encoded_password = urlencoding::encode(password);
                         format!("mysql://{}:{}@{}:{}/{}", username, encoded_password, host, port, database)
