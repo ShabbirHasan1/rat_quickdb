@@ -8,6 +8,7 @@ use crate::types::*;
 use crate::pool::DatabaseConnection;
 use crate::table::{TableManager, TableSchema, ColumnType};
 use crate::model::FieldType;
+use crate::cache::CacheOps;
 use async_trait::async_trait;
 
 use std::collections::HashMap;
@@ -424,6 +425,110 @@ impl MongoAdapter {
         }
         mapped_data
     }
+
+    /// 直接根据ID查询数据库（无缓存，内部方法）
+    async fn query_database_by_id(
+        &self,
+        connection: &DatabaseConnection,
+        table: &str,
+        id: &DataValue,
+    ) -> QuickDbResult<Option<DataValue>> {
+        if let DatabaseConnection::MongoDB(db) = connection {
+            let collection = self.get_collection(db, table);
+
+            let query = match id {
+                DataValue::String(id_str) => {
+                    // 处理ObjectId格式：ObjectId("xxx") 或直接是ObjectId字符串
+                    let actual_id = if id_str.starts_with("ObjectId(\"") && id_str.ends_with("\")") {
+                        // 提取ObjectId字符串部分
+                        &id_str[10..id_str.len()-2]
+                    } else {
+                        id_str
+                    };
+                    // 尝试解析为ObjectId，如果失败则作为字符串查询
+                    if let Ok(object_id) = mongodb::bson::oid::ObjectId::parse_str(actual_id) {
+                        doc! { "_id": object_id }
+                    } else {
+                        doc! { "_id": actual_id }
+                    }
+                },
+                DataValue::Int(i) => doc! { "_id": *i },
+                DataValue::Float(f) => doc! { "_id": *f },
+                DataValue::Bool(b) => doc! { "_id": *b },
+                DataValue::Uuid(uuid) => doc! { "_id": uuid.to_string() },
+                _ => doc! { "_id": format!("{:?}", id) },
+            };
+
+            debug!("执行MongoDB根据ID查询: {:?}", query);
+
+            let result = collection.find_one(query, None)
+                .await
+                .map_err(|e| QuickDbError::QueryError {
+                    message: format!("执行MongoDB查询失败: {}", e),
+                })?;
+
+            match result {
+                Some(doc) => {
+                    let data_value = self.bson_to_data_value(&Bson::Document(doc))?;
+                    match data_value {
+                        DataValue::Object(data_map) => Ok(Some(DataValue::Object(data_map))),
+                        _ => Ok(Some(data_value)),
+                    }
+                },
+                None => Ok(None),
+            }
+        } else {
+            Err(QuickDbError::ConnectionError {
+                message: "连接类型不匹配，期望MongoDB连接".to_string(),
+            })
+        }
+    }
+
+    /// 直接根据条件组查询数据库（无缓存，内部方法）
+    async fn query_database_with_groups(
+        &self,
+        connection: &DatabaseConnection,
+        table: &str,
+        condition_groups: &[QueryConditionGroup],
+        options: &QueryOptions,
+    ) -> QuickDbResult<Vec<DataValue>> {
+        if let DatabaseConnection::MongoDB(db) = connection {
+            let collection = self.get_collection(db, table);
+
+            // 构建MongoDB查询文档
+            let query_doc = self.build_condition_groups_document(condition_groups)
+                .unwrap_or_else(|_| Document::new());
+
+            debug!("执行MongoDB条件组查询: {:?}", query_doc);
+
+            let mut cursor = collection.find(query_doc, None)
+                .await
+                .map_err(|e| QuickDbError::QueryError {
+                    message: format!("执行MongoDB查询失败: {}", e),
+                })?;
+
+            // 使用MongoDB原生的cursor遍历方法
+            let mut results = Vec::new();
+            while cursor.advance().await.map_err(|e| QuickDbError::QueryError {
+                message: format!("MongoDB游标遍历失败: {}", e),
+            })? {
+                let doc = cursor.deserialize_current().map_err(|e| QuickDbError::QueryError {
+                    message: format!("MongoDB文档反序列化失败: {}", e),
+                })?;
+                let data_value = self.bson_to_data_value(&Bson::Document(doc))?;
+                match data_value {
+                    DataValue::Object(data_map) => results.push(DataValue::Object(data_map)),
+                    _ => results.push(data_value),
+                }
+            }
+
+            Ok(results)
+        } else {
+            Err(QuickDbError::ConnectionError {
+                message: "连接类型不匹配，期望MongoDB连接".to_string(),
+            })
+        }
+    }
 }
 
 #[async_trait]
@@ -498,49 +603,63 @@ impl DatabaseAdapter for MongoAdapter {
         table: &str,
         id: &DataValue,
     ) -> QuickDbResult<Option<DataValue>> {
-        if let DatabaseConnection::MongoDB(db) = connection {
-            let collection = self.get_collection(db, table);
-            
-            let query = match id {
-                DataValue::String(id_str) => {
-                    // 处理ObjectId格式：ObjectId("xxx") 或直接是ObjectId字符串
-                    let actual_id = if id_str.starts_with("ObjectId(\"") && id_str.ends_with("\")") {
-                        // 提取ObjectId字符串部分
-                        &id_str[10..id_str.len()-2]
-                    } else {
-                        id_str
-                    };
+        // 生成缓存键
+        let id_str = match id {
+            DataValue::String(s) => s.clone(),
+            DataValue::Int(i) => i.to_string(),
+            DataValue::Float(f) => f.to_string(),
+            DataValue::Bool(b) => b.to_string(),
+            DataValue::Uuid(u) => u.to_string(),
+            _ => format!("{:?}", id),
+        };
+        let cache_key = format!("mongodb:{}:record:{}", table, id_str);
 
-                    // 尝试解析为ObjectId，如果失败则作为字符串查询
-                    if let Ok(object_id) = mongodb::bson::oid::ObjectId::parse_str(actual_id) {
-                        doc! { "_id": object_id }
-                    } else {
-                        doc! { "_id": actual_id }
-                    }
-                },
-                _ => doc! { "_id": self.data_value_to_bson(id) }
-            };
-            
-            println!("执行MongoDB根据ID查询: {:?}", query);
-            
-            let result = collection.find_one(query, None)
-                .await
-                .map_err(|e| QuickDbError::QueryError {
-                    message: format!("MongoDB查询失败: {}", e),
-                })?;
-            
-            if let Some(doc) = result {
-                let data_map = self.document_to_data_map(&doc)?;
-                // 直接返回Object，避免双重包装
-                Ok(Some(DataValue::Object(data_map)))
+        // 先检查缓存
+        match CacheOps::get(&cache_key).await {
+            Ok((true, Some(vec_data))) => {
+                // 缓存命中
+                if vec_data.len() == 1 {
+                    info!("🔥 MongoDB缓存命中: {} (结果数量: {})", cache_key, vec_data.len());
+                    return Ok(Some(vec_data.into_iter().next().unwrap()));
+                } else {
+                    info!("🔥 MongoDB缓存命中: {} (结果数量: {})", cache_key, vec_data.len());
+                    return Ok(None);
+                }
+            }
+            Ok((true, None)) => {
+                // 缓存命中，但结果为空
+                info!("🔥 MongoDB缓存命中: {} (空结果)", cache_key);
+                return Ok(None);
+            }
+            Ok((false, _)) => {
+                // 缓存未命中
+                info!("❌ MongoDB缓存未命中: {}", cache_key);
+            }
+            Err(e) => {
+                warn!("获取缓存失败: {}, 继续查询数据库", e);
+            }
+        }
+
+        // 缓存未命中，查询数据库
+        let result = self.query_database_by_id(connection, table, id).await?;
+
+        // 缓存查询结果
+        if let Some(ref data_value) = result {
+            if let Err(e) = CacheOps::set(&cache_key, Some(vec![data_value.clone()]), Some(3600)).await {
+                warn!("设置缓存失败: {}", e);
             } else {
-                Ok(None)
+                info!("📦 MongoDB设置缓存: {} (数据量: 1)", cache_key);
             }
         } else {
-            Err(QuickDbError::ConnectionError {
-                message: "连接类型不匹配，期望MongoDB连接".to_string(),
-            })
+            // 缓存空结果
+            if let Err(e) = CacheOps::set(&cache_key, None, Some(600)).await {
+                warn!("设置空缓存失败: {}", e);
+            } else {
+                info!("📦 MongoDB设置空缓存: {}", cache_key);
+            }
         }
+
+        Ok(result)
     }
 
     async fn find(
@@ -574,58 +693,49 @@ impl DatabaseAdapter for MongoAdapter {
         condition_groups: &[QueryConditionGroup],
         options: &QueryOptions,
     ) -> QuickDbResult<Vec<DataValue>> {
-        if let DatabaseConnection::MongoDB(db) = connection {
-            let collection = self.get_collection(db, table);
-            
-            let query = self.build_condition_groups_document(condition_groups)?;
-            
-            println!("执行MongoDB条件组合查询: {:?}", query);
-            
-            let mut find_options = mongodb::options::FindOptions::default();
-            
-            // 添加排序
-            if !options.sort.is_empty() {
-                let mut sort_doc = Document::new();
-                for sort_field in &options.sort {
-                    let sort_value = match sort_field.direction {
-                        SortDirection::Asc => 1,
-                        SortDirection::Desc => -1,
-                    };
-                    sort_doc.insert(&sort_field.field, sort_value);
-                }
-                find_options.sort = Some(sort_doc);
+        // 生成查询缓存键
+        let query_hash = {
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            let mut hasher = DefaultHasher::new();
+            condition_groups.hash(&mut hasher);
+            options.hash(&mut hasher);
+            format!("{:x}", hasher.finish())
+        };
+        let cache_key = format!("mongodb:{}:query:{}", table, query_hash);
+
+        // 先检查缓存
+        match CacheOps::get(&cache_key).await {
+            Ok((true, Some(vec_data))) => {
+                // 缓存命中
+                info!("🔥 MongoDB缓存命中: {} (结果数量: {})", cache_key, vec_data.len());
+                return Ok(vec_data);
             }
-            
-            // 添加分页
-            if let Some(pagination) = &options.pagination {
-                find_options.limit = Some(pagination.limit as i64);
-                find_options.skip = Some(pagination.skip);
+            Ok((true, None)) => {
+                // 缓存命中，但结果为空
+                info!("🔥 MongoDB缓存命中: {} (空结果)", cache_key);
+                return Ok(Vec::new());
             }
-            
-            let mut cursor = collection.find(query, find_options)
-                .await
-                .map_err(|e| QuickDbError::QueryError {
-                    message: format!("MongoDB条件组合查询失败: {}", e),
-                })?;
-            
-            let mut results = Vec::new();
-            while cursor.advance().await.map_err(|e| QuickDbError::QueryError {
-                message: format!("MongoDB游标遍历失败: {}", e),
-            })? {
-                let doc = cursor.deserialize_current().map_err(|e| QuickDbError::QueryError {
-                    message: format!("MongoDB文档反序列化失败: {}", e),
-                })?;
-                let data_map = self.document_to_data_map(&doc)?;
-                // 直接返回Object，避免双重包装
-                results.push(DataValue::Object(data_map));
+            Ok((false, _)) => {
+                // 缓存未命中
+                info!("❌ MongoDB缓存未命中: {}", cache_key);
             }
-            
-            Ok(results)
-        } else {
-            Err(QuickDbError::ConnectionError {
-                message: "连接类型不匹配，期望MongoDB连接".to_string(),
-            })
+            Err(e) => {
+                warn!("获取查询缓存失败: {}, 继续查询数据库", e);
+            }
         }
+
+        // 缓存未命中，查询数据库
+        let result = self.query_database_with_groups(connection, table, condition_groups, options).await?;
+
+        // 缓存查询结果
+        if let Err(e) = CacheOps::set(&cache_key, Some(result.clone()), Some(1800)).await {
+            warn!("设置查询缓存失败: {}", e);
+        } else {
+            info!("📦 MongoDB设置缓存: {} (数据量: {})", cache_key, result.len());
+        }
+
+        Ok(result)
     }
 
     async fn update(
@@ -637,18 +747,28 @@ impl DatabaseAdapter for MongoAdapter {
     ) -> QuickDbResult<u64> {
         if let DatabaseConnection::MongoDB(db) = connection {
             let collection = self.get_collection(db, table);
-            
+
             let query = self.build_query_document(conditions)?;
             let update = self.build_update_document(data);
-            
-            println!("执行MongoDB更新: 查询={:?}, 更新={:?}", query, update);
-            
+
+            debug!("执行MongoDB更新: 查询={:?}, 更新={:?}", query, update);
+
             let result = collection.update_many(query, update, None)
                 .await
                 .map_err(|e| QuickDbError::QueryError {
                     message: format!("MongoDB更新失败: {}", e),
                 })?;
-            
+
+            // 更新成功后清理相关缓存
+            if result.modified_count > 0 {
+                // 清理表相关的所有缓存
+                if let Err(e) = CacheOps::clear_table("mongodb", table).await {
+                    warn!("清理MongoDB表缓存失败: {}", e);
+                } else {
+                    info!("✅ MongoDB更新后清理表缓存: mongodb:{}", table);
+                }
+            }
+
             Ok(result.modified_count)
         } else {
             Err(QuickDbError::ConnectionError {
@@ -682,17 +802,27 @@ impl DatabaseAdapter for MongoAdapter {
     ) -> QuickDbResult<u64> {
         if let DatabaseConnection::MongoDB(db) = connection {
             let collection = self.get_collection(db, table);
-            
+
             let query = self.build_query_document(conditions)?;
-            
-            println!("执行MongoDB删除: {:?}", query);
-            
+
+            debug!("执行MongoDB删除: {:?}", query);
+
             let result = collection.delete_many(query, None)
                 .await
                 .map_err(|e| QuickDbError::QueryError {
                     message: format!("MongoDB删除失败: {}", e),
                 })?;
-            
+
+            // 删除成功后清理相关缓存
+            if result.deleted_count > 0 {
+                // 清理表相关的所有缓存
+                if let Err(e) = CacheOps::clear_table("mongodb", table).await {
+                    warn!("清理MongoDB表缓存失败: {}", e);
+                } else {
+                    info!("✅ MongoDB删除后清理表缓存: mongodb:{}", table);
+                }
+            }
+
             Ok(result.deleted_count)
         } else {
             Err(QuickDbError::ConnectionError {
