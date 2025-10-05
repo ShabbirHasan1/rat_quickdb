@@ -8,6 +8,7 @@ use crate::types::*;
 use crate::FieldType;
 use crate::pool::DatabaseConnection;
 use crate::table::{TableManager, TableSchema, ColumnType};
+use crate::cache::CacheOps;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -229,6 +230,78 @@ impl PostgresAdapter {
         
         Ok(result.rows_affected())
     }
+
+    /// 直接根据ID查询数据库（无缓存，内部方法）
+    async fn query_database_by_id(
+        &self,
+        connection: &DatabaseConnection,
+        table: &str,
+        id: &DataValue,
+    ) -> QuickDbResult<Option<DataValue>> {
+        if let DatabaseConnection::PostgreSQL(pool) = connection {
+            let condition = QueryCondition {
+                field: "id".to_string(),
+                operator: QueryOperator::Eq,
+                value: id.clone(),
+            };
+
+            let (sql, params) = SqlQueryBuilder::new()
+                .database_type(super::query_builder::DatabaseType::PostgreSQL)
+                .select(&["*"])
+                .from(table)
+                .where_condition(condition)
+                .limit(1)
+                .build()?;
+
+            debug!("执行PostgreSQL根据ID查询: {}", sql);
+
+            let results = self.execute_query(pool, &sql, &params).await?;
+            Ok(results.into_iter().next())
+        } else {
+            Err(QuickDbError::ConnectionError {
+                message: "连接类型不匹配，期望PostgreSQL连接".to_string(),
+            })
+        }
+    }
+
+    /// 直接根据条件组查询数据库（无缓存，内部方法）
+    async fn query_database_with_groups(
+        &self,
+        connection: &DatabaseConnection,
+        table: &str,
+        condition_groups: &[QueryConditionGroup],
+        options: &QueryOptions,
+    ) -> QuickDbResult<Vec<DataValue>> {
+        if let DatabaseConnection::PostgreSQL(pool) = connection {
+            let mut builder = SqlQueryBuilder::new()
+                .database_type(super::query_builder::DatabaseType::PostgreSQL)
+                .select(&["*"])
+                .from(table)
+                .where_condition_groups(condition_groups);
+
+            // 添加排序
+            if !options.sort.is_empty() {
+                for sort_field in &options.sort {
+                    builder = builder.order_by(&sort_field.field, sort_field.direction.clone());
+                }
+            }
+
+            // 添加分页
+            if let Some(pagination) = &options.pagination {
+                builder = builder.limit(pagination.limit).offset(pagination.skip);
+            }
+
+            let (sql, params) = builder.build()?;
+
+            debug!("执行PostgreSQL条件组查询: {}", sql);
+
+            self.execute_query(pool, &sql, &params).await
+        } else {
+            Err(QuickDbError::ConnectionError {
+                message: "连接类型不匹配，期望PostgreSQL连接".to_string(),
+            })
+        }
+    }
 }
 
 #[async_trait]
@@ -332,30 +405,61 @@ impl DatabaseAdapter for PostgresAdapter {
         table: &str,
         id: &DataValue,
     ) -> QuickDbResult<Option<DataValue>> {
-        if let DatabaseConnection::PostgreSQL(pool) = connection {
-            let condition = QueryCondition {
-                field: "id".to_string(),
-                operator: QueryOperator::Eq,
-                value: id.clone(),
-            };
-            
-            let (sql, params) = SqlQueryBuilder::new()
-                .database_type(super::query_builder::DatabaseType::PostgreSQL)
-                .select(&["*"])
-                .from(table)
-                .where_condition(condition)
-                .limit(1)
-                .build()?;
-            
-            debug!("执行PostgreSQL根据ID查询: {}", sql);
-            
-            let results = self.execute_query(pool, &sql, &params).await?;
-            Ok(results.into_iter().next())
-        } else {
-            Err(QuickDbError::ConnectionError {
-                message: "连接类型不匹配，期望PostgreSQL连接".to_string(),
-            })
+        // 生成缓存键
+        let id_str = match id {
+            DataValue::String(s) => s.clone(),
+            DataValue::Int(i) => i.to_string(),
+            DataValue::Uuid(u) => u.to_string(),
+            _ => format!("{:?}", id),
+        };
+        let cache_key = format!("postgres:{}:record:{}", table, id_str);
+
+        // 先检查缓存
+        match CacheOps::get(&cache_key).await {
+            Ok((true, Some(vec_data))) => {
+                // 缓存命中
+                if vec_data.len() == 1 {
+                    info!("🔥 PostgreSQL缓存命中: {} (结果数量: {})", cache_key, vec_data.len());
+                    return Ok(Some(vec_data.into_iter().next().unwrap()));
+                } else {
+                    info!("🔥 PostgreSQL缓存命中: {} (结果数量: {})", cache_key, vec_data.len());
+                    return Ok(None);
+                }
+            }
+            Ok((true, None)) => {
+                // 缓存命中，但结果为空
+                info!("🔥 PostgreSQL缓存命中: {} (空结果)", cache_key);
+                return Ok(None);
+            }
+            Ok((false, _)) => {
+                // 缓存未命中
+                info!("❌ PostgreSQL缓存未命中: {}", cache_key);
+            }
+            Err(e) => {
+                warn!("获取缓存失败: {}, 继续查询数据库", e);
+            }
         }
+
+        // 缓存未命中，查询数据库
+        let result = self.query_database_by_id(connection, table, id).await?;
+
+        // 缓存查询结果
+        if let Some(ref data_value) = result {
+            if let Err(e) = CacheOps::set(&cache_key, Some(vec![data_value.clone()]), Some(3600)).await {
+                warn!("设置缓存失败: {}", e);
+            } else {
+                info!("📦 PostgreSQL设置缓存: {} (数据量: 1)", cache_key);
+            }
+        } else {
+            // 缓存空结果
+            if let Err(e) = CacheOps::set(&cache_key, None, Some(600)).await {
+                warn!("设置空缓存失败: {}", e);
+            } else {
+                info!("📦 PostgreSQL设置空缓存: {}", cache_key);
+            }
+        }
+
+        Ok(result)
     }
 
     async fn find(
@@ -389,35 +493,49 @@ impl DatabaseAdapter for PostgresAdapter {
         condition_groups: &[QueryConditionGroup],
         options: &QueryOptions,
     ) -> QuickDbResult<Vec<DataValue>> {
-        if let DatabaseConnection::PostgreSQL(pool) = connection {
-            let mut builder = SqlQueryBuilder::new()
-                .database_type(super::query_builder::DatabaseType::PostgreSQL)
-                .select(&["*"])
-                .from(table)
-                .where_condition_groups(condition_groups);
-            
-            // 添加排序
-            if !options.sort.is_empty() {
-                for sort_field in &options.sort {
-                    builder = builder.order_by(&sort_field.field, sort_field.direction.clone());
-                }
+        // 生成查询缓存键
+        let query_hash = {
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            let mut hasher = DefaultHasher::new();
+            condition_groups.hash(&mut hasher);
+            options.hash(&mut hasher);
+            format!("{:x}", hasher.finish())
+        };
+        let cache_key = format!("postgres:{}:query:{}", table, query_hash);
+
+        // 先检查缓存
+        match CacheOps::get(&cache_key).await {
+            Ok((true, Some(vec_data))) => {
+                // 缓存命中
+                info!("🔥 PostgreSQL缓存命中: {} (结果数量: {})", cache_key, vec_data.len());
+                return Ok(vec_data);
             }
-            
-            // 添加分页
-            if let Some(pagination) = &options.pagination {
-                builder = builder.limit(pagination.limit).offset(pagination.skip);
+            Ok((true, None)) => {
+                // 缓存命中，但结果为空
+                info!("🔥 PostgreSQL缓存命中: {} (空结果)", cache_key);
+                return Ok(Vec::new());
             }
-            
-            let (sql, params) = builder.build()?;
-            
-            debug!("执行PostgreSQL条件组查询: {}", sql);
-            
-            self.execute_query(pool, &sql, &params).await
-        } else {
-            Err(QuickDbError::ConnectionError {
-                message: "连接类型不匹配，期望PostgreSQL连接".to_string(),
-            })
+            Ok((false, _)) => {
+                // 缓存未命中
+                info!("❌ PostgreSQL缓存未命中: {}", cache_key);
+            }
+            Err(e) => {
+                warn!("获取查询缓存失败: {}, 继续查询数据库", e);
+            }
         }
+
+        // 缓存未命中，查询数据库
+        let result = self.query_database_with_groups(connection, table, condition_groups, options).await?;
+
+        // 缓存查询结果
+        if let Err(e) = CacheOps::set(&cache_key, Some(result.clone()), Some(1800)).await {
+            warn!("设置查询缓存失败: {}", e);
+        } else {
+            info!("📦 PostgreSQL设置缓存: {} (数据量: {})", cache_key, result.len());
+        }
+
+        Ok(result)
     }
 
     async fn update(
@@ -434,10 +552,22 @@ impl DatabaseAdapter for PostgresAdapter {
                 .from(table)
                 .where_conditions(conditions)
                 .build()?;
-            
+
             debug!("执行PostgreSQL更新: {}", sql);
-            
-            self.execute_update(pool, &sql, &params).await
+
+            let result = self.execute_update(pool, &sql, &params).await?;
+
+            // 更新成功后清理相关缓存
+            if result > 0 {
+                // 清理表相关的所有缓存
+                if let Err(e) = CacheOps::clear_table("postgres", table).await {
+                    warn!("清理PostgreSQL表缓存失败: {}", e);
+                } else {
+                    info!("✅ PostgreSQL更新后清理表缓存: postgres:{}", table);
+                }
+            }
+
+            Ok(result)
         } else {
             Err(QuickDbError::ConnectionError {
                 message: "连接类型不匹配，期望PostgreSQL连接".to_string(),
@@ -475,10 +605,22 @@ impl DatabaseAdapter for PostgresAdapter {
                 .from(table)
                 .where_conditions(conditions)
                 .build()?;
-            
+
             debug!("执行PostgreSQL删除: {}", sql);
-            
-            self.execute_update(pool, &sql, &params).await
+
+            let result = self.execute_update(pool, &sql, &params).await?;
+
+            // 删除成功后清理相关缓存
+            if result > 0 {
+                // 清理表相关的所有缓存
+                if let Err(e) = CacheOps::clear_table("postgres", table).await {
+                    warn!("清理PostgreSQL表缓存失败: {}", e);
+                } else {
+                    info!("✅ PostgreSQL删除后清理表缓存: postgres:{}", table);
+                }
+            }
+
+            Ok(result)
         } else {
             Err(QuickDbError::ConnectionError {
                 message: "连接类型不匹配，期望PostgreSQL连接".to_string(),

@@ -393,10 +393,22 @@ impl AsyncOdmManager {
         // 创建oneshot通道用于接收响应
         let (response_tx, response_rx) = oneshot::channel();
         
+        // 智能转换ID类型
+        let id_data_value = if id.chars().all(|c| c.is_ascii_digit()) {
+            // 如果全是数字，转换为整数
+            if let Ok(num) = id.parse::<i64>() {
+                DataValue::Int(num)
+            } else {
+                DataValue::String(id.to_string())
+            }
+        } else {
+            DataValue::String(id.to_string())
+        };
+
         // 发送DatabaseOperation::FindById请求到连接池
         let operation = DatabaseOperation::FindById {
             table: collection.to_string(),
-            id: DataValue::String(id.to_string()),
+            id: id_data_value,
             response: response_tx,
         };
         
@@ -582,10 +594,22 @@ impl AsyncOdmManager {
         // 创建oneshot通道用于接收响应
         let (response_tx, response_rx) = oneshot::channel();
         
+        // 智能转换ID类型
+        let id_data_value = if id.chars().all(|c| c.is_ascii_digit()) {
+            // 如果全是数字，转换为整数
+            if let Ok(num) = id.parse::<i64>() {
+                DataValue::Int(num)
+            } else {
+                DataValue::String(id.to_string())
+            }
+        } else {
+            DataValue::String(id.to_string())
+        };
+
         // 发送DatabaseOperation::UpdateById请求到连接池
         let operation = DatabaseOperation::UpdateById {
             table: collection.to_string(),
-            id: DataValue::String(id.to_string()),
+            id: id_data_value,
             data: updates,
             response: response_tx,
         };
@@ -677,10 +701,22 @@ impl AsyncOdmManager {
         // 创建oneshot通道用于接收响应
         let (response_tx, response_rx) = oneshot::channel();
         
+        // 智能转换ID类型
+        let id_data_value = if id.chars().all(|c| c.is_ascii_digit()) {
+            // 如果全是数字，转换为整数
+            if let Ok(num) = id.parse::<i64>() {
+                DataValue::Int(num)
+            } else {
+                DataValue::String(id.to_string())
+            }
+        } else {
+            DataValue::String(id.to_string())
+        };
+
         // 发送DatabaseOperation::DeleteById请求到连接池
         let operation = DatabaseOperation::DeleteById {
             table: collection.to_string(),
-            id: DataValue::String(id.to_string()),
+            id: id_data_value,
             response: response_tx,
         };
         
